@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -172,6 +173,61 @@ func TestChannelTest_Webhook_ReportsReceiverStatus(t *testing.T) {
 	}
 	if !strings.Contains(result.Error, "unexpected status 500") {
 		t.Errorf("error = %q, want it to report the receiver's status 500", result.Error)
+	}
+}
+
+// TestChannelTest_Webhook_StoredConfigRefused verifies that a stored webhook config the
+// delivery parser refuses (here a custom header value that is not a string) fails the
+// test without sending anything and without echoing stored values.
+func TestChannelTest_Webhook_StoredConfigRefused(t *testing.T) {
+	t.Parallel()
+	var called atomic.Int32
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(receiver.Close)
+	u, err := url.Parse(receiver.URL)
+	if err != nil {
+		t.Fatalf("parse receiver URL: %v", err)
+	}
+
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	ts := newPrivateDestServer(t, db, "127.0.0.1", "127.0.0.0/8", u.Port())
+	reg := doRegister(t, ctx, ts, "admin@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "admin@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	// Stored directly, bypassing API validation, as for a row written before it existed.
+	config := `{"url":"` + receiver.URL + `/hook","custom_headers":{"Authorization":"Bearer tk_stored_secret","X-A":1}}`
+	ch, _, err := db.CreateNotificationChannel(ctx, mustParseUUID(t, reg.OrgID), "stored-hook", "webhook", json.RawMessage(config))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+
+	resp := doTestChannel(t, ctx, ts, token, reg.OrgID, ch.ID.String())
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusBadGateway {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("test channel: got %d, body: %s, want 502", resp.StatusCode, body)
+	}
+	var result testChannelResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode test channel response: %v", err)
+	}
+	if result.Success {
+		t.Error("expected success=false for refused stored config")
+	}
+	if !strings.Contains(result.Error, "parse webhook config") {
+		t.Errorf("error = %q, want it to report the config parse failure", result.Error)
+	}
+	if strings.Contains(result.Error, "tk_stored_secret") || strings.Contains(result.Error, receiver.URL) {
+		t.Errorf("error %q echoes a stored config value", result.Error)
+	}
+	if n := called.Load(); n != 0 {
+		t.Errorf("receiver calls = %d, want 0", n)
 	}
 }
 

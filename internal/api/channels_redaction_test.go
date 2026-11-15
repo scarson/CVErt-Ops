@@ -3,6 +3,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danielgtaylor/huma/v2/validation"
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/notify"
@@ -128,7 +130,11 @@ func (f *channelRedactionFixture) deliveredConfig(t *testing.T) notify.WebhookCo
 	if err != nil || row == nil {
 		t.Fatalf("load channel for delivery: row=%v err=%v", row, err)
 	}
-	return notify.ChannelWebhookConfig(row)
+	cfg, err := notify.ChannelWebhookConfig(row)
+	if err != nil {
+		t.Fatalf("parse stored webhook config: %v", err)
+	}
+	return cfg
 }
 
 func assertStoredCredentialIntact(t *testing.T, cfg notify.WebhookConfig) {
@@ -379,49 +385,129 @@ const inertFieldChannelBody = `{"name":"Extra Fields Hook","type":"webhook","con
 	`"extra":[{"custom_headers":{"Authorization":"inert-array-secret"}}],` +
 	`"nested":{"url":"https://receiver.example.com/inert-nested-secret"}}}`
 
-// TestChannelConfig_UnrecognisedFieldsMaskedAndKeptOnRoundTrip covers config
-// keys delivery never reads, which the API accepts and stores.
-func TestChannelConfig_UnrecognisedFieldsMaskedAndKeptOnRoundTrip(t *testing.T) {
+// inertFieldValues are the stored values of the config keys delivery never reads.
+var inertFieldValues = []string{"inert-plain-secret", "inert-array-secret", "inert-nested-secret", "9007199254740993"}
+
+// assertNoInertValue fails if body contains a value of a key delivery never reads.
+func assertNoInertValue(t *testing.T, label, body string) {
+	t.Helper()
+	for _, value := range inertFieldValues {
+		if strings.Contains(body, value) {
+			t.Errorf("%s: exposes unrecognised field value %q: %s", label, value, body)
+		}
+	}
+}
+
+// assertUnrecognisedFieldsMasked decodes a JSON object and checks that each key
+// of inertFieldChannelBody that delivery never reads holds the masked placeholder.
+func assertUnrecognisedFieldsMasked(t *testing.T, label string, object json.RawMessage) {
+	t.Helper()
+	var fields map[string]any
+	if err := json.Unmarshal(object, &fields); err != nil {
+		t.Fatalf("%s: decode: %v", label, err)
+	}
+	for _, key := range []string{"auth", "account", "extra", "nested"} {
+		if fields[key] != "[REDACTED]" {
+			t.Errorf("%s: %s = %v, want [REDACTED]", label, key, fields[key])
+		}
+	}
+}
+
+// TestCreateChannel_RefusesKeysDeliveryDoesNotRead covers config keys delivery
+// never reads: the API refuses them at the first such key in sorted order.
+func TestCreateChannel_RefusesKeysDeliveryDoesNotRead(t *testing.T) {
 	t.Parallel()
 	f := newChannelRedactionFixture(t)
+
+	resp := doCreateChannel(t, context.Background(), f.ts, f.ownerToken, f.orgID, inertFieldChannelBody)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	status, detail := channelConfigProblem(t, resp)
+	if status != http.StatusUnprocessableEntity || detail.Location != "body.config.account" || detail.Message != validation.MsgUnexpectedProperty {
+		t.Errorf("got %d {location %q, message %q}, want 422 {location body.config.account, message %q}",
+			status, detail.Location, detail.Message, validation.MsgUnexpectedProperty)
+	}
+}
+
+// TestChannelConfig_StoredUnrecognisedFieldsMasked covers a row stored with
+// keys delivery never reads before the API refused them: they are shown masked,
+// a PATCH that leaves config alone succeeds, and sending them back is refused.
+func TestChannelConfig_StoredUnrecognisedFieldsMasked(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
 	ctx := context.Background()
+	_, ts, aw := newAuditServer(t, db)
 
-	createResp := doCreateChannel(t, ctx, f.ts, f.ownerToken, f.orgID, inertFieldChannelBody)
-	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
-	var created struct {
-		ID string `json:"id"`
+	reg := doRegister(t, ctx, ts, "legacy-channel@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "legacy-channel@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+	orgID := uuid.MustParse(reg.OrgID)
+
+	var body struct {
+		Config json.RawMessage `json:"config"`
 	}
-	decodeCreated(t, createResp, &created)
+	if err := json.Unmarshal([]byte(inertFieldChannelBody), &body); err != nil {
+		t.Fatalf("decode fixture body: %v", err)
+	}
+	row, _, err := db.CreateNotificationChannel(ctx, orgID, "Legacy Hook", "webhook", body.Config)
+	if err != nil {
+		t.Fatalf("store legacy channel: %v", err)
+	}
+	channelID := row.ID.String()
 
-	getResp := doGetChannel(t, ctx, f.ts, f.ownerToken, f.orgID, created.ID)
+	getResp := doGetChannel(t, ctx, ts, token, reg.OrgID, channelID)
 	defer getResp.Body.Close() //nolint:errcheck,gosec // G104
-	raw, _ := io.ReadAll(getResp.Body)
-	if strings.Contains(string(raw), "inert-") {
-		t.Fatalf("response exposes an unrecognised field: %s", raw)
+	raw, err := io.ReadAll(getResp.Body)
+	if err != nil {
+		t.Fatalf("read get response: %v", err)
 	}
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("get: got %d: %s", getResp.StatusCode, raw)
+	}
+	assertNoInertValue(t, "get response", string(raw))
 	var read ChannelEntry
 	if err := json.Unmarshal(raw, &read); err != nil {
 		t.Fatalf("decode get: %v", err)
 	}
+	assertUnrecognisedFieldsMasked(t, "get response config", read.Config)
 
-	patchResp := doPatchChannel(t, ctx, f.ts, f.ownerToken, f.orgID, created.ID, `{"config":`+string(read.Config)+`}`)
+	renameResp := doPatchChannel(t, ctx, ts, token, reg.OrgID, channelID, `{"name":"Renamed Legacy Hook"}`)
+	defer renameResp.Body.Close() //nolint:errcheck,gosec // G104
+	renamed, err := io.ReadAll(renameResp.Body)
+	if err != nil {
+		t.Fatalf("read rename patch response: %v", err)
+	}
+	if renameResp.StatusCode != http.StatusOK {
+		t.Fatalf("rename patch: got %d: %s", renameResp.StatusCode, renamed)
+	}
+	assertNoInertValue(t, "rename patch response", string(renamed))
+	aw.Flush()
+	entry := findAuditEntry(t, db, orgID, "channel", "update")
+	if entry == nil {
+		t.Fatal("no audit entry for channel update")
+	}
+	assertNoInertValue(t, "audit old_state", string(entry.OldState))
+	assertNoInertValue(t, "audit new_state", string(entry.NewState))
+	assertUnrecognisedFieldsMasked(t, "audit old_state", entry.OldState)
+	assertUnrecognisedFieldsMasked(t, "audit new_state", entry.NewState)
+
+	before, err := db.GetNotificationChannelForDelivery(ctx, row.ID)
+	if err != nil || before == nil {
+		t.Fatalf("load channel: row=%v err=%v", before, err)
+	}
+	patchResp := doPatchChannel(t, ctx, ts, token, reg.OrgID, channelID, `{"config":`+string(read.Config)+`}`)
 	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
-	patched, _ := io.ReadAll(patchResp.Body)
-	if patchResp.StatusCode != http.StatusOK {
-		t.Fatalf("round trip patch: got %d: %s", patchResp.StatusCode, patched)
+	status, detail := channelConfigProblem(t, patchResp)
+	if status != http.StatusUnprocessableEntity || detail.Location != "body.config.account" || detail.Message != validation.MsgUnexpectedProperty {
+		t.Errorf("round trip patch: got %d {location %q, message %q}, want 422 {location body.config.account, message %q}",
+			status, detail.Location, detail.Message, validation.MsgUnexpectedProperty)
 	}
-
-	row, err := f.db.GetNotificationChannelForDelivery(ctx, uuid.MustParse(created.ID))
-	if err != nil || row == nil {
-		t.Fatalf("load channel: row=%v err=%v", row, err)
+	after, err := db.GetNotificationChannelForDelivery(ctx, row.ID)
+	if err != nil || after == nil {
+		t.Fatalf("reload channel: row=%v err=%v", after, err)
 	}
-	for _, want := range []string{"inert-plain-secret", "inert-array-secret", "inert-nested-secret", "9007199254740993"} {
-		if !strings.Contains(string(row.Config), want) {
-			t.Errorf("stored config lost %q: %s", want, row.Config)
-		}
-	}
-	if strings.Contains(string(row.Config), "[REDACTED]") || strings.Contains(string(row.Config), "/***") {
-		t.Errorf("stored config holds placeholder text: %s", row.Config)
+	if !bytes.Equal(after.Config, before.Config) {
+		t.Errorf("refused patch changed stored config: before %s, after %s", before.Config, after.Config)
 	}
 }
 

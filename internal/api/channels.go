@@ -6,17 +6,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/mail"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/validation"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
@@ -31,13 +33,13 @@ import (
 type createChannelBody struct {
 	Name   string          `json:"name"`
 	Type   string          `json:"type"`
-	Config json.RawMessage `json:"config"`
+	Config json.RawMessage `json:"config" doc:"A JSON object. Webhook channels take url (required, not blank) and custom_headers (an object of header names to string values); email channels take recipients (an array of 1 to 50 RFC 5322 addresses, no address twice). Key names are case-sensitive, and any other key is refused. A custom header name must be an HTTP token and differ from the other names by more than letter case; a value must not contain a control character other than tab. These names are reserved and refused: Host, Content-Type, Content-Length, Transfer-Encoding, Connection, Upgrade, Keep-Alive, Proxy-Connection, TE, Trailer, X-CVErt-Timestamp, X-CVErtOps-Signature, X-CVErtOps-Signature-Secondary."`
 }
 
 // patchChannelBody uses pointer fields so only supplied keys are updated.
 type patchChannelBody struct {
 	Name   *string          `json:"name,omitempty"`
-	Config *json.RawMessage `json:"config,omitempty" doc:"Replaces the whole config. Masked values read from this API may be sent back to keep the stored secret while the webhook scheme and host are unchanged. A changed scheme or host needs each secret sent again."`
+	Config *json.RawMessage `json:"config,omitempty" doc:"Replaces the whole config, with the keys the channel's type takes: url (not blank) and custom_headers for webhook, recipients (1 to 50 RFC 5322 addresses, no address twice) for email. Key names are case-sensitive, and any other key is refused. A custom header name must be an HTTP token and differ from the other names by more than letter case; a value must not contain a control character other than tab. These names are reserved and refused: Host, Content-Type, Content-Length, Transfer-Encoding, Connection, Upgrade, Keep-Alive, Proxy-Connection, TE, Trailer, X-CVErt-Timestamp, X-CVErtOps-Signature, X-CVErtOps-Signature-Secondary. Masked values read from this API may be sent back to keep the stored secret while the webhook scheme and host are unchanged. A changed scheme or host needs each secret sent again."`
 }
 
 // ChannelEntry is the API shape of a notification channel. It is exported so
@@ -116,29 +118,9 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 	}
 	req.Config = resolved
 
-	// For webhook channels, validate that config contains a non-empty, SSRF-safe url.
-	if req.Type == "webhook" {
-		var cfg map[string]any
-		if err := json.Unmarshal(req.Config, &cfg); err != nil {
-			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "webhook config must be valid JSON with a url field", Location: "body.config"})
-			return
-		}
-		urlVal, ok := cfg["url"].(string)
-		if !ok || strings.TrimSpace(urlVal) == "" {
-			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "webhook config must include a non-empty url", Location: "body.config.url"})
-			return
-		}
-		if err := validateWebhookURL(urlVal, srv.privateDests); err != nil {
-			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: err.Error(), Location: "body.config.url"})
-			return
-		}
-	}
-
-	if req.Type == "email" {
-		if _, err := validateEmailConfig(req.Config); err != nil {
-			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: err.Error(), Location: "body.config.recipients"})
-			return
-		}
+	if detail := srv.validateChannelConfig(req.Type, req.Config); detail != nil {
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", detail)
+		return
 	}
 
 	row, secret, err := srv.store.CreateNotificationChannel(r.Context(), orgID, req.Name, req.Type, req.Config)
@@ -299,27 +281,9 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Config = &resolved
 		// Re-validate config when updated.
-		if current.Type == "webhook" {
-			var cfg map[string]any
-			if err := json.Unmarshal(*req.Config, &cfg); err != nil {
-				writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "webhook config must be valid JSON with a url field", Location: "body.config"})
-				return
-			}
-			urlVal, ok := cfg["url"].(string)
-			if !ok || strings.TrimSpace(urlVal) == "" {
-				writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "webhook config must include a non-empty url", Location: "body.config.url"})
-				return
-			}
-			if err := validateWebhookURL(urlVal, srv.privateDests); err != nil {
-				writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: err.Error(), Location: "body.config.url"})
-				return
-			}
-		}
-		if current.Type == "email" {
-			if _, err := validateEmailConfig(*req.Config); err != nil {
-				writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: err.Error(), Location: "body.config.recipients"})
-				return
-			}
+		if detail := srv.validateChannelConfig(current.Type, *req.Config); detail != nil {
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", detail)
+			return
 		}
 		params.Config = *req.Config
 	}
@@ -561,10 +525,19 @@ func (srv *Server) testWebhookChannel(ctx context.Context, channelID uuid.UUID) 
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
 
+	// The error names the offending key, JSON pointer or header name but no
+	// stored value: v2 puts the value in a parse error only for numeric and
+	// boolean fields, which the webhook settings type has none of, and
+	// notify.HeaderError and notify.ErrWebhookNoURL are fixed text.
+	cfg, err := notify.ChannelWebhookConfig(delivery)
+	if err != nil {
+		return fmt.Errorf("parse webhook config: %w", err)
+	}
+
 	// The full error can carry the resolved address (from the SSRF dial check
 	// or DNS), which would let an org admin map internal DNS by testing host
 	// names, so the caller gets only what org members may read.
-	if err := notify.Send(ctx, client, notify.ChannelWebhookConfig(delivery), payload); err != nil {
+	if err := notify.Send(ctx, client, cfg, payload); err != nil {
 		slog.WarnContext(ctx, "channel test webhook failed", "channel_id", channelID, "error", err)
 		return notify.ErrorForOrg(err)
 	}
@@ -576,9 +549,14 @@ func (srv *Server) testEmailChannel(ctx context.Context, config json.RawMessage)
 		return fmt.Errorf("SMTP not configured — set SMTP_HOST to enable email delivery")
 	}
 
-	recipients, err := validateEmailConfig(config)
+	// The error names the problem but not the stored recipient it concerns.
+	recipients, err := readEmailRecipients(config)
 	if err != nil {
-		return err
+		reason := channelConfigParseError(err, emailConfigNotObject).Message
+		if recipientErr, ok := errors.AsType[*notify.RecipientError](err); ok {
+			reason = recipientErr.Problem
+		}
+		return errors.New("stored email config is invalid: " + reason)
 	}
 
 	smtpCfg := notify.SmtpConfig{
@@ -724,34 +702,100 @@ func channelAuditState(name, chType string, config json.RawMessage) map[string]a
 	return state
 }
 
-// validateEmailConfig validates email channel config:
-// - recipients must be non-empty, max 50, valid RFC 5322 addresses, no duplicates.
-func validateEmailConfig(config json.RawMessage) ([]string, error) {
-	var cfg struct {
-		Recipients []string `json:"recipients"`
+// validateChannelConfig checks a channel's config with the parser delivery uses
+// for its type and returns the error detail to report, or nil if it is valid.
+// A type with no parser is refused.
+func (srv *Server) validateChannelConfig(chType string, config json.RawMessage) *huma.ErrorDetail {
+	switch chType {
+	case "webhook":
+		return validateWebhookConfig(config, srv.privateDests)
+	case "email":
+		return validateEmailConfig(config)
+	default:
+		return &huma.ErrorDetail{Message: "type must be 'webhook' or 'email'", Location: "body.type"}
 	}
-	if err := json.Unmarshal(config, &cfg); err != nil {
-		return nil, errors.New("email config must include a recipients array")
+}
+
+// emailConfigNotObject is the message for email config that is not a JSON object.
+const emailConfigNotObject = "email config must include a recipients array"
+
+// validateWebhookConfig validates webhook channel config: it must decode with
+// notify.ParseWebhookSettings, pass notify.CheckWebhookSettings (non-empty url,
+// sendable custom headers), and hold an SSRF-safe url.
+func validateWebhookConfig(config json.RawMessage, private notify.PrivateDestinations) *huma.ErrorDetail {
+	settings, err := notify.ParseWebhookSettings(config)
+	if err != nil {
+		return channelConfigParseError(err, "webhook config must be valid JSON with a url field")
 	}
-	if len(cfg.Recipients) == 0 {
-		return nil, errors.New("email config must include at least one recipient")
-	}
-	if len(cfg.Recipients) > 50 {
-		return nil, errors.New("email config must not exceed 50 recipients")
-	}
-	seen := make(map[string]bool, len(cfg.Recipients))
-	for _, r := range cfg.Recipients {
-		addr, err := mail.ParseAddress(r)
-		if err != nil {
-			return nil, fmt.Errorf("invalid email recipient %q: %w", r, err)
+	if err := notify.CheckWebhookSettings(settings); err != nil {
+		if headerErr, ok := errors.AsType[*notify.HeaderError](err); ok {
+			location := "body.config.custom_headers"
+			if headerErr.Name != "" {
+				location = jsonLocation("body.config", jsontext.Pointer("/custom_headers").AppendToken(headerErr.Name))
+			}
+			return &huma.ErrorDetail{Message: headerErr.Message, Location: location}
 		}
-		normalized := strings.ToLower(addr.Address)
-		if seen[normalized] {
-			return nil, fmt.Errorf("duplicate email recipient: %s", normalized)
+		if errors.Is(err, notify.ErrWebhookNoURL) {
+			return &huma.ErrorDetail{Message: notify.ErrWebhookNoURL.Error(), Location: "body.config.url"}
 		}
-		seen[normalized] = true
+		return &huma.ErrorDetail{Message: "webhook config is invalid", Location: "body.config"}
 	}
-	return cfg.Recipients, nil
+	if err := validateWebhookURL(settings.URL, private); err != nil {
+		return &huma.ErrorDetail{Message: err.Error(), Location: "body.config.url"}
+	}
+	return nil
+}
+
+// validateEmailConfig validates email channel config with readEmailRecipients.
+// Recipient errors are reported at body.config.recipients with the recipient
+// named, since the caller just sent it.
+func validateEmailConfig(config json.RawMessage) *huma.ErrorDetail {
+	_, err := readEmailRecipients(config)
+	if err == nil {
+		return nil
+	}
+	if recipientErr, ok := errors.AsType[*notify.RecipientError](err); ok {
+		return &huma.ErrorDetail{Message: recipientErr.Detail(), Location: "body.config.recipients"}
+	}
+	return channelConfigParseError(err, emailConfigNotObject)
+}
+
+// readEmailRecipients decodes email config with notify.ParseEmailSettings and
+// checks its recipients with notify.CheckEmailRecipients, as delivery does.
+func readEmailRecipients(config json.RawMessage) ([]string, error) {
+	settings, err := notify.ParseEmailSettings(config)
+	if err != nil {
+		return nil, err
+	}
+	if err := notify.CheckEmailRecipients(settings.Recipients); err != nil {
+		return nil, err
+	}
+	return settings.Recipients, nil
+}
+
+// channelConfigParseError maps an error from notify.ParseWebhookSettings or
+// notify.ParseEmailSettings to the error detail for the config member it names.
+// Any other error, such as config that is not a JSON object, is reported at
+// body.config with the fallback message.
+func channelConfigParseError(err error, fallback string) *huma.ErrorDetail {
+	semErr, ok := errors.AsType[*jsonv2.SemanticError](err)
+	if !ok {
+		return &huma.ErrorDetail{Message: fallback, Location: "body.config"}
+	}
+	ptr := semErr.JSONPointer
+	switch {
+	case errors.Is(semErr.Err, jsonv2.ErrUnknownName):
+		return &huma.ErrorDetail{Message: validation.MsgUnexpectedProperty, Location: jsonLocation("body.config", ptr)}
+	case ptr == "/url":
+		return &huma.ErrorDetail{Message: notify.ErrWebhookNoURL.Error(), Location: "body.config.url"}
+	case ptr == "/custom_headers":
+		return &huma.ErrorDetail{Message: "custom_headers must be an object of header names to strings", Location: "body.config.custom_headers"}
+	case strings.HasPrefix(string(ptr), "/custom_headers/"):
+		return &huma.ErrorDetail{Message: "custom_headers values must be strings", Location: jsonLocation("body.config", ptr)}
+	case ptr == "/recipients" || strings.HasPrefix(string(ptr), "/recipients/"):
+		return &huma.ErrorDetail{Message: "email config must include a recipients array", Location: "body.config.recipients"}
+	}
+	return &huma.ErrorDetail{Message: fallback, Location: "body.config"}
 }
 
 // validateWebhookURL performs SSRF-safe static validation of a webhook URL at registration time.

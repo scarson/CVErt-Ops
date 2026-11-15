@@ -5,6 +5,7 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -261,6 +262,25 @@ func TestDecodeJSON_UnknownMember(t *testing.T) {
 					got.Message, got.Location, "unexpected property", tt.wantLocation)
 			}
 		})
+	}
+}
+
+// TestJSONLocation verifies that a JSON Pointer is rendered under any root in
+// huma's location format.
+func TestJSONLocation(t *testing.T) {
+	tests := []struct {
+		root string
+		ptr  jsontext.Pointer
+		want string
+	}{
+		{root: "body", ptr: "/items/1/idd", want: "body.items[1].idd"},
+		{root: "body.config", ptr: "/URL", want: "body.config.URL"},
+		{root: "body.config", ptr: "/custom_headers/X-A", want: "body.config.custom_headers.X-A"},
+	}
+	for _, tt := range tests {
+		if got := jsonLocation(tt.root, tt.ptr); got != tt.want {
+			t.Errorf("jsonLocation(%q, %q) = %q, want %q", tt.root, tt.ptr, got, tt.want)
+		}
 	}
 }
 

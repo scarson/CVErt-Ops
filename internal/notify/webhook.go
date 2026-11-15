@@ -8,11 +8,12 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -29,21 +30,32 @@ type WebhookConfig struct {
 }
 
 // ChannelWebhookConfig builds the WebhookConfig for a webhook channel from its stored
-// config JSON ({"url": ..., "custom_headers": {...}}) and signing secrets. Delivery and
-// the channel test endpoint both use it so a test sends exactly what a delivery would.
-// Malformed config yields an empty URL, which Send rejects.
-func ChannelWebhookConfig(ch *store.NotificationChannelForDeliveryRow) WebhookConfig {
-	var config struct {
-		URL           string            `json:"url"`
-		CustomHeaders map[string]string `json:"custom_headers"`
+// config JSON ({"url": ..., "custom_headers": {...}}), decoded by ParseWebhookSettings,
+// and its signing secrets. Delivery and the channel test endpoint both use it so a test
+// sends exactly what a delivery would. Config the parser or CheckWebhookSettings
+// refuses is returned as an error.
+func ChannelWebhookConfig(ch *store.NotificationChannelForDeliveryRow) (WebhookConfig, error) {
+	settings, err := ParseWebhookSettings(ch.Config)
+	if err != nil {
+		return WebhookConfig{}, err
 	}
-	_ = json.Unmarshal(ch.Config, &config) //nolint:errcheck // empty URL on bad JSON causes Send to fail
+	if err := CheckWebhookSettings(settings); err != nil {
+		return WebhookConfig{}, err
+	}
 	return WebhookConfig{
-		URL:                    config.URL,
+		URL:                    settings.URL,
 		SigningSecret:          ch.SigningSecret.String,
 		SigningSecretSecondary: ch.SigningSecretSecondary.String,
-		CustomHeaders:          config.CustomHeaders,
-	}
+		CustomHeaders:          settings.CustomHeaders,
+	}, nil
+}
+
+// ReservedHeaderNames returns the custom header names a channel may not set,
+// in lowercase and sorted.
+func ReservedHeaderNames() []string {
+	names := slices.Collect(maps.Keys(deniedHeaders))
+	slices.Sort(names)
+	return names
 }
 
 // deniedHeaders are custom header keys that callers must not override.
@@ -53,6 +65,11 @@ var deniedHeaders = map[string]bool{
 	"content-length":                 true,
 	"transfer-encoding":              true,
 	"connection":                     true,
+	"upgrade":                        true,
+	"keep-alive":                     true,
+	"proxy-connection":               true,
+	"te":                             true,
+	"trailer":                        true,
 	"x-cvert-timestamp":              true,
 	"x-cvertops-signature":           true,
 	"x-cvertops-signature-secondary": true,
@@ -67,7 +84,8 @@ func Send(ctx context.Context, client *http.Client, cfg WebhookConfig, payload [
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// Apply custom headers, skipping denied keys.
+	// Apply custom headers, skipping denied keys. ChannelWebhookConfig already
+	// refuses them; this also covers a WebhookConfig built another way.
 	for k, v := range cfg.CustomHeaders {
 		if !deniedHeaders[strings.ToLower(k)] {
 			req.Header.Set(k, v)

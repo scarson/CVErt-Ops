@@ -149,13 +149,19 @@ func withoutSchemaLink(body []byte) []byte {
 	return stripped
 }
 
-// bodyLocation renders the JSON Pointer to an unknown member in the location
-// format huma uses for validation errors, such as body.items[1].name. The last
-// token is the member name; a numeric token before it is an array index,
-// because no request struct has numeric member names.
+// bodyLocation renders the JSON Pointer to a request body member in the
+// location format huma uses for validation errors, such as body.items[1].name.
 func bodyLocation(ptr jsontext.Pointer) string {
+	return jsonLocation("body", ptr)
+}
+
+// jsonLocation renders the JSON Pointer to an object member, relative to the
+// value at root, in huma's location format, such as body.config.custom_headers.X-A.
+// The last token is the member name; a numeric token before it is an array
+// index, because no request struct has numeric member names.
+func jsonLocation(root string, ptr jsontext.Pointer) string {
 	var b strings.Builder
-	b.WriteString("body")
+	b.WriteString(root)
 	last := ptr.LastToken()
 	for tok := range ptr.Parent().Tokens() {
 		if isArrayIndex(tok) {

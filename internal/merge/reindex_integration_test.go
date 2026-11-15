@@ -150,14 +150,33 @@ func TestRebuildSearchIndex_RetriesBatchAfterDeadlock(t *testing.T) {
 		lowID, highID = highID, lowID
 	}
 
+	// Postgres checks a waiting backend for a deadlock once, deadlock_timeout
+	// after its wait begins, and the backend that finds the cycle is the one
+	// aborted. For the rebuild to be the victim regardless of scheduling, the
+	// cycle must already exist when the rebuild starts waiting on highID, and
+	// this session's own check must come long after the rebuild's (1s default).
+	//
 	// This session plays the merge transaction: destination lock first.
 	conn, err := s.DB().Conn(ctx)
 	if err != nil {
 		t.Fatalf("open conn: %v", err)
 	}
 	defer conn.Close() //nolint:errcheck
+	if _, err := conn.ExecContext(ctx, "SET deadlock_timeout = '60s'"); err != nil {
+		t.Fatalf("set deadlock_timeout: %v", err)
+	}
 	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", merge.CVEAdvisoryKey(highID)); err != nil {
 		t.Fatalf("lock %s: %v", highID, err)
+	}
+
+	// A third session holds lowID so the rebuild queues on it first.
+	gate, err := s.DB().Conn(ctx)
+	if err != nil {
+		t.Fatalf("open gate conn: %v", err)
+	}
+	defer gate.Close() //nolint:errcheck
+	if _, err := gate.ExecContext(ctx, "SELECT pg_advisory_lock($1)", merge.CVEAdvisoryKey(lowID)); err != nil {
+		t.Fatalf("lock %s: %v", lowID, err)
 	}
 
 	rebuildErr := make(chan error, 1)
@@ -165,32 +184,31 @@ func TestRebuildSearchIndex_RetriesBatchAfterDeadlock(t *testing.T) {
 		_, err := merge.RebuildSearchIndex(ctx, s.Store, 100)
 		rebuildErr <- err
 	}()
+	waitForAdvisoryWaiters(t, s, merge.CVEAdvisoryKey(lowID), 1)
 
-	// Wait until the rebuild holds lowID and is blocked on highID. pg_locks
-	// covers the whole cluster, which other tests' databases share.
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		var waiting int
-		if err := s.DB().QueryRowContext(ctx, `
-			SELECT count(*) FROM pg_locks
-			WHERE locktype = 'advisory' AND NOT granted
-			  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
-		).Scan(&waiting); err != nil {
-			t.Fatalf("read pg_locks: %v", err)
-		}
-		if waiting > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("rebuild never blocked on the held advisory lock")
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Queue this session on lowID behind the rebuild. Waiters are granted in
+	// queue order, so when the gate releases lowID the rebuild takes it and
+	// then waits on highID, closing the cycle as its wait begins.
+	lockErr := make(chan error, 1)
+	go func() {
+		_, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", merge.CVEAdvisoryKey(lowID))
+		lockErr <- err
+	}()
+	waitForAdvisoryWaiters(t, s, merge.CVEAdvisoryKey(lowID), 2)
+	if _, err := gate.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", merge.CVEAdvisoryKey(lowID)); err != nil {
+		t.Fatalf("gate unlock %s: %v", lowID, err)
 	}
 
-	// Close the cycle. The rebuild has waited longer, so its deadlock check
-	// fires first and Postgres aborts its transaction, granting this lock.
-	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", merge.CVEAdvisoryKey(lowID)); err != nil {
-		t.Fatalf("setup: expected the rebuild to be the deadlock victim, but this session was: %v", err)
+	// The rebuild holds lowID until its transaction ends, and it cannot commit
+	// while waiting on highID, so this lock is granted only once Postgres has
+	// aborted the rebuild's transaction.
+	select {
+	case err := <-lockErr:
+		if err != nil {
+			t.Fatalf("setup: expected the rebuild to be the deadlock victim, but this session was: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("deadlock between the rebuild and this session was not broken")
 	}
 	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_unlock_all()"); err != nil {
 		t.Fatalf("unlock: %v", err)
@@ -208,6 +226,34 @@ func TestRebuildSearchIndex_RetriesBatchAfterDeadlock(t *testing.T) {
 		if got := readFTSDocument(t, s, id); got != doc {
 			t.Errorf("%s fts_document after retried rebuild:\n got  %s\n want %s", id, got, doc)
 		}
+	}
+}
+
+// waitForAdvisoryWaiters waits until n sessions in this test's database are
+// queued for the advisory lock key. pg_locks covers the whole cluster, which
+// other tests' databases share, and splits a bigint key into classid (high 32
+// bits) and objid (low 32 bits).
+func waitForAdvisoryWaiters(t *testing.T, s *testutil.TestDB, key int64, n int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := s.DB().QueryRowContext(context.Background(), `
+			SELECT count(*) FROM pg_locks
+			WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
+			  AND classid::bigint = $1 AND objid::bigint = $2
+			  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
+			int64(uint32(key>>32)), int64(uint32(key)), //nolint:gosec // G115: splitting the key into its two 32-bit halves is intended
+		).Scan(&waiting); err != nil {
+			t.Fatalf("read pg_locks: %v", err)
+		}
+		if waiting == n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d sessions waiting on advisory lock %d, want %d", waiting, key, n)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

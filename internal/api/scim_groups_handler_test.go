@@ -604,6 +604,7 @@ func TestSCIMPatchGroup_DuplicateAttributeRefused(t *testing.T) {
 	defer patchResp.Body.Close()
 
 	require.Equal(t, http.StatusBadRequest, patchResp.StatusCode)
+	assertSCIMContentType(t, patchResp)
 	scimErr := decodeSCIMErrorResponse(t, patchResp)
 	assert.Equal(t, "400", scimErr.Status)
 	assert.Equal(t, "invalidValue", scimErr.SCIMType)

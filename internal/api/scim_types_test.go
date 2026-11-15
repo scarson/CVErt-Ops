@@ -312,6 +312,37 @@ func TestDecodeSCIMBody_Refused(t *testing.T) {
 	}
 }
 
+// TestDecodeSCIMBody_RefusedNestedAndPatchOp checks the refusal of a
+// case-variant duplicate inside a nested object and of two spellings of the
+// PatchOp "Operations" attribute.
+func TestDecodeSCIMBody_RefusedNestedAndPatchOp(t *testing.T) {
+	t.Parallel()
+
+	t.Run("case-variant duplicate inside a group member", func(t *testing.T) {
+		t.Parallel()
+		w := httptest.NewRecorder()
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/Groups",
+			strings.NewReader(`{"members":[{"value":"A","VALUE":"B"}]}`))
+		var body scimGroupRequest
+		if decodeSCIMBody(w, r, &body, "invalidValue") {
+			t.Fatalf("decodeSCIMBody = true, want false (decoded %+v)", body)
+		}
+		assertSCIMBadRequest(t, w, "invalidValue")
+	})
+
+	t.Run("two spellings of Operations", func(t *testing.T) {
+		t.Parallel()
+		w := httptest.NewRecorder()
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodPatch, "/Groups/x",
+			strings.NewReader(`{"Operations":[],"operations":[]}`))
+		var patch SCIMPatchOp
+		if decodeSCIMBody(w, r, &patch, "invalidValue") {
+			t.Fatalf("decodeSCIMBody = true, want false (decoded %+v)", patch)
+		}
+		assertSCIMBadRequest(t, w, "invalidValue")
+	})
+}
+
 func TestDecodeSCIMBody_Accepted(t *testing.T) {
 	t.Parallel()
 

@@ -5,6 +5,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -33,6 +34,17 @@ func newHumaConfig() huma.Config {
 	// Spec paths are relative to where the API router is mounted. Clients and the
 	// documentation page read the prefix from here.
 	cfg.Servers = []*huma.Server{{URL: "/api/v1"}}
+	// Request bodies decode with encoding/json/v2's defaults, as chi bodies do in
+	// decodeJSON: duplicate names and invalid UTF-8 are refused and names match
+	// case-sensitively. Unknown members are left to huma's schema validation, which
+	// reports them with huma's locations. Responses keep huma's encoder.
+	// huma looks a request's format up by its media type, or by the suffix of a
+	// "+json" media type, so these two keys cover every JSON body huma accepts.
+	requestJSON := huma.Format{
+		Marshal:   huma.DefaultJSONFormat.Marshal,
+		Unmarshal: func(data []byte, v any) error { return jsonv2.Unmarshal(data, v) },
+	}
+	cfg.Formats = map[string]huma.Format{"application/json": requestJSON, "json": requestJSON}
 	return cfg
 }
 

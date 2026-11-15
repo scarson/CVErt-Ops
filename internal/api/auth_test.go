@@ -338,6 +338,100 @@ func TestLoginUnknownFieldRefused(t *testing.T) {
 	}
 }
 
+// TestLoginMalformedBodyRefused verifies that a huma-registered operation
+// decodes its body with encoding/json/v2's defaults, as decodeJSON does for chi
+// handlers: a duplicate member name or invalid UTF-8 is a 400 at "body", not a
+// body decoded by picking the last duplicate or replacing the invalid byte.
+// Bodies are sent byte for byte. Response bodies are not logged, because huma
+// echoes the request body, password included, in the problem's errors[0].value.
+func TestLoginMalformedBodyRefused(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	const email = "loginmalformed@example.com"
+	const password = "test-password-1234"
+	doRegister(t, ctx, ts, email, password)
+
+	postLogin := func(t *testing.T, contentType string, body []byte) *http.Response {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/login", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("build login request: %v", err)
+		}
+		req.Header.Set("Content-Type", contentType)
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+		if err != nil {
+			t.Fatalf("login request: %v", err)
+		}
+		return resp
+	}
+
+	duplicateName := []byte(`{"email":"other@example.com","email":"` + email + `","password":"` + password + `"}`)
+	tests := []struct {
+		name        string
+		contentType string
+		body        []byte
+	}{
+		{
+			name:        "duplicate name",
+			contentType: "application/json",
+			body:        duplicateName,
+		},
+		{
+			// huma selects the format for a "+json" media type by its "json" suffix.
+			name:        "duplicate name with json suffix media type",
+			contentType: "application/merge-patch+json",
+			body:        duplicateName,
+		},
+		{
+			name:        "invalid UTF-8",
+			contentType: "application/json; charset=utf-8",
+			body:        []byte("{\"email\":\"" + email + "\",\"password\":\"" + password + "\xff\"}"),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := postLogin(t, tc.contentType, tc.body)
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			}
+			if cookies := resp.Cookies(); len(cookies) != 0 {
+				t.Errorf("response set %d cookies, want none", len(cookies))
+			}
+			var problem huma.ErrorModel
+			if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+				t.Fatalf("decode problem: %v", err)
+			}
+			if problem.Status != http.StatusBadRequest {
+				t.Errorf("problem status = %d, want 400", problem.Status)
+			}
+			if len(problem.Errors) != 1 {
+				t.Fatalf("problem has %d errors, want 1", len(problem.Errors))
+			}
+			if problem.Errors[0].Location != "body" {
+				t.Errorf("errors[0].location = %q, want %q", problem.Errors[0].Location, "body")
+			}
+		})
+	}
+
+	t.Run("valid body", func(t *testing.T) {
+		resp := postLogin(t, "application/json", []byte(`{"email":"`+email+`","password":"`+password+`"}`))
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if cookieValue(resp, "access_token") == "" {
+			t.Error("access_token cookie not set")
+		}
+		if cookieValue(resp, "refresh_token") == "" {
+			t.Error("refresh_token cookie not set")
+		}
+	})
+}
+
 func TestLoginWrongPassword(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

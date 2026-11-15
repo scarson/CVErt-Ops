@@ -92,8 +92,8 @@ func isHeaderValue(value string) bool {
 
 // RecipientError reports email recipients that delivery refuses. Problem, which
 // Error returns, is fixed text that names no recipient: delivery errors are
-// shown to org viewers, and a stored recipient without '@' is not masked in
-// channel responses. Detail adds the recipient when there is one.
+// shown to org viewers, while channel responses mask a recipients list that
+// holds an entry without '@'. Detail adds the recipient when there is one.
 type RecipientError struct {
 	Problem string
 	detail  string

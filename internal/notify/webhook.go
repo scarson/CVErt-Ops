@@ -11,7 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +48,14 @@ func ChannelWebhookConfig(ch *store.NotificationChannelForDeliveryRow) (WebhookC
 		SigningSecretSecondary: ch.SigningSecretSecondary.String,
 		CustomHeaders:          settings.CustomHeaders,
 	}, nil
+}
+
+// ReservedHeaderNames returns the custom header names a channel may not set,
+// in lowercase and sorted.
+func ReservedHeaderNames() []string {
+	names := slices.Collect(maps.Keys(deniedHeaders))
+	slices.Sort(names)
+	return names
 }
 
 // deniedHeaders are custom header keys that callers must not override.

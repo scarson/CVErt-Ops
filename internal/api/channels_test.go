@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1835,6 +1836,34 @@ func TestTestEmailChannel_StoredConfigErrorNamesNoRecipient(t *testing.T) {
 		}
 		if err != nil && strings.Contains(strings.ToLower(err.Error()), "secret-person") {
 			t.Errorf("testEmailChannel(%s) error echoes a stored recipient: %v", tc.stored, err)
+		}
+	}
+}
+
+// TestChannelConfigDoc_ListsReservedHeaders checks that the create and PATCH
+// config doc strings list every header name delivery refuses to let a channel set.
+func TestChannelConfigDoc_ListsReservedHeaders(t *testing.T) {
+	t.Parallel()
+	const listIntro = "These names are reserved and refused: "
+	for _, body := range []any{createChannelBody{}, patchChannelBody{}} {
+		field, ok := reflect.TypeOf(body).FieldByName("Config")
+		if !ok {
+			t.Fatalf("%T has no Config field", body)
+		}
+		doc := field.Tag.Get("doc")
+		_, list, found := strings.Cut(doc, listIntro)
+		if !found {
+			t.Fatalf("%T Config doc has no %q list: %s", body, listIntro, doc)
+		}
+		list, _, _ = strings.Cut(list, ".")
+		documented := map[string]bool{}
+		for _, name := range strings.Split(list, ", ") {
+			documented[strings.ToLower(name)] = true
+		}
+		for _, name := range notify.ReservedHeaderNames() {
+			if !documented[name] {
+				t.Errorf("%T Config doc does not list reserved header %q: %s", body, name, list)
+			}
 		}
 	}
 }

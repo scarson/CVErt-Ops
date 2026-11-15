@@ -294,8 +294,8 @@ func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch
 	if err != nil {
 		return &permanentDeliveryError{err: fmt.Errorf("parse email config: %w", err)}
 	}
-	if len(emailCfg.Recipients) == 0 {
-		return &permanentDeliveryError{err: fmt.Errorf("email channel has no recipients")}
+	if err := CheckEmailRecipients(emailCfg.Recipients); err != nil {
+		return &permanentDeliveryError{err: fmt.Errorf("check email recipients: %w", err)}
 	}
 
 	var subject, htmlBody, textBody string

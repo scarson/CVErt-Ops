@@ -617,6 +617,102 @@ func TestWorker_WebhookHeaderNotStringFailsPermanently(t *testing.T) {
 	assertConfigFailure(t, s, ctx, chanID, "parse webhook config")
 }
 
+// TestWorker_WebhookBlankURLFailsPermanently covers a stored webhook config whose url is
+// blank: delivery fails at once instead of retrying a request that cannot be built.
+func TestWorker_WebhookBlankURLFailsPermanently(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	chanID := queueDeliveryForStoredConfig(t, s, ctx, "WorkerWebhookBlankURL", "webhook", `{"url":"  "}`)
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	runClaimUntilAttempted(t, s, ctx, w)
+
+	assertConfigFailure(t, s, ctx, chanID, "webhook config must include a non-empty url")
+}
+
+// TestWorker_WebhookReservedHeaderFailsPermanently covers a stored webhook config that
+// sets a header delivery computes itself: delivery refuses it and sends nothing.
+func TestWorker_WebhookReservedHeaderFailsPermanently(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	var called atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	chanID := queueDeliveryForStoredConfig(t, s, ctx, "WorkerWebhookReservedHeader", "webhook",
+		`{"url":"`+srv.URL+`","custom_headers":{"X-CVErt-Timestamp":"0"}}`)
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	runClaimUntilAttempted(t, s, ctx, w)
+
+	if n := called.Load(); n != 0 {
+		t.Errorf("webhook calls = %d, want 0", n)
+	}
+	assertConfigFailure(t, s, ctx, chanID, "custom_headers cannot set X-Cvert-Timestamp")
+}
+
+// TestWorker_EmailRecipientInvalidFailsPermanently covers a stored email config whose
+// recipient is not an RFC 5322 address: delivery refuses it without an SMTP connection.
+func TestWorker_EmailRecipientInvalidFailsPermanently(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close() //nolint:errcheck
+	var smtpConns atomic.Int32
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			smtpConns.Add(1)
+			conn.Close() //nolint:errcheck,gosec // G104: test listener only counts connections
+		}
+	}()
+
+	chanID := queueDeliveryForStoredConfig(t, s, ctx, "WorkerEmailRecipientInvalid", "email",
+		`{"recipients":["not-an-email"]}`)
+
+	w := notify.NewWorker(s.Store, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	}, notify.SmtpConfig{
+		Host: "127.0.0.1",
+		Port: ln.Addr().(*net.TCPAddr).Port,
+		From: "test@example.com",
+	}, "https://cvert.example.com")
+	runClaimUntilAttempted(t, s, ctx, w)
+
+	if n := smtpConns.Load(); n != 0 {
+		t.Errorf("SMTP connections = %d, want 0", n)
+	}
+	assertConfigFailure(t, s, ctx, chanID, "invalid email recipient")
+}
+
 // TestWorker_RetentionSchedule verifies that scheduleRetention enqueues a
 // retention_cleanup job when none is pending, and skips when one already exists.
 func TestWorker_RetentionSchedule(t *testing.T) {

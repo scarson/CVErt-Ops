@@ -370,3 +370,20 @@ func TestChannelWebhookConfig_CustomHeadersReachReceiver(t *testing.T) {
 	assert.ErrorIs(t, semErr.Err, jsonv2.ErrUnknownName)
 	assert.Equal(t, jsontext.Pointer("/headers"), semErr.JSONPointer)
 }
+
+// TestChannelWebhookConfig_RefusesWhatDeliveryCannotSend checks that delivery
+// reads stored webhook config through CheckWebhookSettings.
+func TestChannelWebhookConfig_RefusesWhatDeliveryCannotSend(t *testing.T) {
+	t.Parallel()
+	channel := func(config string) *store.NotificationChannelForDeliveryRow {
+		return &store.NotificationChannelForDeliveryRow{Type: "webhook", Config: json.RawMessage(config)}
+	}
+
+	_, err := notify.ChannelWebhookConfig(channel(`{"url":"  "}`))
+	assert.ErrorIs(t, err, notify.ErrWebhookNoURL)
+
+	_, err = notify.ChannelWebhookConfig(channel(`{"url":"https://h.example/x","custom_headers":{"Host":"evil.example"}}`))
+	headerErr, ok := errors.AsType[*notify.HeaderError](err)
+	require.True(t, ok, "error %v must be a *notify.HeaderError", err)
+	assert.Equal(t, "Host", headerErr.Name)
+}

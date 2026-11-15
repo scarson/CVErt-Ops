@@ -6,13 +6,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/mail"
 	"net/url"
 	"strings"
 	"time"
@@ -548,9 +548,14 @@ func (srv *Server) testEmailChannel(ctx context.Context, config json.RawMessage)
 		return fmt.Errorf("SMTP not configured — set SMTP_HOST to enable email delivery")
 	}
 
-	recipients, detail := validateEmailConfig(config)
-	if detail != nil {
-		return errors.New(detail.Message)
+	// The error names the problem but not the stored recipient it concerns.
+	recipients, err := readEmailRecipients(config)
+	if err != nil {
+		reason := channelConfigParseError(err, emailConfigNotObject).Message
+		if recipientErr, ok := errors.AsType[*notify.RecipientError](err); ok {
+			reason = recipientErr.Problem
+		}
+		return errors.New("stored email config is invalid: " + reason)
 	}
 
 	smtpCfg := notify.SmtpConfig{
@@ -704,21 +709,28 @@ func (srv *Server) validateChannelConfig(chType string, config json.RawMessage) 
 	case "webhook":
 		return validateWebhookConfig(config, srv.privateDests)
 	case "email":
-		_, detail := validateEmailConfig(config)
-		return detail
+		return validateEmailConfig(config)
 	default:
 		return &huma.ErrorDetail{Message: "type must be 'webhook' or 'email'", Location: "body.type"}
 	}
 }
 
+// emailConfigNotObject is the message for email config that is not a JSON object.
+const emailConfigNotObject = "email config must include a recipients array"
+
 // validateWebhookConfig validates webhook channel config: it must decode with
-// notify.ParseWebhookSettings and hold a non-empty, SSRF-safe url.
+// notify.ParseWebhookSettings, pass notify.CheckWebhookSettings (non-empty url,
+// sendable custom headers), and hold an SSRF-safe url.
 func validateWebhookConfig(config json.RawMessage, private notify.PrivateDestinations) *huma.ErrorDetail {
 	settings, err := notify.ParseWebhookSettings(config)
 	if err != nil {
 		return channelConfigParseError(err, "webhook config must be valid JSON with a url field")
 	}
-	if strings.TrimSpace(settings.URL) == "" {
+	if err := notify.CheckWebhookSettings(settings); err != nil {
+		if headerErr, ok := errors.AsType[*notify.HeaderError](err); ok {
+			ptr := jsontext.Pointer("/custom_headers").AppendToken(headerErr.Name)
+			return &huma.ErrorDetail{Message: headerErr.Message, Location: jsonLocation("body.config", ptr)}
+		}
 		return &huma.ErrorDetail{Message: "webhook config must include a non-empty url", Location: "body.config.url"}
 	}
 	if err := validateWebhookURL(settings.URL, private); err != nil {
@@ -727,34 +739,28 @@ func validateWebhookConfig(config json.RawMessage, private notify.PrivateDestina
 	return nil
 }
 
-// validateEmailConfig validates email channel config: it must decode with
-// notify.ParseEmailSettings, and recipients must be non-empty, max 50, valid
-// RFC 5322 addresses, no duplicates.
-func validateEmailConfig(config json.RawMessage) ([]string, *huma.ErrorDetail) {
+// validateEmailConfig validates email channel config with readEmailRecipients.
+// Recipient errors are reported at body.config.recipients.
+func validateEmailConfig(config json.RawMessage) *huma.ErrorDetail {
+	_, err := readEmailRecipients(config)
+	if err == nil {
+		return nil
+	}
+	if recipientErr, ok := errors.AsType[*notify.RecipientError](err); ok {
+		return &huma.ErrorDetail{Message: recipientErr.Error(), Location: "body.config.recipients"}
+	}
+	return channelConfigParseError(err, emailConfigNotObject)
+}
+
+// readEmailRecipients decodes email config with notify.ParseEmailSettings and
+// checks its recipients with notify.CheckEmailRecipients, as delivery does.
+func readEmailRecipients(config json.RawMessage) ([]string, error) {
 	settings, err := notify.ParseEmailSettings(config)
 	if err != nil {
-		return nil, channelConfigParseError(err, "email config must include a recipients array")
+		return nil, err
 	}
-	recipientsError := func(message string) *huma.ErrorDetail {
-		return &huma.ErrorDetail{Message: message, Location: "body.config.recipients"}
-	}
-	if len(settings.Recipients) == 0 {
-		return nil, recipientsError("email config must include at least one recipient")
-	}
-	if len(settings.Recipients) > 50 {
-		return nil, recipientsError("email config must not exceed 50 recipients")
-	}
-	seen := make(map[string]bool, len(settings.Recipients))
-	for _, r := range settings.Recipients {
-		addr, err := mail.ParseAddress(r)
-		if err != nil {
-			return nil, recipientsError(fmt.Sprintf("invalid email recipient %q: %v", r, err))
-		}
-		normalized := strings.ToLower(addr.Address)
-		if seen[normalized] {
-			return nil, recipientsError("duplicate email recipient: " + normalized)
-		}
-		seen[normalized] = true
+	if err := notify.CheckEmailRecipients(settings.Recipients); err != nil {
+		return nil, err
 	}
 	return settings.Recipients, nil
 }

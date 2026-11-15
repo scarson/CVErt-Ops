@@ -30,10 +30,14 @@ type WebhookConfig struct {
 // ChannelWebhookConfig builds the WebhookConfig for a webhook channel from its stored
 // config JSON ({"url": ..., "custom_headers": {...}}), decoded by ParseWebhookSettings,
 // and its signing secrets. Delivery and the channel test endpoint both use it so a test
-// sends exactly what a delivery would. Config the parser refuses is returned as an error.
+// sends exactly what a delivery would. Config the parser or CheckWebhookSettings
+// refuses is returned as an error.
 func ChannelWebhookConfig(ch *store.NotificationChannelForDeliveryRow) (WebhookConfig, error) {
 	settings, err := ParseWebhookSettings(ch.Config)
 	if err != nil {
+		return WebhookConfig{}, err
+	}
+	if err := CheckWebhookSettings(settings); err != nil {
 		return WebhookConfig{}, err
 	}
 	return WebhookConfig{
@@ -65,7 +69,8 @@ func Send(ctx context.Context, client *http.Client, cfg WebhookConfig, payload [
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// Apply custom headers, skipping denied keys.
+	// Apply custom headers, skipping denied keys. ChannelWebhookConfig already
+	// refuses them; this also covers a WebhookConfig built another way.
 	for k, v := range cfg.CustomHeaders {
 		if !deniedHeaders[strings.ToLower(k)] {
 			req.Header.Set(k, v)

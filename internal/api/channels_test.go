@@ -15,6 +15,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/validation"
 	"github.com/google/uuid"
+	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
@@ -1607,6 +1608,9 @@ func TestCreateChannel_DuplicateName(t *testing.T) {
 // channelConfigProblem decodes a channel problem response and returns its status and first error.
 func channelConfigProblem(t *testing.T, resp *http.Response) (int, huma.ErrorDetail) {
 	t.Helper()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		t.Fatalf("got 429: the org's API rate limit was reached; give the test org a higher tier")
+	}
 	var problem huma.ErrorModel
 	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
 		t.Fatalf("decode problem: %v", err)
@@ -1630,9 +1634,10 @@ func TestChannelConfig_ParseErrors(t *testing.T) {
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	token := cookieValue(loginResp, "access_token")
 
-	// Pro tier enables email channels and gives a request burst that covers every case.
-	if err := db.UpdateOrgTier(ctx, mustParseUUID(t, reg.OrgID), "pro"); err != nil {
-		t.Fatalf("set pro tier: %v", err)
+	// Enterprise tier enables email channels and gives a request burst (about
+	// 160) well above the requests this test makes.
+	if err := db.UpdateOrgTier(ctx, mustParseUUID(t, reg.OrgID), "enterprise"); err != nil {
+		t.Fatalf("set enterprise tier: %v", err)
 	}
 
 	channelIDs := map[string]string{}
@@ -1647,6 +1652,14 @@ func TestChannelConfig_ParseErrors(t *testing.T) {
 		decodeCreated(t, resp, &created)
 		resp.Body.Close() //nolint:errcheck,gosec // G104
 		channelIDs[chType] = created.ID
+	}
+	storedBefore := map[string][]byte{}
+	for chType, id := range channelIDs {
+		row, err := db.GetNotificationChannelForDelivery(ctx, mustParseUUID(t, id))
+		if err != nil || row == nil {
+			t.Fatalf("load %s channel: row=%v err=%v", chType, row, err)
+		}
+		storedBefore[chType] = row.Config
 	}
 
 	const (
@@ -1670,6 +1683,12 @@ func TestChannelConfig_ParseErrors(t *testing.T) {
 		{desc: "duplicate key in config", chType: "webhook", config: `{"url":"https://h.example/x","url":"https://h.example/y"}`,
 			wantLocation: "body", wantMessage: "invalid JSON: ", wantStatus: http.StatusBadRequest, prefixOnly: true},
 		{"webhook url whitespace only", "webhook", `{"url":"  "}`, false, "body.config.url", noURL, 0, false},
+		{"webhook header name not a token", "webhook", `{"url":"https://h.example/x","custom_headers":{"X A":"v"}}`, false, "body.config.custom_headers.X A", "custom_headers name is not a valid header name", 0, false},
+		{"webhook header name empty", "webhook", `{"url":"https://h.example/x","custom_headers":{"":"v"}}`, false, "body.config.custom_headers.", "custom_headers name is not a valid header name", 0, false},
+		{"webhook header value with CRLF", "webhook", `{"url":"https://h.example/x","custom_headers":{"X-A":"a\r\nX-B: b"}}`, false, "body.config.custom_headers.X-A", "custom_headers value contains a control character", 0, false},
+		{"webhook header value with NUL", "webhook", `{"url":"https://h.example/x","custom_headers":{"X-A":"a\u0000b"}}`, false, "body.config.custom_headers.X-A", "custom_headers value contains a control character", 0, false},
+		{"webhook reserved header", "webhook", `{"url":"https://h.example/x","custom_headers":{"content-type":"text/plain"}}`, false, "body.config.custom_headers.content-type", "custom_headers cannot set Content-Type", 0, false},
+		{"webhook header names differ only in case", "webhook", `{"url":"https://h.example/x","custom_headers":{"X-A":"1","x-a":"2"}}`, false, "body.config.custom_headers.x-a", "custom_headers names must differ by more than letter case", 0, false},
 		{"email recipients empty", "email", `{"recipients":[]}`, false, "body.config.recipients", "email config must include at least one recipient", 0, false},
 		{"email recipients missing", "email", `{}`, false, "body.config.recipients", "email config must include at least one recipient", 0, false},
 		{"email recipient not an address", "email", `{"recipients":["not-an-email"]}`, false, "body.config.recipients", `invalid email recipient "not-an-email": mail: missing '@' or angle-addr`, 0, false},
@@ -1725,6 +1744,17 @@ func TestChannelConfig_ParseErrors(t *testing.T) {
 			})
 		})
 	}
+
+	// No refused PATCH changed either channel's stored config.
+	for chType, id := range channelIDs {
+		row, err := db.GetNotificationChannelForDelivery(ctx, mustParseUUID(t, id))
+		if err != nil || row == nil {
+			t.Fatalf("reload %s channel: row=%v err=%v", chType, row, err)
+		}
+		if !bytes.Equal(row.Config, storedBefore[chType]) {
+			t.Errorf("%s channel config changed: before %s, after %s", chType, storedBefore[chType], row.Config)
+		}
+	}
 }
 
 // TestPatchChannel_NullConfigKeepsStoredConfig pins that PATCH decodes
@@ -1779,5 +1809,32 @@ func TestValidateChannelConfig_UnknownTypeRefused(t *testing.T) {
 	if detail.Location != "body.type" || detail.Message != "type must be 'webhook' or 'email'" {
 		t.Errorf("got {location %q, message %q}, want {location body.type, message %q}",
 			detail.Location, detail.Message, "type must be 'webhook' or 'email'")
+	}
+}
+
+// TestTestEmailChannel_StoredConfigErrorNamesNoRecipient checks that the channel
+// test endpoint reports a stored email config it refuses without echoing a
+// stored recipient. The check runs before any SMTP connection.
+func TestTestEmailChannel_StoredConfigErrorNamesNoRecipient(t *testing.T) {
+	t.Parallel()
+	srv := &Server{cfg: &config.Config{SMTPHost: "smtp.invalid"}}
+	cases := []struct {
+		stored  string
+		wantErr string
+	}{
+		{`{"recipients":["secret-person"]}`, "stored email config is invalid: invalid email recipient"},
+		{`{"recipients":["secret-person@example.com","SECRET-PERSON@example.com"]}`, "stored email config is invalid: duplicate email recipient"},
+		{`{"recipients":[]}`, "stored email config is invalid: email config must include at least one recipient"},
+		{`{"Recipients":["secret-person@example.com"]}`, "stored email config is invalid: unexpected property"},
+		{`["secret-person@example.com"]`, "stored email config is invalid: email config must include a recipients array"},
+	}
+	for _, tc := range cases {
+		err := srv.testEmailChannel(context.Background(), json.RawMessage(tc.stored))
+		if err == nil || err.Error() != tc.wantErr {
+			t.Errorf("testEmailChannel(%s) = %v, want %q", tc.stored, err, tc.wantErr)
+		}
+		if err != nil && strings.Contains(strings.ToLower(err.Error()), "secret-person") {
+			t.Errorf("testEmailChannel(%s) error echoes a stored recipient: %v", tc.stored, err)
+		}
 	}
 }

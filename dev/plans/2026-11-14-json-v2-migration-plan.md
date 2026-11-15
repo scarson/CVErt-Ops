@@ -12,7 +12,7 @@
 
 **Related work:**
 - scarson/CVErt-Ops#250, merged into `dev` at `1f32430` — `decodeJSON` in `internal/api/contract.go` decodes every chi request body with v2 and `RejectUnknownMembers`, answering 422 with a huma-style location such as `body.items[1].x`.
-- Branch `claude/strict-dsl-conditions` (worktree `.claude/worktrees/objective-grothendieck-b9ac93`), not yet committed on 2026-11-14 — makes `dsl.Parse` (`internal/alert/dsl/parser.go`) decode with v2 and `RejectUnknownMembers`, returning `*dsl.UnknownKeyError`. Because alert-rule create/PATCH/validate, saved-search create/PATCH/execute and the AI query endpoint all call `dsl.Parse`, that branch covers them. Phase 5 depends on it.
+- scarson/CVErt-Ops#252 (branch `claude/strict-dsl-conditions`), merged into `dev` at `49eb674` — makes `dsl.Parse` (`internal/alert/dsl/parser.go`) decode with v2 and `RejectUnknownMembers`, returning `*dsl.UnknownKeyError`. Because alert-rule create/PATCH/validate, saved-search create/PATCH/execute and the AI query endpoint all call `dsl.Parse`, that branch covers them. Phase 5 depends on it.
 
 ---
 
@@ -70,7 +70,7 @@ Why this matters here: the phases ship as separate PRs over several sessions, tw
 
 | Phase | Status | Ship SHA(s) | PR | Notes |
 |---|---|---|---|---|
-| 0 — Precondition: strict DSL parsing on `dev` | ⬜ | | | Owned by branch `claude/strict-dsl-conditions` |
+| 0 — Precondition: strict DSL parsing on `dev` | ✅ Merged 2026-11-15 | `49eb674` (merge) | [#252](https://github.com/scarson/CVErt-Ops/pull/252) | `parser.go` on `dev` has `UnknownKeyError`, `unknownKeyError(ptr)` and `RejectUnknownMembers(true)`, as Phase 5 assumes |
 | 1 — Notification channel config: one strict decoder for API and delivery | ⬜ | | | Decision 1 accepted 2026-11-15 |
 | 2 — SCIM request bodies | ⬜ | | | |
 | 3 — huma-registered request bodies and `clearableField` | ⬜ | | | |
@@ -822,7 +822,7 @@ Commit: `fix(api): encode huma responses with the API's response options`
    - v2 map output is unordered: never hash or byte-compare `jsonv2.Marshal` output without `jsonv2.Deterministic(true)`; hash inputs stay on v1 `json.Marshal`.
    - v2 strictness does not reach `UnmarshalJSON([]byte)` methods; implement `UnmarshalJSONFrom` and call `jsonv2.UnmarshalDecode` (Phase 3).
    - Feeds stay on v1 (Category 4 reasoning, one paragraph, pointing at this plan).
-2. PLAN.md: §11 (notification channels) states the config keys per type and, with decision 1, that other keys are refused; §16 (API contract) states that request JSON is decoded case-sensitively with duplicate names, trailing data and invalid UTF-8 refused, and (with Phase 6) that empty collections are `[]`/`{}`, never `null`. Read each section before editing and change only those statements.
+2. PLAN.md: §10.5 (DSL versioning) gains a bullet in the form of its existing "shipped without a bump" bullets: stored conditions are decoded with the rules `dsl.Parse` uses, so a rule holding a key the DSL does not define, or a case variant of one, is set to `status=error` from its next evaluation (Phase 5). §11 (notification channels) states the config keys per type and, with decision 1, that other keys are refused; §16 (API contract) states that request JSON is decoded case-sensitively with duplicate names, trailing data and invalid UTF-8 refused, and (with Phase 6) that empty collections are `[]`/`{}`, never `null`. Read each section before editing and change only those statements.
 3. Run the full suite on `dev` after the last phase merges, record `Full suite: passed at <sha>` in the table, and set **Overall**.
 4. Commit: `docs: record encoding/json/v2 decisions and pitfalls`
 
@@ -837,7 +837,7 @@ Phase 2 ────────────────────┼─ indep
 Phase 3 ────────────────────┴─► Phase 4 ─► Phase 6
 Phase 7, independent
 Phase 8 last
-Suggested order: 1, 2, 3, 4, 6, 7, with 5 as soon as Phase 0 lands. (All three decisions were accepted on 2026-11-15.)
+Suggested order: 1, 2, 3, 4, 6, 7, with 5 at any point (Phase 0 landed as #252). (All three decisions were accepted on 2026-11-15.)
 ```
 
 Four phases edit `internal/api/contract.go` (Task 1.2 `bodyLocation`; Task 3.2 `clearableField`; Phase 4 `decodePageCursor`; Task 6.3 writers), and Phases 3 and 6 both edit `newHumaConfig`. Never run two of these phases at the same time; each starts from a `dev` that holds the previous one. Run integration tests from one session at a time: Docker on this host is shared, and parallel testcontainers runs have overloaded it before.

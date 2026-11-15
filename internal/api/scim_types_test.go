@@ -1,11 +1,13 @@
-// ABOUTME: Tests for SCIM 2.0 response types, error helper, bool parser, and filter parser.
+// ABOUTME: Tests for SCIM 2.0 response types, error helper, body decoder, bool parser, and filter parser.
 // ABOUTME: Validates RFC 7644 compliance for error format and content type.
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -256,6 +258,146 @@ func TestSCIMUser_JSON(t *testing.T) {
 	if m["active"] != true {
 		t.Errorf("active = %v, want true", m["active"])
 	}
+}
+
+// assertSCIMBadRequest checks that w holds a 400 SCIM error with the given
+// scimType and the detail "invalid JSON body".
+func assertSCIMBadRequest(t *testing.T, w *httptest.ResponseRecorder, wantSCIMType string) {
+	t.Helper()
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var body SCIMError
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body.Status != "400" {
+		t.Errorf("status field = %q, want %q", body.Status, "400")
+	}
+	if body.SCIMType != wantSCIMType {
+		t.Errorf("scimType = %q, want %q", body.SCIMType, wantSCIMType)
+	}
+	if body.Detail != "invalid JSON body" {
+		t.Errorf("detail = %q, want %q", body.Detail, "invalid JSON body")
+	}
+}
+
+func TestDecodeSCIMBody_Refused(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"case-variant duplicate attribute", `{"userName":"a","USERNAME":"b"}`},
+		{"exact duplicate attribute", `{"userName":"a","userName":"b"}`},
+		{"trailing second value", `{"userName":"a"} {"userName":"b"}`},
+		{"invalid UTF-8 in a string", `{"userName":"a` + string([]byte{0xff}) + `b"}`},
+		{"empty body", ``},
+		{"malformed JSON", `{"userName":`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, scimType := range []string{"", "invalidValue"} {
+				w := httptest.NewRecorder()
+				r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/Users", strings.NewReader(tc.body))
+				var req scimUserRequest
+				if decodeSCIMBody(w, r, &req, scimType) {
+					t.Fatalf("decodeSCIMBody(%q) = true, want false (decoded %+v)", tc.body, req)
+				}
+				assertSCIMBadRequest(t, w, scimType)
+			}
+		})
+	}
+}
+
+// TestDecodeSCIMBody_RefusedNestedAndPatchOp checks the refusal of a
+// case-variant duplicate inside a nested object and of two spellings of the
+// PatchOp "Operations" attribute.
+func TestDecodeSCIMBody_RefusedNestedAndPatchOp(t *testing.T) {
+	t.Parallel()
+
+	t.Run("case-variant duplicate inside a group member", func(t *testing.T) {
+		t.Parallel()
+		w := httptest.NewRecorder()
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/Groups",
+			strings.NewReader(`{"members":[{"value":"A","VALUE":"B"}]}`))
+		var body scimGroupRequest
+		if decodeSCIMBody(w, r, &body, "invalidValue") {
+			t.Fatalf("decodeSCIMBody = true, want false (decoded %+v)", body)
+		}
+		assertSCIMBadRequest(t, w, "invalidValue")
+	})
+
+	t.Run("two spellings of Operations", func(t *testing.T) {
+		t.Parallel()
+		w := httptest.NewRecorder()
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodPatch, "/Groups/x",
+			strings.NewReader(`{"Operations":[],"operations":[]}`))
+		var patch SCIMPatchOp
+		if decodeSCIMBody(w, r, &patch, "invalidValue") {
+			t.Fatalf("decodeSCIMBody = true, want false (decoded %+v)", patch)
+		}
+		assertSCIMBadRequest(t, w, "invalidValue")
+	})
+}
+
+func TestDecodeSCIMBody_Accepted(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		body           string
+		wantUserName   string
+		wantExternalID string
+	}{
+		{"attribute names match case-insensitively", `{"UserName":"a","externalId":"x"}`, "a", "x"},
+		{"underscore names are not folded onto attributes", `{"userName":"a","user_name":"b","external_id":"x"}`, "a", ""},
+		{"dash names are not folded onto attributes", `{"userName":"a","user-name":"b","external-id":"x"}`, "a", ""},
+		{
+			"unknown extension attributes are ignored",
+			`{"userName":"a","externalId":"x","urn:ietf:params:scim:schemas:extension:enterprise:2.0:User":{"department":"x"}}`,
+			"a", "x",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			w := httptest.NewRecorder()
+			r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/Users", strings.NewReader(tc.body))
+			var req scimUserRequest
+			if !decodeSCIMBody(w, r, &req, "") {
+				t.Fatalf("decodeSCIMBody(%q) = false, want true (response: %s)", tc.body, w.Body.String())
+			}
+			if req.UserName != tc.wantUserName {
+				t.Errorf("UserName = %q, want %q", req.UserName, tc.wantUserName)
+			}
+			if req.ExternalID != tc.wantExternalID {
+				t.Errorf("ExternalID = %q, want %q", req.ExternalID, tc.wantExternalID)
+			}
+			if w.Body.Len() != 0 {
+				t.Errorf("response body written on success: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+// TestDecodeSCIMBody_OversizedBody checks that a body cut off by
+// http.MaxBytesReader (as middleware.RequestSize applies to every route) is
+// refused with a 400 rather than decoded or left waiting.
+func TestDecodeSCIMBody_OversizedBody(t *testing.T) {
+	t.Parallel()
+
+	body := `{"userName":"a","displayName":"` + strings.Repeat("x", 2048) + `"}`
+	w := httptest.NewRecorder()
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/Users", strings.NewReader(body))
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	var req scimUserRequest
+	if decodeSCIMBody(w, r, &req, "") {
+		t.Fatal("decodeSCIMBody = true for a body over the size limit, want false")
+	}
+	assertSCIMBadRequest(t, w, "")
 }
 
 // contains is a small helper to avoid importing strings in the test file

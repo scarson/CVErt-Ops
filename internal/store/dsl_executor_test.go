@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/alert/dsl"
+	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -376,6 +378,9 @@ func TestExecuteDSLQuery_InvalidBase64Cursor(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid base64 cursor, got nil")
 	}
+	if !errors.Is(err, store.ErrInvalidCursor) {
+		t.Errorf("error = %v, want store.ErrInvalidCursor", err)
+	}
 }
 
 func TestExecuteDSLQuery_ValidBase64InvalidJSON(t *testing.T) {
@@ -389,6 +394,9 @@ func TestExecuteDSLQuery_ValidBase64InvalidJSON(t *testing.T) {
 	_, _, err := s.ExecuteDSLQuery(ctx, compiled, badCursor, 25)
 	if err == nil {
 		t.Fatal("expected error for valid base64 but invalid JSON cursor, got nil")
+	}
+	if !errors.Is(err, store.ErrInvalidCursor) {
+		t.Errorf("error = %v, want store.ErrInvalidCursor", err)
 	}
 }
 
@@ -407,22 +415,72 @@ func TestExecuteDSLQuery_CraftedCursor(t *testing.T) {
 
 	compiled := compileHighSeverity(t)
 
-	// Craft a cursor that skips all CVEs (far future date).
-	farFuture := time.Now().Add(24 * time.Hour)
-	crafted, _ := json.Marshal(map[string]any{
-		"s": farFuture.Format(time.RFC3339Nano),
-		"c": "CVE-9999-9999",
-	})
-	cursor := base64.URLEncoding.EncodeToString(crafted)
-
-	results, _, err := s.ExecuteDSLQuery(ctx, compiled, cursor, 25)
-	if err != nil {
-		t.Fatalf("ExecuteDSLQuery with crafted cursor: %v", err)
+	// craft builds a cursor in the dslCursor wire format: "d" is the sort date,
+	// "c" the CVE ID.
+	craft := func(t *testing.T, d time.Time) string {
+		t.Helper()
+		crafted, err := json.Marshal(map[string]any{
+			"d": d.Format(time.RFC3339Nano),
+			"c": "CVE-9999-9999",
+		})
+		if err != nil {
+			t.Fatalf("marshal crafted cursor: %v", err)
+		}
+		return base64.URLEncoding.EncodeToString(crafted)
 	}
+
 	// Crafted cursor with far-future date: keyset WHERE (date, id) < (far_future, ...)
 	// should still return all CVEs since they are all before the far-future date.
+	results, _, err := s.ExecuteDSLQuery(ctx, compiled, craft(t, base.Add(24*time.Hour)), 25)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery with crafted far-future cursor: %v", err)
+	}
 	if len(results) != 3 {
 		t.Errorf("crafted far-future cursor: got %d results, want 3", len(results))
+	}
+
+	// Crafted cursor dated between K000 and K001: only the two older CVEs are
+	// before it, which shows the crafted date reached the keyset WHERE.
+	results, _, err = s.ExecuteDSLQuery(ctx, compiled, craft(t, base.Add(-30*time.Second)), 25)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery with crafted mid-range cursor: %v", err)
+	}
+	var got []string
+	for _, r := range results {
+		got = append(got, r.CveID)
+	}
+	if want := []string{"CVE-2024-K001", "CVE-2024-K002"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("crafted mid-range cursor: got %v, want %v", got, want)
+	}
+}
+
+// TestExecuteDSLQuery_EditedCursor checks that a cursor whose JSON a caller has
+// edited (unknown member, case-variant name, duplicate name) is refused instead
+// of partly applied.
+func TestExecuteDSLQuery_EditedCursor(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	s.SeedTestCVE(t, "CVE-2024-E001", "critical", nil)
+
+	compiled := compileHighSeverity(t)
+	const d = "2026-01-01T00:00:00Z"
+	cases := map[string]string{
+		"unknown member": `{"d":"` + d + `","c":"CVE-9999-9999","s":"` + d + `"}`,
+		"case variant":   `{"D":"` + d + `","c":"CVE-9999-9999"}`,
+		"duplicate name": `{"d":"` + d + `","c":"CVE-9999-9999","c":"CVE-0000-0000"}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			cursor := base64.URLEncoding.EncodeToString([]byte(raw))
+			results, _, err := s.ExecuteDSLQuery(ctx, compiled, cursor, 25)
+			if err == nil {
+				t.Fatalf("ExecuteDSLQuery accepted cursor %s and returned %d results", raw, len(results))
+			}
+			if !errors.Is(err, store.ErrInvalidCursor) {
+				t.Errorf("error = %v, want store.ErrInvalidCursor", err)
+			}
+		})
 	}
 }
 
@@ -774,6 +832,43 @@ func TestExecuteDSLQuery_PostFilterCaseInsensitive(t *testing.T) {
 			}
 			if len(results) != tc.want {
 				t.Fatalf("got %d results, want %d", len(results), tc.want)
+			}
+		})
+	}
+}
+
+// TestValidateDSLCursor checks ValidateDSLCursor without a database: an empty
+// cursor and a cursor the store issued pass; a cursor ExecuteDSLQuery would
+// refuse returns ErrInvalidCursor.
+func TestValidateDSLCursor(t *testing.T) {
+	t.Parallel()
+
+	issued, err := store.EncodeDSLCursor(time.Date(2026, 3, 4, 5, 6, 7, 123456789, time.UTC), "CVE-2024-0001")
+	if err != nil {
+		t.Fatalf("EncodeDSLCursor: %v", err)
+	}
+	for name, cursor := range map[string]string{"empty": "", "issued": issued} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if err := store.ValidateDSLCursor(cursor); err != nil {
+				t.Errorf("ValidateDSLCursor(%q) = %v, want nil", cursor, err)
+			}
+		})
+	}
+
+	const d = "2026-01-01T00:00:00Z"
+	invalid := map[string]string{
+		"not base64":     "!!!not-base64!!!",
+		"not JSON":       base64.URLEncoding.EncodeToString([]byte("not-json")),
+		"unknown member": base64.URLEncoding.EncodeToString([]byte(`{"d":"` + d + `","c":"CVE-9999-9999","s":"` + d + `"}`)),
+		"case variant":   base64.URLEncoding.EncodeToString([]byte(`{"D":"` + d + `","c":"CVE-9999-9999"}`)),
+		"duplicate name": base64.URLEncoding.EncodeToString([]byte(`{"d":"` + d + `","c":"CVE-9999-9999","c":"CVE-0000-0000"}`)),
+	}
+	for name, cursor := range invalid {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if err := store.ValidateDSLCursor(cursor); !errors.Is(err, store.ErrInvalidCursor) {
+				t.Errorf("ValidateDSLCursor(%q) = %v, want store.ErrInvalidCursor", cursor, err)
 			}
 		})
 	}

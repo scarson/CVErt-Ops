@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
 	"time"
 
@@ -77,6 +79,11 @@ func scanCVERow(rows *sql.Rows) (generated.CVE, error) {
 	return c, nil
 }
 
+// ErrInvalidCursor reports a DSL query cursor that cannot be decoded: bad
+// base64, malformed JSON, or JSON edited after the store issued it. It is a
+// caller error, not a store failure.
+var ErrInvalidCursor = errors.New("invalid cursor")
+
 // dslCursor is the keyset pagination cursor for DSL query results.
 type dslCursor struct {
 	SortDate time.Time `json:"d"`
@@ -93,20 +100,31 @@ func encodeDSLCursor(c dslCursor) (string, error) {
 }
 
 // decodeDSLCursor decodes a base64 JSON cursor. Returns zero-value cursor and
-// nil error for empty input.
+// nil error for empty input. The caller sends the cursor back and can edit it,
+// so the JSON is decoded strictly: an unknown, case-variant or duplicate member
+// or trailing data makes the cursor invalid.
 func decodeDSLCursor(s string) (dslCursor, error) {
 	if s == "" {
 		return dslCursor{}, nil
 	}
 	b, err := base64.URLEncoding.DecodeString(s)
 	if err != nil {
-		return dslCursor{}, fmt.Errorf("decode cursor: %w", err)
+		return dslCursor{}, fmt.Errorf("%w: decode cursor: %w", ErrInvalidCursor, err)
 	}
 	var c dslCursor
-	if err := json.Unmarshal(b, &c); err != nil {
-		return dslCursor{}, fmt.Errorf("unmarshal cursor: %w", err)
+	if err := jsonv2.Unmarshal(b, &c, jsonv2.RejectUnknownMembers(true)); err != nil {
+		return dslCursor{}, fmt.Errorf("%w: unmarshal cursor: %w", ErrInvalidCursor, err)
 	}
 	return c, nil
+}
+
+// ValidateDSLCursor reports whether ExecuteDSLQuery can decode cursor. It
+// returns nil for an empty cursor and an error wrapping ErrInvalidCursor for
+// one ExecuteDSLQuery would refuse, so a handler can refuse a caller's cursor
+// before doing any other work.
+func ValidateDSLCursor(cursor string) error {
+	_, err := decodeDSLCursor(cursor)
+	return err
 }
 
 // ExecuteDSLQuery runs a compiled DSL rule against the CVE corpus with keyset

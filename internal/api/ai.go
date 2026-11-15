@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -87,6 +88,10 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Parse pagination params from query string.
 	cursor := r.URL.Query().Get("cursor")
+	if store.ValidateDSLCursor(cursor) != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid cursor")
+		return
+	}
 	limit, ok2 := parseLimitParam(w, r, 25, 100)
 	if !ok2 {
 		return
@@ -197,6 +202,13 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Execute DSL query.
 	results, nextCursor, execErr := srv.store.ExecuteDSLQuery(r.Context(), compiled, cursor, limit)
+	if errors.Is(execErr, store.ErrInvalidCursor) {
+		// Backstop: ValidateDSLCursor has already refused any cursor that
+		// ExecuteDSLQuery cannot decode, so this branch keeps an invalid
+		// cursor a 400 even if the two checks ever diverge.
+		writeProblem(w, http.StatusBadRequest, "invalid cursor")
+		return
+	}
 	if execErr != nil {
 		slog.ErrorContext(r.Context(), "ai: execute dsl query", "error", execErr)
 		srv.logAIRequest(r, orgID, userID, feature, inputHash, promptVersion, cached, 0, 0, start, "error", "query_exec")

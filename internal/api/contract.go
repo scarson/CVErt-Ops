@@ -253,6 +253,9 @@ func encodePageCursor(v any) string {
 // decodePageCursor decodes an opaque base64url JSON cursor into dst.
 // Tries RawURLEncoding first (canonical). Falls back to padded URLEncoding
 // for cursors issued before the encoding was standardized.
+// The caller sends the cursor back and can edit it, so the JSON is decoded
+// strictly: a member dst does not define, a member name in another case, a
+// duplicate member or trailing data makes the cursor invalid.
 func decodePageCursor(s string, dst any) error {
 	raw, err := base64.RawURLEncoding.DecodeString(s)
 	if err != nil {
@@ -262,7 +265,7 @@ func decodePageCursor(s string, dst any) error {
 			return fmt.Errorf("invalid cursor encoding: %w", err)
 		}
 	}
-	if err := json.Unmarshal(raw, dst); err != nil {
+	if err := jsonv2.Unmarshal(raw, dst, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return fmt.Errorf("invalid cursor format: %w", err)
 	}
 	return nil

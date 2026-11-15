@@ -1,11 +1,15 @@
+// ABOUTME: Unit and integration tests for the CVE list, detail and cursor handlers.
+// ABOUTME: Integration cases use real Postgres via testutil.NewTestDB and the merge pipeline.
 package api
 
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"slices"
 	"strings"
@@ -84,6 +88,27 @@ func TestDecodeCursorMissingCVEID(t *testing.T) {
 	_, err := decodeCursor("e30") // base64url of "{}"
 	if err == nil {
 		t.Error("expected error for cursor missing cve_id, got nil")
+	}
+}
+
+// TestDecodeCursor_RefusesEditedCursor checks that a CVE list cursor whose JSON
+// a caller has edited is refused instead of partly applied.
+func TestDecodeCursor_RefusesEditedCursor(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"unknown member": `{"d":"2026-02-25T12:00:00Z","id":"CVE-2024-99999","x":1}`,
+		"case variant":   `{"D":"2026-02-25T12:00:00Z","id":"CVE-2024-99999"}`,
+		"duplicate name": `{"d":"2026-02-25T12:00:00Z","id":"CVE-2024-99999","id":"CVE-2024-00001"}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cur, err := decodeCursor(base64.RawURLEncoding.EncodeToString([]byte(raw)))
+			if err == nil {
+				t.Errorf("decodeCursor(%s) accepted the cursor as %+v", raw, cur)
+			}
+		})
 	}
 }
 
@@ -1228,19 +1253,42 @@ func TestListCVEs_InvalidCursor(t *testing.T) {
 	ts, token := newCVETestServer(t, db)
 	ctx := context.Background()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves?cursor=not-valid-base64!!!", nil)
-	req.Header.Set("Cookie", "access_token="+token)
-	if err != nil {
-		t.Fatalf("new request: %v", err)
+	list := func(t *testing.T, cursor string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves?cursor="+url.QueryEscape(cursor), nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Cookie", "access_token="+token)
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
+		if err != nil {
+			t.Fatalf("GET /cves with cursor %q: %v", cursor, err)
+		}
+		return resp
 	}
-	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
-	if err != nil {
-		t.Fatalf("GET /cves with bad cursor: %v", err)
+	encode := func(raw string) string {
+		return base64.RawURLEncoding.EncodeToString([]byte(raw))
 	}
-	defer resp.Body.Close() //nolint:errcheck
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("bad cursor: got status %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	t.Run("valid cursor", func(t *testing.T) {
+		resp := list(t, encode(`{"d":"2026-01-01T00:00:00Z","id":"CVE-2024-99999"}`))
+		defer resp.Body.Close() //nolint:errcheck
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("status = %d, want 200", resp.StatusCode)
+		}
+	})
+
+	invalid := map[string]string{
+		"malformed": "not-valid-base64!!!",
+		"edited":    encode(`{"d":"2026-01-01T00:00:00Z","id":"CVE-2024-99999","x":1}`),
+		"bad date":  encode(`{"d":"yesterday","id":"CVE-2024-99999"}`),
+	}
+	for name, cursor := range invalid {
+		t.Run(name, func(t *testing.T) {
+			resp := list(t, cursor)
+			defer resp.Body.Close() //nolint:errcheck
+			assertInvalidCursorProblem(t, resp)
+		})
 	}
 }
 

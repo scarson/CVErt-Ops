@@ -5,10 +5,12 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -550,6 +552,101 @@ func TestSavedSearch_Execute(t *testing.T) {
 	if len(result.Items) != 2 {
 		t.Errorf("expected 2 results, got %d", len(result.Items))
 	}
+}
+
+// assertInvalidCursorProblem checks that resp is the 400 "invalid cursor"
+// problem the list handlers answer for a cursor they cannot decode.
+func assertInvalidCursorProblem(t *testing.T, resp *http.Response) {
+	t.Helper()
+	assertCursorProblem(t, resp, "invalid cursor")
+}
+
+// assertCursorProblem checks that resp is a 400 problem with detail
+// wantDetail and no errors entries.
+func assertCursorProblem(t *testing.T, resp *http.Response, wantDetail string) {
+	t.Helper()
+	var problem huma.ErrorModel
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem body (status %d): %v", resp.StatusCode, err)
+	}
+	if resp.StatusCode != http.StatusBadRequest || problem.Status != http.StatusBadRequest {
+		t.Errorf("status = %d, problem status = %d, want 400", resp.StatusCode, problem.Status)
+	}
+	if problem.Detail != wantDetail {
+		t.Errorf("detail = %q, want %q", problem.Detail, wantDetail)
+	}
+	if len(problem.Errors) != 0 {
+		t.Errorf("errors = %+v, want none", problem.Errors)
+	}
+}
+
+// dslCursorCases are cursors for the DSL query endpoints: one in the format
+// the store issues and two it cannot decode.
+var dslCursorCases = struct {
+	valid, malformed, edited string
+}{
+	valid:     base64.URLEncoding.EncodeToString([]byte(`{"d":"2026-01-01T00:00:00Z","c":"CVE-9999-9999"}`)),
+	malformed: "!!!not-base64!!!",
+	edited:    base64.URLEncoding.EncodeToString([]byte(`{"d":"2026-01-01T00:00:00Z","c":"CVE-9999-9999","x":1}`)),
+}
+
+// TestSavedSearch_ExecuteInvalidCursor verifies that executing a saved search
+// with a cursor the store cannot decode answers 400 "invalid cursor", not 500.
+func TestSavedSearch_ExecuteInvalidCursor(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "ss-cursor@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "ss-cursor@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	body := fmt.Sprintf(`{"name":"Cursor Test","query_json":%s,"is_shared":false}`, validDSLJSON)
+	createResp := doCreateSavedSearch(t, ctx, ts, token, reg.OrgID, body)
+	defer createResp.Body.Close() //nolint:errcheck,gosec
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
+	}
+	var created savedSearchEntry
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	execute := func(t *testing.T, cursor string) *http.Response {
+		t.Helper()
+		target := ts.URL + "/api/v1/orgs/" + reg.OrgID + "/saved-searches/" + created.ID + "/execute?cursor=" + url.QueryEscape(cursor)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, nil)
+		if err != nil {
+			t.Fatalf("build execute request: %v", err)
+		}
+		req.Header.Set("Cookie", "access_token="+token)
+		req.Header.Set("X-Requested-By", "CVErt-Ops")
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+		if err != nil {
+			t.Fatalf("execute saved search request: %v", err)
+		}
+		return resp
+	}
+
+	t.Run("valid cursor", func(t *testing.T) {
+		resp := execute(t, dslCursorCases.valid)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("status = %d, want 200", resp.StatusCode)
+		}
+	})
+	t.Run("malformed cursor", func(t *testing.T) {
+		resp := execute(t, dslCursorCases.malformed)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		assertInvalidCursorProblem(t, resp)
+	})
+	t.Run("edited cursor", func(t *testing.T) {
+		resp := execute(t, dslCursorCases.edited)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		assertInvalidCursorProblem(t, resp)
+	})
 }
 
 // TestSavedSearch_DeleteReturns404 verifies that after soft-delete, GET returns 404.

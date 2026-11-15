@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -180,6 +181,8 @@ func encodeCursor(last generated.CVE) string {
 }
 
 // decodeCursor base64-decodes the opaque cursor, returning a parsed cursor or nil.
+// The JSON is decoded strictly (see decodePageCursor): an edited cursor with an
+// unknown, case-variant or duplicate member is invalid.
 func decodeCursor(s string) (*cveListCursor, error) {
 	if s == "" {
 		return nil, nil
@@ -189,7 +192,7 @@ func decodeCursor(s string) (*cveListCursor, error) {
 		return nil, fmt.Errorf("invalid cursor (base64): %w", err)
 	}
 	var c cveListCursor
-	if err := json.Unmarshal(b, &c); err != nil {
+	if err := jsonv2.Unmarshal(b, &c, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return nil, fmt.Errorf("invalid cursor (json): %w", err)
 	}
 	if c.CVEID == "" {
@@ -359,9 +362,11 @@ func listCVEsHandler(s *store.Store) func(context.Context, *ListCVEsInput) (*Lis
 			return nil, huma.Error503ServiceUnavailable("database unavailable")
 		}
 		// Parse optional cursor.
+		// A bad cursor gets the fixed problem every list endpoint gives, with
+		// no errors entries: the decode error would echo caller input.
 		cur, err := decodeCursor(input.Cursor)
 		if err != nil {
-			return nil, huma.Error400BadRequest("invalid cursor", err)
+			return nil, huma.Error400BadRequest("invalid cursor")
 		}
 
 		if input.Ecosystem != "" && !ecosystem.Valid(input.Ecosystem) {
@@ -406,7 +411,7 @@ func listCVEsHandler(s *store.Store) func(context.Context, *ListCVEsInput) (*Lis
 			if err != nil {
 				cursorDate, err = time.Parse(time.RFC3339, cur.SortDate)
 				if err != nil {
-					return nil, huma.Error400BadRequest("invalid cursor (bad date)", nil)
+					return nil, huma.Error400BadRequest("invalid cursor")
 				}
 			}
 			p.CursorDate = &cursorDate

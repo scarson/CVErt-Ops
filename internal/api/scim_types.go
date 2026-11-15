@@ -105,9 +105,12 @@ var scimJSONOptions = jsonv2.JoinOptions(jsonv2.MatchCaseInsensitiveNames(true),
 
 // decodeSCIMBody decodes a SCIM request body into dst. Attribute names match
 // case-insensitively, as RFC 7643 section 2.1 requires; attributes dst does not
-// define are ignored. Duplicate attributes (in any spelling), trailing data and
-// invalid UTF-8 are refused with a 400 SCIM error, which has been written when it
-// returns false. scimType is the SCIM error type the caller reports.
+// define are ignored. Duplicate attributes, trailing data and invalid UTF-8 are
+// refused with a 400 SCIM error, which has been written when it returns false.
+// Two spellings of an attribute that dst defines count as a duplicate; inside a
+// value kept raw (a json.RawMessage field, such as a PATCH operation's value)
+// only exact duplicate names are refused, so the code that decodes such a value
+// checks the rest. scimType is the SCIM error type the caller reports.
 func decodeSCIMBody(w http.ResponseWriter, r *http.Request, dst any, scimType string) bool {
 	if err := jsonv2.UnmarshalRead(r.Body, dst, scimJSONOptions); err != nil {
 		writeSCIMError(w, http.StatusBadRequest, scimType, "invalid JSON body")

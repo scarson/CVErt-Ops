@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -30,36 +29,21 @@ type scimUserRequest struct {
 	Active      *bool    `json:"active,omitempty"`
 }
 
-// hasCaseFoldedDuplicateKey reports whether two keys of m are equal under
-// strings.EqualFold, that is, name one SCIM attribute twice (RFC 7643 section
-// 2.1 makes attribute names case-insensitive). It compares fold keys in a set,
-// so the cost stays linear in the number of keys.
-func hasCaseFoldedDuplicateKey(m map[string]json.RawMessage) bool {
+// namesAttributeTwice reports whether two keys of a pathless PATCH value name
+// the same attribute: whether their strings.ToLower forms are equal. It must
+// normalise keys exactly as scimPatchUser's pathless switch does
+// (strings.ToLower), so that no two keys can reach the same case of that
+// switch. The keys go into a set, so the cost is linear in the number of keys.
+func namesAttributeTwice(m map[string]json.RawMessage) bool {
 	seen := make(map[string]struct{}, len(m))
 	for k := range m {
-		fk := foldKey(k)
-		if _, dup := seen[fk]; dup {
+		lower := strings.ToLower(k)
+		if _, dup := seen[lower]; dup {
 			return true
 		}
-		seen[fk] = struct{}{}
+		seen[lower] = struct{}{}
 	}
 	return false
-}
-
-// foldKey maps s to a string that is equal for two inputs exactly when
-// strings.EqualFold reports them equal: each rune is replaced by the smallest
-// rune of its unicode.SimpleFold orbit.
-func foldKey(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		smallest := r
-		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
-			smallest = min(smallest, f)
-		}
-		b.WriteRune(smallest)
-	}
-	return b.String()
 }
 
 // scimProvider returns the SCIM identity provider string for the given config ID.
@@ -928,7 +912,8 @@ func (srv *Server) scimPatchUser(w http.ResponseWriter, r *http.Request) {
 				writeSCIMError(w, http.StatusBadRequest, "invalidValue", "pathless operation value must be an object")
 				return
 			}
-			if hasCaseFoldedDuplicateKey(valMap) {
+			// namesAttributeTwice normalises keys with strings.ToLower, as the switch below does.
+			if namesAttributeTwice(valMap) {
 				writeSCIMError(w, http.StatusBadRequest, "invalidValue", "pathless operation value has duplicate attributes")
 				return
 			}

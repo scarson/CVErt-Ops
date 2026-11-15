@@ -988,11 +988,12 @@ func decodeSCIMErrorResponse(t *testing.T, resp *http.Response) SCIMError {
 	return scimErr
 }
 
-func TestHasCaseFoldedDuplicateKey(t *testing.T) {
+func TestNamesAttributeTwice(t *testing.T) {
 	t.Parallel()
 
-	kelvin := string(rune(0x212A)) // KELVIN SIGN, folds to "k"
-	longS := string(rune(0x017F))  // LATIN SMALL LETTER LONG S, folds to "s"
+	kelvin := string(rune(0x212A))         // KELVIN SIGN; strings.ToLower gives "k"
+	dottedCapitalI := string(rune(0x0130)) // LATIN CAPITAL LETTER I WITH DOT ABOVE; strings.ToLower gives "i"
+	longS := string(rune(0x017F))          // LATIN SMALL LETTER LONG S; strings.ToLower leaves it unchanged
 	tests := []struct {
 		name string
 		keys []string
@@ -1002,9 +1003,10 @@ func TestHasCaseFoldedDuplicateKey(t *testing.T) {
 		{"distinct keys", []string{"active", "displayName"}, false},
 		{"case variants", []string{"active", "Active"}, true},
 		{"case variants among others", []string{"userName", "active", "ACTIVE"}, true},
-		{"underscore is not folded", []string{"userName", "user_name"}, false},
-		{"kelvin sign folds to k", []string{"kind", kelvin + "ind"}, true},
-		{"long s folds to s", []string{"schemas", longS + "chemas"}, true},
+		{"underscore is not ignored", []string{"userName", "user_name"}, false},
+		{"kelvin sign lowers to k", []string{"kind", kelvin + "ind"}, true},
+		{"dotted capital I lowers to i", []string{"active", "act" + dottedCapitalI + "ve"}, true},
+		{"long s does not lower to s", []string{"schemas", longS + "chemas"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1013,28 +1015,10 @@ func TestHasCaseFoldedDuplicateKey(t *testing.T) {
 			for _, k := range tc.keys {
 				m[k] = json.RawMessage(`true`)
 			}
-			if got := hasCaseFoldedDuplicateKey(m); got != tc.want {
-				t.Errorf("hasCaseFoldedDuplicateKey(%q) = %v, want %v", tc.keys, got, tc.want)
+			if got := namesAttributeTwice(m); got != tc.want {
+				t.Errorf("namesAttributeTwice(%q) = %v, want %v", tc.keys, got, tc.want)
 			}
 		})
-	}
-}
-
-// TestFoldKey_AgreesWithEqualFold checks foldKey against strings.EqualFold on
-// pairs drawn from ASCII and from runes with multi-member fold orbits.
-func TestFoldKey_AgreesWithEqualFold(t *testing.T) {
-	t.Parallel()
-
-	samples := []string{
-		"a", "A", "k", "K", string(rune(0x212A)), "s", "S", string(rune(0x017F)),
-		"ß", "ẞ", "σ", "Σ", "ς", "_", "-", "userName", "USERNAME", "user_name",
-	}
-	for _, a := range samples {
-		for _, b := range samples {
-			if got, want := foldKey(a) == foldKey(b), strings.EqualFold(a, b); got != want {
-				t.Errorf("foldKey(%q) == foldKey(%q) is %v, strings.EqualFold is %v", a, b, got, want)
-			}
-		}
 	}
 }
 
@@ -1043,6 +1027,7 @@ func TestSCIMPatchUser_PathlessReplaceAttributeNamedTwice(t *testing.T) {
 	env := newSCIMUserTestEnv(t)
 	ctx := context.Background()
 
+	dottedCapitalI := string(rune(0x0130)) // LATIN CAPITAL LETTER I WITH DOT ABOVE; strings.ToLower gives "i"
 	tests := []struct {
 		name           string
 		value          string
@@ -1050,6 +1035,11 @@ func TestSCIMPatchUser_PathlessReplaceAttributeNamedTwice(t *testing.T) {
 		wantDeactivate bool
 	}{
 		{"case-variant duplicate refused", `{"active":false,"Active":true}`, http.StatusBadRequest, false},
+		{
+			"duplicate after strings.ToLower refused",
+			`{"active":false,"act` + dottedCapitalI + `ve":true}`,
+			http.StatusBadRequest, false,
+		},
 		{"case-variant duplicate of an ignored attribute refused", `{"displayName":"a","DISPLAYNAME":"b"}`, http.StatusBadRequest, false},
 		{"case-variant name accepted", `{"Active":false}`, http.StatusOK, true},
 	}

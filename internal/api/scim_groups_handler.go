@@ -369,6 +369,8 @@ func (srv *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request) {
 			if pathLower == "members" {
 				userIDs, err := extractMemberValues(op.Value)
 				if err != nil {
+					// The error names JSON pointers, member names and Go types, never member values.
+					slog.DebugContext(ctx, "scim: patch add members value refused", "error", err)
 					writeSCIMError(w, http.StatusBadRequest, "invalidValue", "invalid members value")
 					return
 				}
@@ -384,6 +386,8 @@ func (srv *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request) {
 		case "remove":
 			userIDs, err := srv.extractRemoveTargets(op)
 			if err != nil {
+				// The error names JSON pointers, member names and Go types, never member values.
+				slog.DebugContext(ctx, "scim: patch remove members value refused", "error", err)
 				writeSCIMError(w, http.StatusBadRequest, "invalidValue", "invalid members value")
 				return
 			}

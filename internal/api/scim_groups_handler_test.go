@@ -711,6 +711,15 @@ func TestSCIMPatchGroup_MemberValueNamedTwiceRefused(t *testing.T) {
 		assertInvalidMembersValue(t, resp)
 		env.assertSCIMGroupMembers(t, groupID)
 	})
+
+	t.Run("remove value that is neither array nor object", func(t *testing.T) {
+		groupID := env.createSCIMGroupWithMembers(t, "MemberRemoveString", userA)
+		resp := env.patchSCIMGroupRaw(t, groupID, fmt.Sprintf(
+			`{"op":"remove","path":"members","value":%q}`, userA))
+		defer resp.Body.Close()
+		assertInvalidMembersValue(t, resp)
+		env.assertSCIMGroupMembers(t, groupID, userA)
+	})
 }
 
 func TestSCIMPatchGroup_MemberValueAccepted(t *testing.T) {

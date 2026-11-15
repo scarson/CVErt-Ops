@@ -66,12 +66,12 @@ Why this matters here: the phases ship as separate PRs over several sessions, tw
      in the Deviations / Discoveries subsections below it — never above the table. -->
 
 **Plan review:** ✅ 2026-11-14 — 5 rounds (2 self, 2 independent cold reads with go1.27.4 probes, 1 self pass on round-4 fixes): 11, 17, 0, 9, 0 findings; all fixed in place
-**Overall:** ⬜ Not started
+**Overall:** 🚧 In progress (Phase 1 claimed 2026-11-15T21:28Z)
 
 | Phase | Status | Ship SHA(s) | PR | Notes |
 |---|---|---|---|---|
 | 0 — Precondition: strict DSL parsing on `dev` | ✅ Merged 2026-11-15 | `49eb674` (merge) | [#252](https://github.com/scarson/CVErt-Ops/pull/252) | `parser.go` on `dev` has `UnknownKeyError`, `unknownKeyError(ptr)` and `RejectUnknownMembers(true)`, as Phase 5 assumes |
-| 1 — Notification channel config: one strict decoder for API and delivery | ⬜ | | | Decision 1 accepted 2026-11-15 |
+| 1 — Notification channel config: one strict decoder for API and delivery | 🚧 IN PROGRESS 2026-11-15T21:28Z, branch `claude/json-v2-phase-1` | | | Decision 1 accepted 2026-11-15 |
 | 2 — SCIM request bodies | ⬜ | | | |
 | 3 — huma-registered request bodies and `clearableField` | ⬜ | | | |
 | 4 — Opaque pagination cursors | ⬜ | | | After Phase 3 (same file) |

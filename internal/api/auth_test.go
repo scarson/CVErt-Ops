@@ -432,6 +432,99 @@ func TestLoginMalformedBodyRefused(t *testing.T) {
 	})
 }
 
+// TestRegisterCaseVariantMemberRefused verifies that register refuses a body
+// whose password member differs from the schema's name only in case. The
+// decoder matches names exactly, so if validation accepted the case variant the
+// account would be created with an empty password.
+func TestRegisterCaseVariantMemberRefused(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	const email = "casevariant@example.com"
+	body := `{"email":"` + email + `","Password":"test-password-1234"}`
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/register", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("build register request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("register request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", resp.StatusCode)
+	}
+	var problem huma.ErrorModel
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	found := false
+	for _, e := range problem.Errors {
+		if e.Location == "body.Password" && e.Message == "unexpected property" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("errors = %+v, want unexpected property at body.Password", problem.Errors)
+	}
+
+	user, err := db.GetUserByEmail(ctx, email)
+	if err != nil {
+		t.Fatalf("look up user: %v", err)
+	}
+	if user != nil {
+		t.Errorf("user %s was created from a refused body", user.ID)
+	}
+}
+
+// TestLoginCaseVariantSiblingRefused verifies that login refuses a body holding
+// a valid password member and a sibling whose name differs from it only in
+// case, at the sibling's location, without signing the user in.
+func TestLoginCaseVariantSiblingRefused(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	const email = "casesibling@example.com"
+	const password = "test-password-1234"
+	doRegister(t, ctx, ts, email, password)
+
+	body := `{"email":"` + email + `","password":"` + password + `","PASSWORD":"x"}`
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/login", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("build login request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("login request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", resp.StatusCode)
+	}
+	if cookies := resp.Cookies(); len(cookies) != 0 {
+		t.Errorf("response set %d cookies, want none", len(cookies))
+	}
+	var problem huma.ErrorModel
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	found := false
+	for _, e := range problem.Errors {
+		if e.Location == "body.PASSWORD" && e.Message == "unexpected property" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("errors = %+v, want unexpected property at body.PASSWORD", problem.Errors)
+	}
+}
+
 func TestLoginWrongPassword(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

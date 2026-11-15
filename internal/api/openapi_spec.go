@@ -25,6 +25,18 @@ func noopHandler[I, O any]() func(context.Context, *I) (*O, error) {
 	}
 }
 
+// huma's schema validation and the request body decoder must agree on member
+// names. The decoder (newHumaConfig's request format) matches names exactly and
+// ignores a name the schema does not define, so validation must match exactly
+// too. Otherwise a case-variant name such as "Password" passes validation in
+// place of "password" and the decoder drops it, handing the operation an empty
+// value that validation never checked. ValidateStrictCasing is a huma package
+// variable read on every request, so it is set once for the process here rather
+// than in a constructor.
+func init() {
+	huma.ValidateStrictCasing = true
+}
+
 // newHumaConfig returns the configuration shared by the production and spec-only
 // Huma APIs. Huma derives schema examples from it, so mergeSpecPaths would see
 // differing schemas if the two APIs were configured differently.
@@ -35,9 +47,11 @@ func newHumaConfig() huma.Config {
 	// documentation page read the prefix from here.
 	cfg.Servers = []*huma.Server{{URL: "/api/v1"}}
 	// Request bodies decode with encoding/json/v2's defaults, as chi bodies do in
-	// decodeJSON: duplicate names and invalid UTF-8 are refused and names match
-	// case-sensitively. Unknown members are left to huma's schema validation, which
-	// reports them with huma's locations. Responses keep huma's encoder.
+	// decodeJSON: duplicate names and invalid UTF-8 are refused, and names match
+	// exactly. Unknown members, case variants of a defined name among them, are
+	// left to huma's schema validation, which matches names exactly because init
+	// sets huma.ValidateStrictCasing, and reports them with huma's locations.
+	// Responses keep huma's encoder.
 	// huma looks a request's format up by its media type, or by the suffix of a
 	// "+json" media type, so these two keys cover every JSON body huma accepts.
 	requestJSON := huma.Format{

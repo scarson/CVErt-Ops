@@ -711,6 +711,14 @@ func TestWorker_EmailRecipientInvalidFailsPermanently(t *testing.T) {
 		t.Errorf("SMTP connections = %d, want 0", n)
 	}
 	assertConfigFailure(t, s, ctx, chanID, "invalid email recipient")
+	// Org viewers read last_error_for_org, and audit masking hides a recipient
+	// without '@', so neither error may name the stored recipient.
+	lastError, lastErrorForOrg := scanDeliveryErrors(t, s, ctx, chanID)
+	for _, recorded := range []string{lastError, lastErrorForOrg} {
+		if strings.Contains(recorded, "not-an-email") {
+			t.Errorf("delivery error %q names the stored recipient", recorded)
+		}
+	}
 }
 
 // TestWorker_RetentionSchedule verifies that scheduleRetention enqueues a

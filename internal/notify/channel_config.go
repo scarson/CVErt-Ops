@@ -27,7 +27,7 @@ type HeaderError struct {
 }
 
 func (e *HeaderError) Error() string {
-	return fmt.Sprintf("custom header %q: %s", e.Name, e.Message)
+	return fmt.Sprintf("%s (header %q)", e.Message, e.Name)
 }
 
 // CheckWebhookSettings reports settings that delivery cannot send: a blank url
@@ -90,17 +90,25 @@ func isHeaderValue(value string) bool {
 	return true
 }
 
-// RecipientError reports email recipients that delivery refuses. Problem is
-// fixed text that names no recipient; Error adds the recipient when there is one.
+// RecipientError reports email recipients that delivery refuses. Problem, which
+// Error returns, is fixed text that names no recipient: delivery errors are
+// shown to org viewers, and a stored recipient without '@' is not masked in
+// channel responses. Detail adds the recipient when there is one.
 type RecipientError struct {
 	Problem string
 	detail  string
 }
 
-func (e *RecipientError) Error() string {
+// Detail returns Problem with the offending recipient, for a caller answering
+// the person who just sent that recipient.
+func (e *RecipientError) Detail() string {
 	if e.detail != "" {
 		return e.detail
 	}
+	return e.Problem
+}
+
+func (e *RecipientError) Error() string {
 	return e.Problem
 }
 

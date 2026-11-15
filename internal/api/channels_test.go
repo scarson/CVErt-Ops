@@ -1684,7 +1684,7 @@ func TestChannelConfig_ParseErrors(t *testing.T) {
 			wantLocation: "body", wantMessage: "invalid JSON: ", wantStatus: http.StatusBadRequest, prefixOnly: true},
 		{"webhook url whitespace only", "webhook", `{"url":"  "}`, false, "body.config.url", noURL, 0, false},
 		{"webhook header name not a token", "webhook", `{"url":"https://h.example/x","custom_headers":{"X A":"v"}}`, false, "body.config.custom_headers.X A", "custom_headers name is not a valid header name", 0, false},
-		{"webhook header name empty", "webhook", `{"url":"https://h.example/x","custom_headers":{"":"v"}}`, false, "body.config.custom_headers.", "custom_headers name is not a valid header name", 0, false},
+		{"webhook header name empty", "webhook", `{"url":"https://h.example/x","custom_headers":{"":"v"}}`, false, "body.config.custom_headers", "custom_headers name is not a valid header name", 0, false},
 		{"webhook header value with CRLF", "webhook", `{"url":"https://h.example/x","custom_headers":{"X-A":"a\r\nX-B: b"}}`, false, "body.config.custom_headers.X-A", "custom_headers value contains a control character", 0, false},
 		{"webhook header value with NUL", "webhook", `{"url":"https://h.example/x","custom_headers":{"X-A":"a\u0000b"}}`, false, "body.config.custom_headers.X-A", "custom_headers value contains a control character", 0, false},
 		{"webhook reserved header", "webhook", `{"url":"https://h.example/x","custom_headers":{"content-type":"text/plain"}}`, false, "body.config.custom_headers.content-type", "custom_headers cannot set Content-Type", 0, false},

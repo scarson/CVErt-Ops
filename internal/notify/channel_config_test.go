@@ -269,6 +269,12 @@ func TestCheckWebhookSettings(t *testing.T) {
 		{name: "reserved name", settings: notify.WebhookSettings{URL: url, CustomHeaders: map[string]string{"content-type": "text/plain"}}, wantHeader: "content-type", wantMessage: "custom_headers cannot set Content-Type"},
 		{name: "reserved signature name", settings: notify.WebhookSettings{URL: url, CustomHeaders: map[string]string{"X-CVErtOps-Signature": "sha256=x"}}, wantHeader: "X-CVErtOps-Signature", wantMessage: "custom_headers cannot set X-Cvertops-Signature"},
 		{name: "names differ only in case", settings: notify.WebhookSettings{URL: url, CustomHeaders: map[string]string{"X-A": "1", "x-a": "2"}}, wantHeader: "x-a", wantMessage: caseOnly},
+		{name: "reserved upgrade", settings: notify.WebhookSettings{URL: url, CustomHeaders: map[string]string{"upgrade": "h2c"}}, wantHeader: "upgrade", wantMessage: "custom_headers cannot set Upgrade"},
+		{name: "reserved keep-alive", settings: notify.WebhookSettings{URL: url, CustomHeaders: map[string]string{"Keep-Alive": "timeout=5"}}, wantHeader: "Keep-Alive", wantMessage: "custom_headers cannot set Keep-Alive"},
+		{name: "reserved proxy-connection", settings: notify.WebhookSettings{URL: url, CustomHeaders: map[string]string{"proxy-connection": "close"}}, wantHeader: "proxy-connection", wantMessage: "custom_headers cannot set Proxy-Connection"},
+		{name: "reserved te", settings: notify.WebhookSettings{URL: url, CustomHeaders: map[string]string{"TE": "trailers"}}, wantHeader: "TE", wantMessage: "custom_headers cannot set Te"},
+		{name: "reserved trailer", settings: notify.WebhookSettings{URL: url, CustomHeaders: map[string]string{"Trailer": "X-B"}}, wantHeader: "Trailer", wantMessage: "custom_headers cannot set Trailer"},
+		{name: "first invalid header in name order", settings: notify.WebhookSettings{URL: url, CustomHeaders: map[string]string{"B-Bad": "a\x01b", "A Bad": "v"}}, wantHeader: "A Bad", wantMessage: badName},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -292,6 +298,9 @@ func TestCheckWebhookSettings(t *testing.T) {
 					t.Errorf("HeaderError = {Name %q, Message %q}, want {Name %q, Message %q}",
 						headerErr.Name, headerErr.Message, tc.wantHeader, tc.wantMessage)
 				}
+				if want := fmt.Sprintf("%s (header %q)", tc.wantMessage, tc.wantHeader); err.Error() != want {
+					t.Errorf("Error() = %q, want %q", err.Error(), want)
+				}
 				for _, value := range tc.settings.CustomHeaders {
 					if len(value) > 1 && strings.Contains(err.Error(), value) {
 						t.Errorf("error %q echoes a header value", err.Error())
@@ -311,21 +320,21 @@ func TestCheckEmailRecipients(t *testing.T) {
 	tests := []struct {
 		name        string
 		recipients  []string
-		wantProblem string // RecipientError.Problem; empty means no error
-		wantError   string // RecipientError.Error()
+		wantProblem string // RecipientError.Problem and Error(); empty means no error
+		wantDetail  string // RecipientError.Detail()
 	}{
 		{name: "valid", recipients: []string{"a@example.com", "Ops <ops@example.com>"}},
 		{name: "fifty", recipients: tooMany[:50]},
 		{name: "none", recipients: nil,
-			wantProblem: "email config must include at least one recipient", wantError: "email config must include at least one recipient"},
+			wantProblem: "email config must include at least one recipient", wantDetail: "email config must include at least one recipient"},
 		{name: "empty", recipients: []string{},
-			wantProblem: "email config must include at least one recipient", wantError: "email config must include at least one recipient"},
+			wantProblem: "email config must include at least one recipient", wantDetail: "email config must include at least one recipient"},
 		{name: "too many", recipients: tooMany,
-			wantProblem: "email config must not exceed 50 recipients", wantError: "email config must not exceed 50 recipients"},
+			wantProblem: "email config must not exceed 50 recipients", wantDetail: "email config must not exceed 50 recipients"},
 		{name: "not an address", recipients: []string{"not-an-email"},
-			wantProblem: "invalid email recipient", wantError: `invalid email recipient "not-an-email": mail: missing '@' or angle-addr`},
+			wantProblem: "invalid email recipient", wantDetail: `invalid email recipient "not-an-email": mail: missing '@' or angle-addr`},
 		{name: "duplicate in another case", recipients: []string{"a@example.com", "A@Example.com"},
-			wantProblem: "duplicate email recipient", wantError: "duplicate email recipient: a@example.com"},
+			wantProblem: "duplicate email recipient", wantDetail: "duplicate email recipient: a@example.com"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -341,12 +350,14 @@ func TestCheckEmailRecipients(t *testing.T) {
 			if !ok {
 				t.Fatalf("error = %v, want *notify.RecipientError", err)
 			}
-			if recipientErr.Problem != tc.wantProblem || recipientErr.Error() != tc.wantError {
-				t.Errorf("RecipientError = {Problem %q, Error %q}, want {Problem %q, Error %q}",
-					recipientErr.Problem, recipientErr.Error(), tc.wantProblem, tc.wantError)
+			if recipientErr.Problem != tc.wantProblem || recipientErr.Error() != tc.wantProblem || recipientErr.Detail() != tc.wantDetail {
+				t.Errorf("RecipientError = {Problem %q, Error %q, Detail %q}, want {Problem %q, Error %q, Detail %q}",
+					recipientErr.Problem, recipientErr.Error(), recipientErr.Detail(), tc.wantProblem, tc.wantProblem, tc.wantDetail)
 			}
-			if strings.Contains(recipientErr.Problem, "@") || strings.Contains(recipientErr.Problem, "not-an-email") {
-				t.Errorf("Problem %q names a recipient", recipientErr.Problem)
+			for _, recipient := range tc.recipients {
+				if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(recipient)) {
+					t.Errorf("Error() %q names a recipient", err.Error())
+				}
 			}
 		})
 	}

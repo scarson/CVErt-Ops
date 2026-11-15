@@ -33,13 +33,13 @@ import (
 type createChannelBody struct {
 	Name   string          `json:"name"`
 	Type   string          `json:"type"`
-	Config json.RawMessage `json:"config" doc:"A JSON object. Webhook channels take url (required) and custom_headers (an object of header names to string values); email channels take recipients (an array of addresses). Key names are case-sensitive, and any other key is refused."`
+	Config json.RawMessage `json:"config" doc:"A JSON object. Webhook channels take url (required, not blank) and custom_headers (an object of header names to string values); email channels take recipients (an array of 1 to 50 RFC 5322 addresses, no address twice). Key names are case-sensitive, and any other key is refused. A custom header name must be an HTTP token and differ from the other names by more than letter case; a value must not contain a control character other than tab. These names are reserved and refused: Host, Content-Type, Content-Length, Transfer-Encoding, Connection, Upgrade, Keep-Alive, Proxy-Connection, TE, Trailer, X-CVErt-Timestamp, X-CVErtOps-Signature, X-CVErtOps-Signature-Secondary."`
 }
 
 // patchChannelBody uses pointer fields so only supplied keys are updated.
 type patchChannelBody struct {
 	Name   *string          `json:"name,omitempty"`
-	Config *json.RawMessage `json:"config,omitempty" doc:"Replaces the whole config, with the keys the channel's type takes: url and custom_headers for webhook, recipients for email. Key names are case-sensitive, and any other key is refused. Masked values read from this API may be sent back to keep the stored secret while the webhook scheme and host are unchanged. A changed scheme or host needs each secret sent again."`
+	Config *json.RawMessage `json:"config,omitempty" doc:"Replaces the whole config, with the keys the channel's type takes: url (not blank) and custom_headers for webhook, recipients (1 to 50 RFC 5322 addresses, no address twice) for email. Key names are case-sensitive, and any other key is refused. A custom header name must be an HTTP token and differ from the other names by more than letter case; a value must not contain a control character other than tab. These names are reserved and refused: Host, Content-Type, Content-Length, Transfer-Encoding, Connection, Upgrade, Keep-Alive, Proxy-Connection, TE, Trailer, X-CVErt-Timestamp, X-CVErtOps-Signature, X-CVErtOps-Signature-Secondary. Masked values read from this API may be sent back to keep the stored secret while the webhook scheme and host are unchanged. A changed scheme or host needs each secret sent again."`
 }
 
 // ChannelEntry is the API shape of a notification channel. It is exported so
@@ -525,9 +525,10 @@ func (srv *Server) testWebhookChannel(ctx context.Context, channelID uuid.UUID) 
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
 
-	// The parse error names the offending key or JSON pointer but no stored value:
-	// v2 puts the value in the message only for numeric and boolean fields, and
-	// the webhook settings type has none (header names can appear in the pointer).
+	// The error names the offending key, JSON pointer or header name but no
+	// stored value: v2 puts the value in a parse error only for numeric and
+	// boolean fields, which the webhook settings type has none of, and
+	// notify.HeaderError and notify.ErrWebhookNoURL are fixed text.
 	cfg, err := notify.ChannelWebhookConfig(delivery)
 	if err != nil {
 		return fmt.Errorf("parse webhook config: %w", err)
@@ -728,10 +729,16 @@ func validateWebhookConfig(config json.RawMessage, private notify.PrivateDestina
 	}
 	if err := notify.CheckWebhookSettings(settings); err != nil {
 		if headerErr, ok := errors.AsType[*notify.HeaderError](err); ok {
-			ptr := jsontext.Pointer("/custom_headers").AppendToken(headerErr.Name)
-			return &huma.ErrorDetail{Message: headerErr.Message, Location: jsonLocation("body.config", ptr)}
+			location := "body.config.custom_headers"
+			if headerErr.Name != "" {
+				location = jsonLocation("body.config", jsontext.Pointer("/custom_headers").AppendToken(headerErr.Name))
+			}
+			return &huma.ErrorDetail{Message: headerErr.Message, Location: location}
 		}
-		return &huma.ErrorDetail{Message: "webhook config must include a non-empty url", Location: "body.config.url"}
+		if errors.Is(err, notify.ErrWebhookNoURL) {
+			return &huma.ErrorDetail{Message: notify.ErrWebhookNoURL.Error(), Location: "body.config.url"}
+		}
+		return &huma.ErrorDetail{Message: "webhook config is invalid", Location: "body.config"}
 	}
 	if err := validateWebhookURL(settings.URL, private); err != nil {
 		return &huma.ErrorDetail{Message: err.Error(), Location: "body.config.url"}
@@ -740,14 +747,15 @@ func validateWebhookConfig(config json.RawMessage, private notify.PrivateDestina
 }
 
 // validateEmailConfig validates email channel config with readEmailRecipients.
-// Recipient errors are reported at body.config.recipients.
+// Recipient errors are reported at body.config.recipients with the recipient
+// named, since the caller just sent it.
 func validateEmailConfig(config json.RawMessage) *huma.ErrorDetail {
 	_, err := readEmailRecipients(config)
 	if err == nil {
 		return nil
 	}
 	if recipientErr, ok := errors.AsType[*notify.RecipientError](err); ok {
-		return &huma.ErrorDetail{Message: recipientErr.Error(), Location: "body.config.recipients"}
+		return &huma.ErrorDetail{Message: recipientErr.Detail(), Location: "body.config.recipients"}
 	}
 	return channelConfigParseError(err, emailConfigNotObject)
 }
@@ -779,7 +787,7 @@ func channelConfigParseError(err error, fallback string) *huma.ErrorDetail {
 	case errors.Is(semErr.Err, jsonv2.ErrUnknownName):
 		return &huma.ErrorDetail{Message: validation.MsgUnexpectedProperty, Location: jsonLocation("body.config", ptr)}
 	case ptr == "/url":
-		return &huma.ErrorDetail{Message: "webhook config must include a non-empty url", Location: "body.config.url"}
+		return &huma.ErrorDetail{Message: notify.ErrWebhookNoURL.Error(), Location: "body.config.url"}
 	case ptr == "/custom_headers":
 		return &huma.ErrorDetail{Message: "custom_headers must be an object of header names to strings", Location: "body.config.custom_headers"}
 	case strings.HasPrefix(string(ptr), "/custom_headers/"):

@@ -71,13 +71,13 @@ Why this matters here: the phases ship as separate PRs over several sessions, tw
 | Phase | Status | Ship SHA(s) | PR | Notes |
 |---|---|---|---|---|
 | 0 — Precondition: strict DSL parsing on `dev` | ⬜ | | | Owned by branch `claude/strict-dsl-conditions` |
-| 1 — Notification channel config: one strict decoder for API and delivery | ⬜ | | | Starts after Sam answers decision 1 |
+| 1 — Notification channel config: one strict decoder for API and delivery | ⬜ | | | Decision 1 accepted 2026-11-15 |
 | 2 — SCIM request bodies | ⬜ | | | |
 | 3 — huma-registered request bodies and `clearableField` | ⬜ | | | |
 | 4 — Opaque pagination cursors | ⬜ | | | After Phase 3 (same file) |
 | 5 — Stored alert-rule conditions fail closed | ⬜ | | | After Phase 0 |
-| 6 — API response encoding | ⬜ | | | After Phase 3; waits on Sam's decision 3 |
-| 7 — Replace the JCS dependency with `jsontext.Value.Canonicalize` | ⬜ | | | Waits on Sam's decision 2 |
+| 6 — API response encoding | ⬜ | | | After Phase 3 and 4; decision 3 accepted 2026-11-15 |
+| 7 — Replace the JCS dependency with `jsontext.Value.Canonicalize` | ⬜ | | | Decision 2 accepted 2026-11-15 |
 | 8 — Pitfall entries, PLAN.md, final full suite | ⬜ | | | Last |
 
 ### Deviations
@@ -90,11 +90,11 @@ Why this matters here: the phases ship as separate PRs over several sessions, tw
 
 ## Decisions for Sam
 
-Decision 1 gates Phase 1, decision 2 gates Phase 7, decision 3 gates Phase 6. Phases 2–5 need none of them. Recommendations first.
+**Sam accepted all three recommendations on 2026-11-15.** Phases 1, 6 and 7 are therefore unblocked, and every "If declined" column, row and instruction in this plan is void: executors follow only the accepted path (including all rows marked *(decision 1)*). The original text of each decision is kept below for its reasoning.
 
-1. **Refuse channel config keys that delivery does not read.** Recommended: yes. Today the API accepts and stores any config key, masks the ones delivery does not read, and `TestChannelConfig_UnrecognisedFieldsMaskedAndKeptOnRoundTrip` (`internal/api/channels_redaction_test.go:~381`) pins that as intended behaviour. Refusing them makes "what the API validated" equal "what delivery reads" and removes a class of stored values nobody can see. Changing it means rewriting that test (it becomes a refusal test, and the masking of such keys in already-stored rows moves to a store-seeded test); the test is not deleted. If Sam declines, Phase 1 still ships case-sensitive matching and typed header values, and both parsers omit `RejectUnknownMembers` (Task 1.1 says where).
-2. **Replace `github.com/cyberphone/json-canonicalization` with the standard library's RFC 8785 canonicalizer** (`jsontext.Value.Canonicalize`, Go 1.27). Recommended: yes, as Phase 7. It removes a third-party dependency (pseudo-version `v0.0.0-20241213102144-19d51d7fe467`, no tagged release) from the `material_hash` path. The golden hash pins (`internal/merge/testdata/golden_material_hashes.json`) must not move; if any pin moves, the phase stops.
-3. **Encode API responses with v2.** Recommended: yes, last (Phase 6). The gain: a nil slice or map is written as `[]` or `{}`, which is what the published OpenAPI schemas (non-nullable arrays and objects) and the generated TypeScript types already promise; v1 writes `null`. The cost: every `omitempty` on a bool, number, pointer, interface, or `json.RawMessage` field of a response type needs `omitzero` to keep its current output, and HTML characters are no longer escaped (harmless for `application/json` with `X-Content-Type-Options: nosniff`). Phase 6 has a measurement step that lists every field whose output would change before anything is switched.
+1. **Refuse channel config keys that delivery does not read.** Accepted 2026-11-15. Today the API accepts and stores any config key, masks the ones delivery does not read, and `TestChannelConfig_UnrecognisedFieldsMaskedAndKeptOnRoundTrip` (`internal/api/channels_redaction_test.go:~381`) pins that as intended behaviour. Refusing them makes "what the API validated" equal "what delivery reads" and removes a class of stored values nobody can see. Changing it means rewriting that test (it becomes a refusal test, and the masking of such keys in already-stored rows moves to a store-seeded test); the test is not deleted. If Sam declines, Phase 1 still ships case-sensitive matching and typed header values, and both parsers omit `RejectUnknownMembers` (Task 1.1 says where).
+2. **Replace `github.com/cyberphone/json-canonicalization` with the standard library's RFC 8785 canonicalizer** (`jsontext.Value.Canonicalize`, Go 1.27). Accepted 2026-11-15, as Phase 7. It removes a third-party dependency (pseudo-version `v0.0.0-20241213102144-19d51d7fe467`, no tagged release) from the `material_hash` path. The golden hash pins (`internal/merge/testdata/golden_material_hashes.json`) must not move; if any pin moves, the phase stops.
+3. **Encode API responses with v2.** Accepted 2026-11-15, last (Phase 6). The gain: a nil slice or map is written as `[]` or `{}`, which is what the published OpenAPI schemas (non-nullable arrays and objects) and the generated TypeScript types already promise; v1 writes `null`. The cost: every `omitempty` on a bool, number, pointer, interface, or `json.RawMessage` field of a response type needs `omitzero` to keep its current output, and HTML characters are no longer escaped (harmless for `application/json` with `X-Content-Type-Options: nosniff`). Phase 6 has a measurement step that lists every field whose output would change before anything is switched.
 
 ---
 
@@ -832,12 +832,12 @@ Commit: `fix(api): encode huma responses with the API's response options`
 
 ```
 Phase 0 (other branch) ──────────────► Phase 5
-Phase 1 (needs decision 1) ─┐
+Phase 1 ────────────────────┐
 Phase 2 ────────────────────┼─ independent of each other and of 0
-Phase 3 ────────────────────┴─► Phase 4 ─► Phase 6 (needs decision 3)
-Phase 7 (needs decision 2), independent
+Phase 3 ────────────────────┴─► Phase 4 ─► Phase 6
+Phase 7, independent
 Phase 8 last
-Suggested order while decisions are open: 2, 3, 4, then 5 when Phase 0 lands, then 1, 6, 7 as decisions arrive.
+Suggested order: 1, 2, 3, 4, 6, 7, with 5 as soon as Phase 0 lands. (All three decisions were accepted on 2026-11-15.)
 ```
 
 Four phases edit `internal/api/contract.go` (Task 1.2 `bodyLocation`; Task 3.2 `clearableField`; Phase 4 `decodePageCursor`; Task 6.3 writers), and Phases 3 and 6 both edit `newHumaConfig`. Never run two of these phases at the same time; each starts from a `dev` that holds the previous one. Run integration tests from one session at a time: Docker on this host is shared, and parallel testcontainers runs have overloaded it before.

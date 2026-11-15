@@ -1664,32 +1664,49 @@ func TestChannelConfig_ParseErrors(t *testing.T) {
 		createOnly   bool // PATCH decodes "config":null as an omitted config
 		wantLocation string
 		wantMessage  string
+		wantStatus   int  // 0 means 422
+		prefixOnly   bool // wantMessage is a prefix: the rest is the decoder's text
 	}{
-		{"webhook url in another case", "webhook", `{"URL":"https://h.example/x"}`, false, "body.config.URL", unexpected},
-		{"webhook unknown key", "webhook", `{"url":"https://h.example/x","note":"x"}`, false, "body.config.note", unexpected},
-		{"webhook header value not a string", "webhook", `{"url":"https://h.example/x","custom_headers":{"X-A":1}}`, false, "body.config.custom_headers.X-A", headerNotString},
-		{"webhook header value null", "webhook", `{"url":"https://h.example/x","custom_headers":{"X-A":null}}`, false, "body.config.custom_headers.X-A", headerNotString},
-		{"webhook headers not an object", "webhook", `{"url":"https://h.example/x","custom_headers":"x"}`, false, "body.config.custom_headers", headersNotObject},
-		{"webhook url not a string", "webhook", `{"url":1}`, false, "body.config.url", noURL},
-		{"webhook url null", "webhook", `{"url":null}`, false, "body.config.url", noURL},
-		{"webhook config null", "webhook", `null`, true, "body.config", notWebhookObject},
-		{"webhook config array", "webhook", `[]`, false, "body.config", notWebhookObject},
-		{"webhook config string", "webhook", `"x"`, false, "body.config", notWebhookObject},
-		{"email recipients in another case", "email", `{"Recipients":["a@example.com"]}`, false, "body.config.Recipients", unexpected},
-		{"email recipients not an array", "email", `{"recipients":"a@example.com"}`, false, "body.config.recipients", noRecipients},
-		{"email recipient null", "email", `{"recipients":[null]}`, false, "body.config.recipients", noRecipients},
-		{"email config null", "email", `null`, true, "body.config", noRecipients},
-		{"email config array", "email", `[]`, false, "body.config", noRecipients},
-		{"email config string", "email", `"x"`, false, "body.config", noRecipients},
+		{desc: "duplicate key in config", chType: "webhook", config: `{"url":"https://h.example/x","url":"https://h.example/y"}`,
+			wantLocation: "body", wantMessage: "invalid JSON: ", wantStatus: http.StatusBadRequest, prefixOnly: true},
+		{"webhook url whitespace only", "webhook", `{"url":"  "}`, false, "body.config.url", noURL, 0, false},
+		{"email recipients empty", "email", `{"recipients":[]}`, false, "body.config.recipients", "email config must include at least one recipient", 0, false},
+		{"email recipients missing", "email", `{}`, false, "body.config.recipients", "email config must include at least one recipient", 0, false},
+		{"email recipient not an address", "email", `{"recipients":["not-an-email"]}`, false, "body.config.recipients", `invalid email recipient "not-an-email": mail: missing '@' or angle-addr`, 0, false},
+		{"email recipient duplicate", "email", `{"recipients":["a@example.com","A@example.com"]}`, false, "body.config.recipients", "duplicate email recipient: a@example.com", 0, false},
+		{"webhook url in another case", "webhook", `{"URL":"https://h.example/x"}`, false, "body.config.URL", unexpected, 0, false},
+		{"webhook unknown key", "webhook", `{"url":"https://h.example/x","note":"x"}`, false, "body.config.note", unexpected, 0, false},
+		{"webhook header value not a string", "webhook", `{"url":"https://h.example/x","custom_headers":{"X-A":1}}`, false, "body.config.custom_headers.X-A", headerNotString, 0, false},
+		{"webhook header value null", "webhook", `{"url":"https://h.example/x","custom_headers":{"X-A":null}}`, false, "body.config.custom_headers.X-A", headerNotString, 0, false},
+		{"webhook headers not an object", "webhook", `{"url":"https://h.example/x","custom_headers":"x"}`, false, "body.config.custom_headers", headersNotObject, 0, false},
+		{"webhook url not a string", "webhook", `{"url":1}`, false, "body.config.url", noURL, 0, false},
+		{"webhook url null", "webhook", `{"url":null}`, false, "body.config.url", noURL, 0, false},
+		{"webhook config null", "webhook", `null`, true, "body.config", notWebhookObject, 0, false},
+		{"webhook config array", "webhook", `[]`, false, "body.config", notWebhookObject, 0, false},
+		{"webhook config string", "webhook", `"x"`, false, "body.config", notWebhookObject, 0, false},
+		{"email recipients in another case", "email", `{"Recipients":["a@example.com"]}`, false, "body.config.Recipients", unexpected, 0, false},
+		{"email recipients not an array", "email", `{"recipients":"a@example.com"}`, false, "body.config.recipients", noRecipients, 0, false},
+		{"email recipient null", "email", `{"recipients":[null]}`, false, "body.config.recipients", noRecipients, 0, false},
+		{"email config null", "email", `null`, true, "body.config", noRecipients, 0, false},
+		{"email config array", "email", `[]`, false, "body.config", noRecipients, 0, false},
+		{"email config string", "email", `"x"`, false, "body.config", noRecipients, 0, false},
 	}
 	for i, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
 			assertProblem := func(t *testing.T, resp *http.Response) {
 				t.Helper()
+				wantStatus := tc.wantStatus
+				if wantStatus == 0 {
+					wantStatus = http.StatusUnprocessableEntity
+				}
 				status, detail := channelConfigProblem(t, resp)
-				if status != http.StatusUnprocessableEntity || detail.Location != tc.wantLocation || detail.Message != tc.wantMessage {
-					t.Errorf("got %d {location %q, message %q}, want 422 {location %q, message %q}",
-						status, detail.Location, detail.Message, tc.wantLocation, tc.wantMessage)
+				messageOK := detail.Message == tc.wantMessage
+				if tc.prefixOnly {
+					messageOK = strings.HasPrefix(detail.Message, tc.wantMessage)
+				}
+				if status != wantStatus || detail.Location != tc.wantLocation || !messageOK {
+					t.Errorf("got %d {location %q, message %q}, want %d {location %q, message %q (prefix only: %v)}",
+						status, detail.Location, detail.Message, wantStatus, tc.wantLocation, tc.wantMessage, tc.prefixOnly)
 				}
 			}
 			t.Run("create", func(t *testing.T) {
@@ -1707,5 +1724,60 @@ func TestChannelConfig_ParseErrors(t *testing.T) {
 				assertProblem(t, resp)
 			})
 		})
+	}
+}
+
+// TestPatchChannel_NullConfigKeepsStoredConfig pins that PATCH decodes
+// "config":null as a config that was not sent: 200, stored config unchanged.
+func TestPatchChannel_NullConfigKeepsStoredConfig(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateChannel(t, ctx, ts, token, reg.OrgID, validChannelBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var created struct {
+		ID string `json:"id"`
+	}
+	decodeCreated(t, createResp, &created)
+	channelID := mustParseUUID(t, created.ID)
+
+	before, err := db.GetNotificationChannelForDelivery(ctx, channelID)
+	if err != nil || before == nil {
+		t.Fatalf("load channel: row=%v err=%v", before, err)
+	}
+	resp := doPatchChannel(t, ctx, ts, token, reg.OrgID, created.ID, `{"config":null}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("patch config null: got %d, want 200", resp.StatusCode)
+	}
+	after, err := db.GetNotificationChannelForDelivery(ctx, channelID)
+	if err != nil || after == nil {
+		t.Fatalf("reload channel: row=%v err=%v", after, err)
+	}
+	if !bytes.Equal(after.Config, before.Config) {
+		t.Errorf("patch config null changed stored config: before %s, after %s", before.Config, after.Config)
+	}
+}
+
+// TestValidateChannelConfig_UnknownTypeRefused checks that a channel type with
+// no config parser is refused rather than passed unchecked. The HTTP handlers
+// cannot reach this branch today: create checks the type first and stored
+// channels have a known type.
+func TestValidateChannelConfig_UnknownTypeRefused(t *testing.T) {
+	t.Parallel()
+	detail := (&Server{}).validateChannelConfig("slack", json.RawMessage(`{"url":"https://h.example/x"}`))
+	if detail == nil {
+		t.Fatal("validateChannelConfig accepted an unknown channel type")
+	}
+	if detail.Location != "body.type" || detail.Message != "type must be 'webhook' or 'email'" {
+		t.Errorf("got {location %q, message %q}, want {location body.type, message %q}",
+			detail.Location, detail.Message, "type must be 'webhook' or 'email'")
 	}
 }

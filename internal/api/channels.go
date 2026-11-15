@@ -698,6 +698,7 @@ func channelAuditState(name, chType string, config json.RawMessage) map[string]a
 
 // validateChannelConfig checks a channel's config with the parser delivery uses
 // for its type and returns the error detail to report, or nil if it is valid.
+// A type with no parser is refused.
 func (srv *Server) validateChannelConfig(chType string, config json.RawMessage) *huma.ErrorDetail {
 	switch chType {
 	case "webhook":
@@ -705,8 +706,9 @@ func (srv *Server) validateChannelConfig(chType string, config json.RawMessage) 
 	case "email":
 		_, detail := validateEmailConfig(config)
 		return detail
+	default:
+		return &huma.ErrorDetail{Message: "type must be 'webhook' or 'email'", Location: "body.type"}
 	}
-	return nil
 }
 
 // validateWebhookConfig validates webhook channel config: it must decode with

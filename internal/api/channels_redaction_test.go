@@ -398,6 +398,21 @@ func assertNoInertValue(t *testing.T, label, body string) {
 	}
 }
 
+// assertUnrecognisedFieldsMasked decodes a JSON object and checks that each key
+// of inertFieldChannelBody that delivery never reads holds the masked placeholder.
+func assertUnrecognisedFieldsMasked(t *testing.T, label string, object json.RawMessage) {
+	t.Helper()
+	var fields map[string]any
+	if err := json.Unmarshal(object, &fields); err != nil {
+		t.Fatalf("%s: decode: %v", label, err)
+	}
+	for _, key := range []string{"auth", "account", "extra", "nested"} {
+		if fields[key] != "[REDACTED]" {
+			t.Errorf("%s: %s = %v, want [REDACTED]", label, key, fields[key])
+		}
+	}
+}
+
 // TestCreateChannel_RefusesKeysDeliveryDoesNotRead covers config keys delivery
 // never reads: the API refuses them at the first such key in sorted order.
 func TestCreateChannel_RefusesKeysDeliveryDoesNotRead(t *testing.T) {
@@ -442,7 +457,10 @@ func TestChannelConfig_StoredUnrecognisedFieldsMasked(t *testing.T) {
 
 	getResp := doGetChannel(t, ctx, ts, token, reg.OrgID, channelID)
 	defer getResp.Body.Close() //nolint:errcheck,gosec // G104
-	raw, _ := io.ReadAll(getResp.Body)
+	raw, err := io.ReadAll(getResp.Body)
+	if err != nil {
+		t.Fatalf("read get response: %v", err)
+	}
 	if getResp.StatusCode != http.StatusOK {
 		t.Fatalf("get: got %d: %s", getResp.StatusCode, raw)
 	}
@@ -451,19 +469,14 @@ func TestChannelConfig_StoredUnrecognisedFieldsMasked(t *testing.T) {
 	if err := json.Unmarshal(raw, &read); err != nil {
 		t.Fatalf("decode get: %v", err)
 	}
-	var shown map[string]any
-	if err := json.Unmarshal(read.Config, &shown); err != nil {
-		t.Fatalf("decode shown config: %v", err)
-	}
-	for _, key := range []string{"auth", "account", "extra", "nested"} {
-		if shown[key] != "[REDACTED]" {
-			t.Errorf("shown %s = %v, want [REDACTED]", key, shown[key])
-		}
-	}
+	assertUnrecognisedFieldsMasked(t, "get response config", read.Config)
 
 	renameResp := doPatchChannel(t, ctx, ts, token, reg.OrgID, channelID, `{"name":"Renamed Legacy Hook"}`)
 	defer renameResp.Body.Close() //nolint:errcheck,gosec // G104
-	renamed, _ := io.ReadAll(renameResp.Body)
+	renamed, err := io.ReadAll(renameResp.Body)
+	if err != nil {
+		t.Fatalf("read rename patch response: %v", err)
+	}
 	if renameResp.StatusCode != http.StatusOK {
 		t.Fatalf("rename patch: got %d: %s", renameResp.StatusCode, renamed)
 	}
@@ -475,6 +488,8 @@ func TestChannelConfig_StoredUnrecognisedFieldsMasked(t *testing.T) {
 	}
 	assertNoInertValue(t, "audit old_state", string(entry.OldState))
 	assertNoInertValue(t, "audit new_state", string(entry.NewState))
+	assertUnrecognisedFieldsMasked(t, "audit old_state", entry.OldState)
+	assertUnrecognisedFieldsMasked(t, "audit new_state", entry.NewState)
 
 	before, err := db.GetNotificationChannelForDelivery(ctx, row.ID)
 	if err != nil || before == nil {

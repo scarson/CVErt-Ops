@@ -87,8 +87,7 @@ func (srv *Server) scimCreateUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var req scimUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeSCIMError(w, http.StatusBadRequest, "", "invalid JSON body")
+	if !decodeSCIMBody(w, r, &req, "") {
 		return
 	}
 
@@ -591,8 +590,7 @@ func (srv *Server) scimReplaceUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req scimUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeSCIMError(w, http.StatusBadRequest, "", "invalid JSON body")
+	if !decodeSCIMBody(w, r, &req, "") {
 		return
 	}
 
@@ -753,8 +751,7 @@ func (srv *Server) scimPatchUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var patchOp SCIMPatchOp
-	if err := json.NewDecoder(r.Body).Decode(&patchOp); err != nil {
-		writeSCIMError(w, http.StatusBadRequest, "", "invalid JSON body")
+	if !decodeSCIMBody(w, r, &patchOp, "") {
 		return
 	}
 

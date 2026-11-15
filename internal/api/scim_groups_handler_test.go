@@ -581,6 +581,40 @@ func TestSCIMPatchGroup_NotFound(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
+func TestSCIMPatchGroup_DuplicateAttributeRefused(t *testing.T) {
+	t.Parallel()
+	env := newSCIMGroupTestEnv(t)
+	ctx := context.Background()
+
+	createResp := env.scimRequest(t, "POST", "/Groups", map[string]any{
+		"schemas":     []string{"urn:ietf:params:scim:schemas:core:2.0:Group"},
+		"displayName": "DupAttrOriginal",
+	})
+	defer createResp.Body.Close()
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	var created SCIMGroup
+	require.NoError(t, json.NewDecoder(createResp.Body).Decode(&created))
+
+	// "value" and "VALUE" name one attribute twice.
+	body := `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],` +
+		`"Operations":[{"op":"replace","path":"displayName","value":"DupAttrA","VALUE":"DupAttrB"}]}`
+	patchResp := sendSCIMRawBody(t, http.DefaultClient, http.MethodPatch,
+		env.baseURL+"/Groups/"+created.ID, env.rawToken, body)
+	defer patchResp.Body.Close()
+
+	require.Equal(t, http.StatusBadRequest, patchResp.StatusCode)
+	scimErr := decodeSCIMErrorResponse(t, patchResp)
+	assert.Equal(t, "400", scimErr.Status)
+	assert.Equal(t, "invalidValue", scimErr.SCIMType)
+	assert.Equal(t, "invalid JSON body", scimErr.Detail)
+
+	group, err := env.db.GetSCIMGroup(ctx, env.orgID, uuid.MustParse(created.ID))
+	require.NoError(t, err, "GetSCIMGroup")
+	require.NotNil(t, group)
+	assert.Equal(t, "DupAttrOriginal", group.DisplayName)
+}
+
 func TestSCIMReplaceGroup_NotFound(t *testing.T) {
 	t.Parallel()
 	env := newSCIMGroupTestEnv(t)

@@ -4,6 +4,7 @@ package api
 
 import (
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"strings"
@@ -95,6 +96,24 @@ func writeSCIMError(w http.ResponseWriter, status int, scimType, detail string) 
 		e.SCIMType = scimType
 	}
 	writeSCIMJSON(w, status, e)
+}
+
+// scimJSONOptions decode SCIM JSON: attribute names match case-insensitively
+// (RFC 7643 section 2.1) but '_' and '-' are not ignored, and encoding/json/v2's
+// defaults refuse duplicate names, trailing data and invalid UTF-8.
+var scimJSONOptions = jsonv2.JoinOptions(jsonv2.MatchCaseInsensitiveNames(true), json.MatchCaseSensitiveDelimiter(true))
+
+// decodeSCIMBody decodes a SCIM request body into dst. Attribute names match
+// case-insensitively, as RFC 7643 section 2.1 requires; attributes dst does not
+// define are ignored. Duplicate attributes (in any spelling), trailing data and
+// invalid UTF-8 are refused with a 400 SCIM error, which has been written when it
+// returns false. scimType is the SCIM error type the caller reports.
+func decodeSCIMBody(w http.ResponseWriter, r *http.Request, dst any, scimType string) bool {
+	if err := jsonv2.UnmarshalRead(r.Body, dst, scimJSONOptions); err != nil {
+		writeSCIMError(w, http.StatusBadRequest, scimType, "invalid JSON body")
+		return false
+	}
+	return true
 }
 
 // writeSCIMJSON writes any value as JSON with Content-Type: application/scim+json.

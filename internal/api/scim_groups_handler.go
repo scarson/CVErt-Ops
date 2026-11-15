@@ -36,8 +36,7 @@ func (srv *Server) scimCreateGroup(w http.ResponseWriter, r *http.Request) {
 	slog.InfoContext(ctx, "scim create group", slog.String("org_id", orgID.String()))
 
 	var body scimGroupRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeSCIMError(w, http.StatusBadRequest, "invalidValue", "invalid JSON body")
+	if !decodeSCIMBody(w, r, &body, "invalidValue") {
 		return
 	}
 
@@ -217,8 +216,7 @@ func (srv *Server) scimReplaceGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body scimGroupRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeSCIMError(w, http.StatusBadRequest, "invalidValue", "invalid JSON body")
+	if !decodeSCIMBody(w, r, &body, "invalidValue") {
 		return
 	}
 
@@ -344,8 +342,7 @@ func (srv *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var patch SCIMPatchOp
-	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
-		writeSCIMError(w, http.StatusBadRequest, "invalidValue", "invalid JSON body")
+	if !decodeSCIMBody(w, r, &patch, "invalidValue") {
 		return
 	}
 

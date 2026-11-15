@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -958,4 +959,77 @@ func TestSCIMDeleteUser_SoleOwner(t *testing.T) {
 		t.Fatalf("status = %d, want 400 (body: %s)", resp.StatusCode, string(body))
 	}
 	assertSCIMContentType(t, resp)
+}
+
+// sendSCIMRawBody sends body to rawURL byte for byte, so a test can send JSON
+// that json.Marshal cannot produce (duplicate attributes, trailing data).
+func sendSCIMRawBody(t *testing.T, client *http.Client, method, rawURL, token, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), method, rawURL, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/scim+json")
+	resp, err := client.Do(req) //nolint:gosec // G704: httptest URL
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	return resp
+}
+
+// decodeSCIMErrorResponse decodes a SCIM error body.
+func decodeSCIMErrorResponse(t *testing.T, resp *http.Response) SCIMError {
+	t.Helper()
+	var scimErr SCIMError
+	if err := json.NewDecoder(resp.Body).Decode(&scimErr); err != nil {
+		t.Fatalf("decode SCIM error: %v", err)
+	}
+	return scimErr
+}
+
+func TestSCIMCreateUser_DuplicateAttributeRefused(t *testing.T) {
+	t.Parallel()
+	env := newSCIMUserTestEnv(t)
+	ctx := context.Background()
+
+	body := `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],` +
+		`"externalId":"ext-dup-attr-001",` +
+		`"userName":"dup-attr-a@example.com","USERNAME":"dup-attr-b@example.com"}`
+	rawURL := fmt.Sprintf("%s/api/v1/orgs/%s/scim/v2/Users", env.ts.URL, env.orgID)
+	resp := sendSCIMRawBody(t, env.ts.Client(), http.MethodPost, rawURL, env.rawToken, body)
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusBadRequest {
+		respBody, _ := io.ReadAll(resp.Body) //nolint:errcheck
+		t.Fatalf("status = %d, want 400 (body: %s)", resp.StatusCode, string(respBody))
+	}
+	assertSCIMContentType(t, resp)
+	scimErr := decodeSCIMErrorResponse(t, resp)
+	if scimErr.Status != "400" {
+		t.Errorf("status field = %q, want %q", scimErr.Status, "400")
+	}
+	if scimErr.SCIMType != "" {
+		t.Errorf("scimType = %q, want empty", scimErr.SCIMType)
+	}
+	if scimErr.Detail != "invalid JSON body" {
+		t.Errorf("detail = %q, want %q", scimErr.Detail, "invalid JSON body")
+	}
+
+	linked, err := env.db.GetUserByProviderID(ctx, scimProvider(env.scimConfigID), "ext-dup-attr-001")
+	if err != nil {
+		t.Fatalf("GetUserByProviderID: %v", err)
+	}
+	if linked != nil {
+		t.Errorf("user %s was provisioned from a refused body", linked.ID)
+	}
+	for _, email := range []string{"dup-attr-a@example.com", "dup-attr-b@example.com"} {
+		u, err := env.db.GetUserByEmail(ctx, email)
+		if err != nil {
+			t.Fatalf("GetUserByEmail(%s): %v", email, err)
+		}
+		if u != nil {
+			t.Errorf("user %s was created from a refused body", email)
+		}
+	}
 }

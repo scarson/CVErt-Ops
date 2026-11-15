@@ -988,6 +988,116 @@ func decodeSCIMErrorResponse(t *testing.T, resp *http.Response) SCIMError {
 	return scimErr
 }
 
+func TestHasCaseFoldedDuplicateKey(t *testing.T) {
+	t.Parallel()
+
+	kelvin := string(rune(0x212A)) // KELVIN SIGN, folds to "k"
+	longS := string(rune(0x017F))  // LATIN SMALL LETTER LONG S, folds to "s"
+	tests := []struct {
+		name string
+		keys []string
+		want bool
+	}{
+		{"no keys", nil, false},
+		{"distinct keys", []string{"active", "displayName"}, false},
+		{"case variants", []string{"active", "Active"}, true},
+		{"case variants among others", []string{"userName", "active", "ACTIVE"}, true},
+		{"underscore is not folded", []string{"userName", "user_name"}, false},
+		{"kelvin sign folds to k", []string{"kind", kelvin + "ind"}, true},
+		{"long s folds to s", []string{"schemas", longS + "chemas"}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := make(map[string]json.RawMessage, len(tc.keys))
+			for _, k := range tc.keys {
+				m[k] = json.RawMessage(`true`)
+			}
+			if got := hasCaseFoldedDuplicateKey(m); got != tc.want {
+				t.Errorf("hasCaseFoldedDuplicateKey(%q) = %v, want %v", tc.keys, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFoldKey_AgreesWithEqualFold checks foldKey against strings.EqualFold on
+// pairs drawn from ASCII and from runes with multi-member fold orbits.
+func TestFoldKey_AgreesWithEqualFold(t *testing.T) {
+	t.Parallel()
+
+	samples := []string{
+		"a", "A", "k", "K", string(rune(0x212A)), "s", "S", string(rune(0x017F)),
+		"ß", "ẞ", "σ", "Σ", "ς", "_", "-", "userName", "USERNAME", "user_name",
+	}
+	for _, a := range samples {
+		for _, b := range samples {
+			if got, want := foldKey(a) == foldKey(b), strings.EqualFold(a, b); got != want {
+				t.Errorf("foldKey(%q) == foldKey(%q) is %v, strings.EqualFold is %v", a, b, got, want)
+			}
+		}
+	}
+}
+
+func TestSCIMPatchUser_PathlessReplaceAttributeNamedTwice(t *testing.T) {
+	t.Parallel()
+	env := newSCIMUserTestEnv(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name           string
+		value          string
+		wantStatus     int
+		wantDeactivate bool
+	}{
+		{"case-variant duplicate refused", `{"active":false,"Active":true}`, http.StatusBadRequest, false},
+		{"case-variant duplicate of an ignored attribute refused", `{"displayName":"a","DISPLAYNAME":"b"}`, http.StatusBadRequest, false},
+		{"case-variant name accepted", `{"Active":false}`, http.StatusOK, true},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			user := env.db.MustCreateUser(t, ctx, fmt.Sprintf("pathless-dup-%d@example.com", i), "Pathless Dup", "", 0)
+			if err := env.db.CreateOrgMember(ctx, env.orgID, user.ID, "viewer"); err != nil {
+				t.Fatalf("CreateOrgMember: %v", err)
+			}
+
+			body := `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],` +
+				`"Operations":[{"op":"replace","value":` + tc.value + `}]}`
+			rawURL := fmt.Sprintf("%s/api/v1/orgs/%s/scim/v2/Users/%s", env.ts.URL, env.orgID, user.ID)
+			resp := sendSCIMRawBody(t, env.ts.Client(), http.MethodPatch, rawURL, env.rawToken, body)
+			defer resp.Body.Close() //nolint:errcheck
+
+			if resp.StatusCode != tc.wantStatus {
+				respBody, _ := io.ReadAll(resp.Body) //nolint:errcheck
+				t.Fatalf("status = %d, want %d (body: %s)", resp.StatusCode, tc.wantStatus, string(respBody))
+			}
+			assertSCIMContentType(t, resp)
+			if tc.wantStatus == http.StatusBadRequest {
+				scimErr := decodeSCIMErrorResponse(t, resp)
+				if scimErr.Status != "400" {
+					t.Errorf("status field = %q, want %q", scimErr.Status, "400")
+				}
+				if scimErr.SCIMType != "invalidValue" {
+					t.Errorf("scimType = %q, want %q", scimErr.SCIMType, "invalidValue")
+				}
+				if want := "pathless operation value has duplicate attributes"; scimErr.Detail != want {
+					t.Errorf("detail = %q, want %q", scimErr.Detail, want)
+				}
+			}
+
+			member, err := env.db.GetOrgMemberFull(ctx, env.orgID, user.ID)
+			if err != nil {
+				t.Fatalf("GetOrgMemberFull: %v", err)
+			}
+			if member == nil {
+				t.Fatal("member is nil")
+			}
+			if member.DeactivatedAt.Valid != tc.wantDeactivate {
+				t.Errorf("deactivated = %v, want %v", member.DeactivatedAt.Valid, tc.wantDeactivate)
+			}
+		})
+	}
+}
+
 func TestSCIMCreateUser_DuplicateAttributeRefused(t *testing.T) {
 	t.Parallel()
 	env := newSCIMUserTestEnv(t)

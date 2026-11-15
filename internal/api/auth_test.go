@@ -328,7 +328,7 @@ func TestLoginUnknownFieldRefused(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("errors = %+v, want unexpected property at body.remember_me", problem.Errors)
+		t.Errorf("errors = %q, want unexpected property at body.remember_me", problemErrorSummary(problem))
 	}
 
 	schemaResp := postLogin(`{"$schema":"https://example.com/schemas/LoginInputBody.json","email":"loginextra@example.com","password":"test-password-1234"}`)
@@ -468,7 +468,7 @@ func TestRegisterCaseVariantMemberRefused(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("errors = %+v, want unexpected property at body.Password", problem.Errors)
+		t.Errorf("errors = %q, want unexpected property at body.Password", problemErrorSummary(problem))
 	}
 
 	user, err := db.GetUserByEmail(ctx, email)
@@ -521,7 +521,7 @@ func TestLoginCaseVariantSiblingRefused(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("errors = %+v, want unexpected property at body.PASSWORD", problem.Errors)
+		t.Errorf("errors = %q, want unexpected property at body.PASSWORD", problemErrorSummary(problem))
 	}
 }
 

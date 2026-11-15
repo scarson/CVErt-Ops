@@ -73,6 +73,17 @@ func hasProblemError(problem huma.ErrorModel, location, message string) bool {
 	return false
 }
 
+// problemErrorSummary lists each error of a problem as "location: message". It
+// leaves out each error's value, which for a refused request body holds the
+// whole body, password included, so failure output never prints a password.
+func problemErrorSummary(problem huma.ErrorModel) []string {
+	summary := make([]string, 0, len(problem.Errors))
+	for _, e := range problem.Errors {
+		summary = append(summary, e.Location+": "+e.Message)
+	}
+	return summary
+}
+
 // TestHumaBodyMemberNamesMatchExactly verifies that huma's schema validation
 // matches body member names exactly, as the encoding/json/v2 decoder does. A
 // member whose name differs from the schema's only in case must be refused by
@@ -89,12 +100,12 @@ func TestHumaBodyMemberNamesMatchExactly(t *testing.T) {
 			t.Fatalf("status = %d, want 422", rec.Code)
 		}
 		if len(p.received) != 0 {
-			t.Fatalf("handler called %d times with %+v, want 0", len(p.received), p.received)
+			t.Fatalf("handler called %d times, want 0", len(p.received))
 		}
 		problem := probeProblem(t, rec)
 		for _, name := range []string{"Email", "Password"} {
 			if !hasProblemError(problem, "body."+name, "unexpected property") {
-				t.Errorf("errors = %+v, want unexpected property at body.%s", problem.Errors, name)
+				t.Errorf("errors = %q, want unexpected property at body.%s", problemErrorSummary(problem), name)
 			}
 		}
 	})
@@ -110,7 +121,7 @@ func TestHumaBodyMemberNamesMatchExactly(t *testing.T) {
 		}
 		problem := probeProblem(t, rec)
 		if !hasProblemError(problem, "body.PASSWORD", "unexpected property") {
-			t.Errorf("errors = %+v, want unexpected property at body.PASSWORD", problem.Errors)
+			t.Errorf("errors = %q, want unexpected property at body.PASSWORD", problemErrorSummary(problem))
 		}
 	})
 

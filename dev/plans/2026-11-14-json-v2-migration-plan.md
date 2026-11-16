@@ -66,7 +66,7 @@ Why this matters here: the phases ship as separate PRs over several sessions, tw
      in the Deviations / Discoveries subsections below it — never above the table. -->
 
 **Plan review:** ✅ 2026-11-14 — 5 rounds (2 self, 2 independent cold reads with go1.27.4 probes, 1 self pass on round-4 fixes): 11, 17, 0, 9, 0 findings; all fixed in place
-**Overall:** 🚧 In progress (Phases 1–4 shipped 2026-11-15)
+**Overall:** 🚧 In progress (Phases 1–4 shipped 2026-11-15, Phase 5 2026-11-16)
 
 | Phase | Status | Ship SHA(s) | PR | Notes |
 |---|---|---|---|---|
@@ -75,7 +75,7 @@ Why this matters here: the phases ship as separate PRs over several sessions, tw
 | 2 — SCIM request bodies | ✅ Shipped 2026-11-15 | `d119417`, `9a19a70`, `c60ef2c`, `59d4b87`; merge `131f762` | [#259](https://github.com/scarson/CVErt-Ops/pull/259) | Full suite passed at `eb7b30c`. Also carries `f5e722a` (request-limit statement test result larger than the connection buffers) |
 | 3 — huma-registered request bodies and `clearableField` | ✅ Shipped 2026-11-15 | `1cb3844`, `16b17f0`, `74b1af2`; merge `384766b` | [#260](https://github.com/scarson/CVErt-Ops/pull/260) | Full suite passed at `94e3679`. Shipped with a case-variant validation bypass, fixed in #261 (`17d2cc2`, `huma.ValidateStrictCasing`); see Discoveries |
 | 4 — Opaque pagination cursors | ✅ Shipped 2026-11-15 | `02867f3`, `f1c873f`, `38bd58f`, `9e6309a`; merge `af57344` | [#261](https://github.com/scarson/CVErt-Ops/pull/261) | Full suite passed at `7df99cd`. Also carries the Phase 3 regression fix `17d2cc2` |
-| 5 — Stored alert-rule conditions fail closed | 🚧 IN PROGRESS 2026-11-15T23:57Z, branch `claude/json-v2-phase-5` | | | After Phase 0 |
+| 5 — Stored alert-rule conditions fail closed | ✅ Shipped 2026-11-16 | `b25569b`, `db003c3`, `b3c56ce`, `bdfcf67`; merge `1b17f78` | [#262](https://github.com/scarson/CVErt-Ops/pull/262) | Full suite passed at `bdfcf67`. Pre-deploy check: 0 `alert_rules` rows in every database on the host |
 | 6 — API response encoding | ⬜ | | | After Phase 3 and 4; decision 3 accepted 2026-11-15 |
 | 7 — Replace the JCS dependency with `jsontext.Value.Canonicalize` | ⬜ | | | Decision 2 accepted 2026-11-15 |
 | 8 — Pitfall entries, PLAN.md, final full suite | ⬜ | | | Last |
@@ -99,6 +99,8 @@ Why this matters here: the phases ship as separate PRs over several sessions, tw
 - `TestExecuteDSLQuery_CraftedCursor` built its cursor with key `"s"`, which `dslCursor` does not define, so it ran with a zero date instead of the far-future date its comment describes; fixed in Phase 4. `internal/store/dsl_executor_test.go`.
 - A partial page cursor (`{}`, or `{"id":"<uuid>"}` without its time) still decodes without error; the `admin_*` and feed list handlers then page with a zero time, which narrows the result rather than widening it. Outside Phase 4 (unknown members, not missing ones). `internal/api/contract.go` (`decodePageCursor` callers).
 - NL search checked its cursor only after the AI quota increment and the LLM call, so on a cache miss a bad cursor cost one quota unit and one LLM call before the 400; pre-existing order, fixed in Phase 4 by validating the cursor first (`store.ValidateDSLCursor`). `internal/api/ai.go` (`nlSearchHandler`).
+- `dsl.Parse` accepts a null condition element (`{"logic":"and","conditions":[null]}`, which v2 decodes into a zero `Condition`); `dsl.Validate` then refuses it as unknown field `""`, so the API still answers 422. `dsl.ParseConditions` (Phase 5) refuses null elements itself. `internal/alert/dsl/parser.go`.
+- An alert-rule dry run of a stored rule that `dsl.ParseConditions` or `dsl.Compile` refuses answers 500 "internal error", not a 422 naming the key; pre-existing for compile errors. `internal/api/alert_rules.go` (dry-run handler).
 - SCIM group PATCH with a pathless replace (`{"op":"replace","value":{"displayName":"..."}}`, the shape Okta uses to rename a group) answers 400 `invalidPath`; pre-existing, outside this plan. `internal/api/scim_groups_handler.go` (pathless branch of the PATCH operation switch).
 
 ---

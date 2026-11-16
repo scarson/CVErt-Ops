@@ -32,11 +32,8 @@ func (e *UnknownKeyError) Error() string {
 // JSON. Call Validate for semantic checks (field names, operators, value types).
 func Parse(data []byte) (Rule, error) {
 	var r Rule
-	if err := jsonv2.Unmarshal(data, &r, jsonv2.RejectUnknownMembers(true)); err != nil {
-		if semErr, ok := errors.AsType[*jsonv2.SemanticError](err); ok && errors.Is(semErr.Err, jsonv2.ErrUnknownName) {
-			return Rule{}, unknownKeyError(semErr.JSONPointer)
-		}
-		return Rule{}, fmt.Errorf("dsl: invalid JSON: %w", err)
+	if err := jsonv2.Unmarshal(data, &r, decodeOptions); err != nil {
+		return Rule{}, decodeError(err, "conditions")
 	}
 	if r.Logic != LogicAnd && r.Logic != LogicOr {
 		return Rule{}, fmt.Errorf("dsl: logic must be %q or %q, got %q", LogicAnd, LogicOr, r.Logic)
@@ -47,13 +44,55 @@ func Parse(data []byte) (Rule, error) {
 	return r, nil
 }
 
-// unknownKeyError locates the unknown key at ptr. Because condition values are
-// raw JSON, an unknown key is either a member of the rule object (/key) or a
-// member of a condition (/conditions/<index>/key).
-func unknownKeyError(ptr jsontext.Pointer) *UnknownKeyError {
+// ParseConditions decodes a stored conditions array with the key rules Parse
+// uses (an *UnknownKeyError for an undefined or case-variant key) and refuses
+// an empty or null array or an element that is not an object. Logic is stored
+// in its own column, which a CHECK constraint limits to "and" and "or". Like
+// Parse, it checks no field names, operators or values; Compile checks those
+// for a stored rule.
+func ParseConditions(data []byte) ([]Condition, error) {
+	// Pointer elements tell a null element, which v2 decodes into a struct as
+	// its zero value, apart from an object.
+	var elems []*Condition
+	if err := jsonv2.Unmarshal(data, &elems, decodeOptions); err != nil {
+		return nil, decodeError(err)
+	}
+	if len(elems) == 0 {
+		return nil, fmt.Errorf("dsl: conditions must be non-empty")
+	}
+	conditions := make([]Condition, len(elems))
+	for i, c := range elems {
+		if c == nil {
+			return nil, fmt.Errorf("dsl: conditions[%d] is not an object", i)
+		}
+		conditions[i] = *c
+	}
+	return conditions, nil
+}
+
+// decodeOptions are the options every DSL decode uses: encoding/json/v2's
+// defaults plus refusal of keys the DSL does not define.
+var decodeOptions = jsonv2.RejectUnknownMembers(true)
+
+// decodeError converts an error from a decode with decodeOptions: an unknown
+// key becomes an *UnknownKeyError located under conditionsPath (see
+// unknownKeyError); any other error is reported as invalid JSON.
+func decodeError(err error, conditionsPath ...string) error {
+	if semErr, ok := errors.AsType[*jsonv2.SemanticError](err); ok && errors.Is(semErr.Err, jsonv2.ErrUnknownName) {
+		return unknownKeyError(semErr.JSONPointer, conditionsPath)
+	}
+	return fmt.Errorf("dsl: invalid JSON: %w", err)
+}
+
+// unknownKeyError locates the unknown key at ptr. conditionsPath holds the
+// pointer tokens of the conditions array: ["conditions"] in a rule object, none
+// for a bare conditions array. Because condition values are raw JSON, an
+// unknown key is either a member of a condition (<conditionsPath>/<index>/key)
+// or, in a rule object, a member of the rule (/key).
+func unknownKeyError(ptr jsontext.Pointer, conditionsPath []string) *UnknownKeyError {
 	parents := slices.Collect(ptr.Parent().Tokens())
-	if len(parents) == 2 && parents[0] == "conditions" {
-		if i, err := strconv.Atoi(parents[1]); err == nil {
+	if len(parents) == len(conditionsPath)+1 && slices.Equal(parents[:len(conditionsPath)], conditionsPath) {
+		if i, err := strconv.Atoi(parents[len(conditionsPath)]); err == nil {
 			return &UnknownKeyError{Index: i, Key: ptr.LastToken()}
 		}
 	}

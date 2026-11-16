@@ -90,7 +90,7 @@ func ComputeMaterialHash(f MaterialFields) string {
 
 	jcs, err := canonicalJSON(raw)
 	if err != nil {
-		// JCS transform fails only on invalid JSON, which cannot happen here.
+		// canonicalJSON fails only on input json.Marshal never produces.
 		panic(fmt.Sprintf("merge: JCS transform: %v", err))
 	}
 

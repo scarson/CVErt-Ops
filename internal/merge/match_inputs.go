@@ -66,7 +66,7 @@ func ComputeMatchInputsHash(cna []feed.CNAAffected, cpe []feed.CPEMatch) string 
 	}
 	jcs, err := canonicalJSON(raw)
 	if err != nil {
-		// JCS transform fails only on invalid JSON, which cannot happen here.
+		// canonicalJSON fails only on input json.Marshal never produces.
 		panic(fmt.Sprintf("merge: JCS transform of match inputs: %v", err))
 	}
 	sum := sha256.Sum256(jcs)

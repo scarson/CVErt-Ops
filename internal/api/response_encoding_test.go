@@ -4,6 +4,7 @@ package api
 
 import (
 	"bytes"
+	"encoding"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"fmt"
@@ -78,8 +79,9 @@ func (d encodingDifference) String() string {
 type measuredResponse struct {
 	name string
 	typ  reflect.Type
-	// build returns the value to encode; nil means build from typ.
-	build func(fillInterfaces bool) any
+	// build returns a fixed value to encode; nil means build from typ once
+	// per responseValueVariants entry.
+	build func() any
 }
 
 // writeJSONResponseValues lists the values passed to writeJSON, the problem
@@ -90,7 +92,7 @@ type measuredResponse struct {
 func writeJSONResponseValues() []measuredResponse {
 	typeOf := func(name string, t reflect.Type) measuredResponse { return measuredResponse{name: name, typ: t} }
 	literal := func(name string, v any) measuredResponse {
-		return measuredResponse{name: name, typ: reflect.TypeOf(v), build: func(bool) any { return v }}
+		return measuredResponse{name: name, typ: reflect.TypeOf(v), build: func() any { return v }}
 	}
 	return []measuredResponse{
 		typeOf("huma.ErrorModel", reflect.TypeFor[huma.ErrorModel]()),
@@ -202,7 +204,23 @@ func TestResponseEncoding(t *testing.T) {
 			t.Logf("writeJSON value %s already measured through its schema", extra.name)
 			continue
 		}
+		if extra.build == nil {
+			seen[extra.typ] = true
+		}
 		measured = append(measured, extra)
+	}
+
+	// The measured values leave every slice and map nil, so a struct type that
+	// appears only as an element of one is measured on its own. Schema types
+	// reach theirs through component references; the writeJSON values do not.
+	for i := 0; i < len(measured); i++ {
+		for _, elem := range collectionElementTypes(measured[i].typ) {
+			if !seen[elem] {
+				seen[elem] = true
+				t.Logf("element type %s of %s measured on its own", elem, measured[i].name)
+				measured = append(measured, measuredResponse{name: elem.String(), typ: elem})
+			}
+		}
 	}
 
 	checked := map[reflect.Type]bool{}
@@ -214,18 +232,13 @@ func TestResponseEncoding(t *testing.T) {
 
 	var diffs []encodingDifference
 	for _, m := range measured {
-		for _, fill := range []bool{false, true} {
-			variant := "nil-interfaces"
-			if fill {
-				variant = "empty-string-interfaces"
-			}
-			var v any
-			if m.build != nil {
-				v = m.build(fill)
-			} else {
-				v = buildResponseValue(m.typ, fill).Interface()
-			}
-			diffs = append(diffs, compareEncodings(m.name, variant, m.typ.String(), v)...)
+		if m.build != nil {
+			diffs = append(diffs, compareEncodings(m.name, "literal", m.typ.String(), m.build())...)
+			continue
+		}
+		for _, variant := range responseValueVariants {
+			v := buildResponseValue(m.typ, variant).Interface()
+			diffs = append(diffs, compareEncodings(m.name, variant.name, m.typ.String(), v)...)
 		}
 	}
 
@@ -368,37 +381,105 @@ func collectSchemaRefs(node any, visit func(string)) {
 	}
 }
 
+// responseValueVariant sets how a measured value fills its json.RawMessage
+// and empty-interface fields; every other slice and map stays nil.
+type responseValueVariant struct {
+	name  string
+	raw   json.RawMessage // nil leaves every json.RawMessage nil
+	iface any             // nil leaves every empty interface nil
+}
+
+// responseValueVariants are the fills each measured type is encoded with. The
+// raw values are what JSONB columns produce; a zero-length non-nil
+// json.RawMessage is left out because no column can produce one.
+var responseValueVariants = []responseValueVariant{
+	{name: "nil"},
+	{name: "empty-string", iface: ""},
+	{name: "empty-object", raw: json.RawMessage(`{}`), iface: map[string]any{}},
+	{name: "empty-array", raw: json.RawMessage(`[]`), iface: []any{}},
+	{name: "null-raw", raw: json.RawMessage(`null`)},
+}
+
+// rawMessageType is the type of json.RawMessage fields.
+var rawMessageType = reflect.TypeFor[json.RawMessage]()
+
 // buildResponseValue returns a value of type t in which every settable pointer,
-// to maxResponsePointerDepth hops, points at a zero value, and every slice,
-// map, interface and json.RawMessage is nil. With fillInterfaces, every empty
-// interface holds "" instead of nil.
-func buildResponseValue(t reflect.Type, fillInterfaces bool) reflect.Value {
+// to maxResponsePointerDepth hops, points at a zero value, every slice and map
+// is nil, and every json.RawMessage and empty interface holds the variant's
+// value.
+func buildResponseValue(t reflect.Type, variant responseValueVariant) reflect.Value {
 	v := reflect.New(t).Elem()
-	fillResponseValue(v, 0, fillInterfaces)
+	fillResponseValue(v, 0, variant)
 	return v
 }
 
-func fillResponseValue(v reflect.Value, depth int, fillInterfaces bool) {
+func fillResponseValue(v reflect.Value, depth int, variant responseValueVariant) {
+	if v.Type() == rawMessageType {
+		if variant.raw != nil && v.CanSet() {
+			v.Set(reflect.ValueOf(variant.raw))
+		}
+		return
+	}
 	switch v.Kind() {
 	case reflect.Pointer:
 		if depth >= maxResponsePointerDepth || !v.CanSet() {
 			return
 		}
 		p := reflect.New(v.Type().Elem())
-		fillResponseValue(p.Elem(), depth+1, fillInterfaces)
+		fillResponseValue(p.Elem(), depth+1, variant)
 		v.Set(p)
 	case reflect.Struct:
 		for i := range v.NumField() {
 			// Exported fields of an unexported embedded struct are settable
 			// even when the embedded field itself is not.
-			fillResponseValue(v.Field(i), depth, fillInterfaces)
+			fillResponseValue(v.Field(i), depth, variant)
 		}
 	case reflect.Interface:
-		if fillInterfaces && v.CanSet() && v.NumMethod() == 0 {
-			v.Set(reflect.ValueOf(""))
+		if variant.iface != nil && v.CanSet() && v.NumMethod() == 0 {
+			v.Set(reflect.ValueOf(variant.iface))
 		}
 	default:
 	}
+}
+
+// collectionElementTypes returns the struct types that t holds as elements of
+// a slice, array or map, directly or through struct fields and pointers.
+func collectionElementTypes(t reflect.Type) []reflect.Type {
+	var out []reflect.Type
+	visited := map[reflect.Type]bool{}
+	var walk func(t reflect.Type, inCollection bool)
+	walk = func(t reflect.Type, inCollection bool) {
+		for t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+		switch t.Kind() {
+		case reflect.Slice, reflect.Array, reflect.Map:
+			walk(t.Elem(), true)
+		case reflect.Struct:
+			// A type with its own encoding, such as time.Time, has no fields
+			// for the encoders to differ on.
+			if reflect.PointerTo(t).Implements(reflect.TypeFor[json.Marshaler]()) ||
+				reflect.PointerTo(t).Implements(reflect.TypeFor[encoding.TextMarshaler]()) {
+				return
+			}
+			if inCollection {
+				out = append(out, t)
+				return
+			}
+			if visited[t] {
+				return
+			}
+			visited[t] = true
+			for i := range t.NumField() {
+				if f := t.Field(i); f.IsExported() || f.Anonymous {
+					walk(f.Type, false)
+				}
+			}
+		default:
+		}
+	}
+	walk(t, false)
+	return out
 }
 
 // compareEncodings encodes v with v1 and with v2 and returns each path at

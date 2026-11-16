@@ -14,6 +14,10 @@ import (
 	"github.com/scarson/cvert-ops/internal/tier"
 )
 
+// auditLogListEntry is one audit log entry as the API returns it. The raw JSON
+// fields are omitted only when nil, so a stored {} or null is still written. A
+// non-nil zero-length value would fail to encode; a JSONB column cannot
+// produce one.
 type auditLogListEntry struct {
 	ID         string          `json:"id"`
 	ActorID    *string         `json:"actor_id,omitzero" nullable:"false"`
@@ -24,9 +28,9 @@ type auditLogListEntry struct {
 	EntityID   string          `json:"entity_id"`
 	EntityName string          `json:"entity_name,omitempty"`
 	Success    bool            `json:"success"`
-	OldState   json.RawMessage `json:"old_state,omitempty"`
-	NewState   json.RawMessage `json:"new_state,omitempty"`
-	Metadata   json.RawMessage `json:"metadata,omitempty"`
+	OldState   json.RawMessage `json:"old_state,omitzero"`
+	NewState   json.RawMessage `json:"new_state,omitzero"`
+	Metadata   json.RawMessage `json:"metadata,omitzero"`
 	CreatedAt  string          `json:"created_at"`
 }
 

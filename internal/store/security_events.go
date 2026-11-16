@@ -63,16 +63,19 @@ func (s *Store) InsertSecurityEvent(ctx context.Context, p InsertSecurityEventPa
 }
 
 // SecurityEventRow is the API-friendly representation of a security event.
+// Details is omitted only when nil, so a stored {} or null is still written. A
+// non-nil zero-length value would fail to encode; a JSONB column cannot
+// produce one.
 type SecurityEventRow struct {
-	ID         uuid.UUID        `json:"id"`
-	EventType  string           `json:"event_type"`
-	Severity   string           `json:"severity"`
-	ActorIP    string           `json:"actor_ip,omitempty"`
-	ActorEmail string           `json:"actor_email,omitempty"`
-	UserID     *uuid.UUID       `json:"user_id,omitempty"`
-	OrgID      *uuid.UUID       `json:"org_id,omitempty"`
-	Details    json.RawMessage  `json:"details,omitempty"`
-	CreatedAt  time.Time        `json:"created_at"`
+	ID         uuid.UUID       `json:"id"`
+	EventType  string          `json:"event_type"`
+	Severity   string          `json:"severity"`
+	ActorIP    string          `json:"actor_ip,omitempty"`
+	ActorEmail string          `json:"actor_email,omitempty"`
+	UserID     *uuid.UUID      `json:"user_id,omitempty"`
+	OrgID      *uuid.UUID      `json:"org_id,omitempty"`
+	Details    json.RawMessage `json:"details,omitzero"`
+	CreatedAt  time.Time       `json:"created_at"`
 }
 
 // listSecurityEventsQuery is the raw SQL for listing security events.

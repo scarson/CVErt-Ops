@@ -68,8 +68,8 @@ type CVEItem struct {
 	CVEID              string   `json:"cve_id"`
 	Status             *string  `json:"status,omitzero" nullable:"false"`
 	DatePublished      *string  `json:"date_published,omitzero" nullable:"false"` // RFC3339
-	DateModified       string   `json:"date_modified"`            // RFC3339
-	DateFirstSeen      string   `json:"date_first_seen"`          // RFC3339
+	DateModified       string   `json:"date_modified"`                            // RFC3339
+	DateFirstSeen      string   `json:"date_first_seen"`                          // RFC3339
 	DescriptionPrimary *string  `json:"description_primary,omitzero" nullable:"false"`
 	Severity           *string  `json:"severity,omitzero" nullable:"false"`
 	CVSSv3Score        *float64 `json:"cvss_v3_score,omitempty"`

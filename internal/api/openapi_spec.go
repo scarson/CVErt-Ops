@@ -55,7 +55,8 @@ func newHumaConfig() huma.Config {
 	// Responses encode with responseJSONOptions, as writeJSON does: nil slices
 	// and maps as [] and {}, sorted map keys, invalid UTF-8 replaced, and a
 	// trailing newline. The value is encoded in full before any byte is written,
-	// so a failed encoding leaves the body empty.
+	// so a failed encoding writes nothing and the body holds only huma's error
+	// text. huma has already sent the operation's status by then.
 	// huma looks a format up by its media type, or by the suffix of a "+json"
 	// media type, so these two keys cover every JSON body huma reads or writes.
 	jsonFormat := huma.Format{

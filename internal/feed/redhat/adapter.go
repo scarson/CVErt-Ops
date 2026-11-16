@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -201,10 +202,12 @@ func detailToPatch(d detailRecord) feed.CanonicalPatch {
 	// Date published from public_date
 	p.DatePublished = feed.ParseTimePtr(d.PublicDate)
 
-	// CVSS v3: score is a string in the API, needs parsing
+	// CVSS v3: score is a string in the API, needs parsing. ParseFloat accepts
+	// NaN and infinity spellings; a non-finite score cannot be marshaled to JSON,
+	// so it would fail merge.Ingest and stop the feed run. Fetch logs the drop.
 	if d.CVSS3 != nil && d.CVSS3.BaseScore != "" {
 		score, err := strconv.ParseFloat(d.CVSS3.BaseScore, 64)
-		if err == nil {
+		if err == nil && !math.IsNaN(score) && !math.IsInf(score, 0) {
 			p.CVSSv3Score = &score
 			vec := strings.Clone(feed.StripNullBytes(d.CVSS3.ScoringVector))
 			p.CVSSv3Vector = &vec
@@ -476,6 +479,11 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		}
 
 		patch := detailToPatch(*detail)
+		if detail.CVSS3 != nil && detail.CVSS3.BaseScore != "" && patch.CVSSv3Score == nil {
+			a.log.WarnContext(ctx, "redhat: dropping unusable CVSS v3 score",
+				slog.String("cve_id", cveID),
+				slog.String("score_raw", detail.CVSS3.BaseScore))
+		}
 		patch.RawPayload = raw
 		patches = append(patches, patch)
 	}

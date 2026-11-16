@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -75,7 +76,6 @@ func NewAdapter(cfg *Config, client *http.Client) *Adapter {
 		rateLimiter: rate.NewLimiter(rate.Limit(rl), 1),
 	}
 }
-
 
 // Fetch retrieves one page of CVE data from the configured URL. It implements
 // feed.Adapter. The cursor encodes pagination state; pass nil for the first page.
@@ -406,6 +406,30 @@ func (a *Adapter) nextPageFromStream(nextCursorValue string, headers http.Header
 	}
 }
 
+// mapScore reads the CVSS score mapped to field. It returns nil when the field
+// is unmapped or absent, and drops a non-finite score with a warning: gjson's
+// Float parses a string value with strconv.ParseFloat, which accepts NaN and
+// infinity spellings, and turns a number too large for float64 into +Inf. A
+// non-finite score cannot be marshaled to JSON, so it would fail merge.Ingest
+// and stop the feed run.
+func (a *Adapter) mapScore(raw, field, cveID string) *float64 {
+	path, ok := a.cfg.Mapping.Fields[field]
+	if !ok {
+		return nil
+	}
+	v := gjson.Get(raw, path)
+	if !v.Exists() {
+		return nil
+	}
+	f := v.Float()
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		slog.Warn("generic feed: dropping non-finite CVSS score",
+			"feed", a.cfg.Name, "cve_id", cveID, "field", field, "score_raw", v.Raw)
+		return nil
+	}
+	return &f
+}
+
 // mapRecord converts a single gjson Result (one array element) to a CanonicalPatch.
 func (a *Adapter) mapRecord(record gjson.Result) feed.CanonicalPatch {
 	raw := record.Raw
@@ -427,12 +451,7 @@ func (a *Adapter) mapRecord(record gjson.Result) feed.CanonicalPatch {
 		}
 	}
 
-	if path, ok := a.cfg.Mapping.Fields["cvss_v3_score"]; ok {
-		if v := gjson.Get(raw, path); v.Exists() {
-			f := v.Float()
-			p.CVSSv3Score = &f
-		}
-	}
+	p.CVSSv3Score = a.mapScore(raw, "cvss_v3_score", p.CVEID)
 
 	if path, ok := a.cfg.Mapping.Fields["cvss_v3_vector"]; ok {
 		if v := gjson.Get(raw, path); v.Exists() {
@@ -441,12 +460,7 @@ func (a *Adapter) mapRecord(record gjson.Result) feed.CanonicalPatch {
 		}
 	}
 
-	if path, ok := a.cfg.Mapping.Fields["cvss_v4_score"]; ok {
-		if v := gjson.Get(raw, path); v.Exists() {
-			f := v.Float()
-			p.CVSSv4Score = &f
-		}
-	}
+	p.CVSSv4Score = a.mapScore(raw, "cvss_v4_score", p.CVEID)
 
 	if path, ok := a.cfg.Mapping.Fields["cvss_v4_vector"]; ok {
 		if v := gjson.Get(raw, path); v.Exists() {

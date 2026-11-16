@@ -453,6 +453,44 @@ func TestDetailToPatch_CVSSParsing(t *testing.T) {
 			wantScore:  nil,
 			wantVector: nil,
 		},
+		// strconv.ParseFloat accepts these spellings without error. A non-finite
+		// score cannot be marshaled to JSON, so merge.Ingest would fail on it.
+		{
+			name:       "NaN score",
+			cvss3:      &cvss3Info{BaseScore: "NaN", ScoringVector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"},
+			wantScore:  nil,
+			wantVector: nil,
+		},
+		{
+			name:       "lowercase nan score",
+			cvss3:      &cvss3Info{BaseScore: "nan", ScoringVector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"},
+			wantScore:  nil,
+			wantVector: nil,
+		},
+		{
+			name:       "Inf score",
+			cvss3:      &cvss3Info{BaseScore: "Inf", ScoringVector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"},
+			wantScore:  nil,
+			wantVector: nil,
+		},
+		{
+			name:       "+Infinity score",
+			cvss3:      &cvss3Info{BaseScore: "+Infinity", ScoringVector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"},
+			wantScore:  nil,
+			wantVector: nil,
+		},
+		{
+			name:       "-Inf score",
+			cvss3:      &cvss3Info{BaseScore: "-Inf", ScoringVector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"},
+			wantScore:  nil,
+			wantVector: nil,
+		},
+		{
+			name:       "overflowing score",
+			cvss3:      &cvss3Info{BaseScore: "1e400", ScoringVector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"},
+			wantScore:  nil,
+			wantVector: nil,
+		},
 		{
 			name: "score of 10.0",
 			cvss3: &cvss3Info{
@@ -727,6 +765,70 @@ func TestFetch_DetailNotFound(t *testing.T) {
 	}
 	if !strings.Contains(logOutput, "CVE-2025-0001") {
 		t.Errorf("expected log to contain 'CVE-2025-0001', got %q", logOutput)
+	}
+}
+
+func TestFetch_NonFiniteCVSSScoreDropped(t *testing.T) {
+	t.Parallel()
+
+	listResp := `[{"CVE": "CVE-2025-0001"}]`
+	detailResp := `{
+		"name": "CVE-2025-0001",
+		"public_date": "2025-01-15T00:00:00Z",
+		"cvss3": {"cvss3_base_score": "NaN", "cvss3_scoring_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"},
+		"details": ["Score field holds NaN"]
+	}`
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/cve.json"):
+			_, _ = w.Write([]byte(listResp))
+		case strings.HasSuffix(r.URL.Path, "/cve/CVE-2025-0001.json"):
+			_, _ = w.Write([]byte(detailResp))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := newTestAdapter(client)
+
+	var logBuf bytes.Buffer
+	adapter.log = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(result.Patches) != 1 {
+		t.Fatalf("len(Patches) = %d, want 1 (the record is kept without its score)", len(result.Patches))
+	}
+	p := result.Patches[0]
+	if p.CVSSv3Score != nil {
+		t.Errorf("CVSSv3Score = %v, want nil", *p.CVSSv3Score)
+	}
+	if p.DescriptionPrimary == nil || *p.DescriptionPrimary != "Score field holds NaN" {
+		t.Errorf("DescriptionPrimary = %v, want the record's description", p.DescriptionPrimary)
+	}
+	// merge.Ingest marshals the patch before anything else; a non-finite score
+	// would fail it and stop the feed run at this CVE.
+	if _, err := json.Marshal(p); err != nil {
+		t.Errorf("json.Marshal(patch) = %v, want nil", err)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "redhat: dropping unusable CVSS v3 score") {
+		t.Errorf("expected warning about the dropped score, got %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "CVE-2025-0001") || !strings.Contains(logOutput, "NaN") {
+		t.Errorf("expected warning to name the CVE and the raw score, got %q", logOutput)
 	}
 }
 

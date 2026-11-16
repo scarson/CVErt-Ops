@@ -77,7 +77,7 @@ Why this matters here: the phases ship as separate PRs over several sessions, tw
 | 4 — Opaque pagination cursors | ✅ Shipped 2026-11-15 | `02867f3`, `f1c873f`, `38bd58f`, `9e6309a`; merge `af57344` | [#261](https://github.com/scarson/CVErt-Ops/pull/261) | Full suite passed at `7df99cd`. Also carries the Phase 3 regression fix `17d2cc2` |
 | 5 — Stored alert-rule conditions fail closed | ✅ Shipped 2026-11-16 | `b25569b`, `db003c3`, `b3c56ce`, `bdfcf67`; merge `1b17f78` | [#262](https://github.com/scarson/CVErt-Ops/pull/262) | Full suite passed at `bdfcf67`. Pre-deploy check: 0 `alert_rules` rows in every database on the host |
 | 6 — API response encoding | ✅ Shipped 2026-11-16 | `250c0ba`, `1ff8098`, `df93bf0`, `326cc3b`, `ba535b3`; merge `4af04b2` | [#263](https://github.com/scarson/CVErt-Ops/pull/263) | Full suite at `8afcc23`: 38 packages ok, `internal/audit` failed at testcontainers reaper start-up and passed when rerun alone (earlier full runs at `c9eee76`, `89c84f4` passed). Measurement: 0 error, 0 other |
-| 7 — Replace the JCS dependency with `jsontext.Value.Canonicalize` | ⬜ | | | Decision 2 accepted 2026-11-15 |
+| 7 — Replace the JCS dependency with `jsontext.Value.Canonicalize` | 🚧 IN PROGRESS 2026-11-16T01:14Z, branch `claude/json-v2-phase-7` | | | Decision 2 accepted 2026-11-15 |
 | 8 — Pitfall entries, PLAN.md, final full suite | ⬜ | | | Last |
 
 ### Deviations

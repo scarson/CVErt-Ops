@@ -2088,7 +2088,7 @@ export interface components {
             /** @description The rule has been deleted since the event fired. */
             deleted: boolean;
             /** @description Items of the rule's watchlists that match the CVE, by the conditions rule evaluation uses, read now: an item added or removed since the event fired is reflected. Empty for a rule with no watchlists. */
-            matched_watchlist_items: components["schemas"]["AlertEventWatchlistMatch"][] | null;
+            matched_watchlist_items: components["schemas"]["AlertEventWatchlistMatch"][];
             /** @description The rule's name. */
             name: string;
         };
@@ -2135,7 +2135,7 @@ export interface components {
             name: string;
             status: string;
             updated_at: string;
-            watchlist_ids: string[] | null;
+            watchlist_ids: string[];
         };
         ApiKeyEntry: {
             created_at: string;
@@ -2196,7 +2196,7 @@ export interface components {
             package_name?: string;
             product?: string;
             vendor?: string;
-            versions: components["schemas"]["CNAVersionResponse"][] | null;
+            versions: components["schemas"]["CNAVersionResponse"][];
         };
         CNAVersionChangeResponse: {
             at?: string;
@@ -2204,7 +2204,7 @@ export interface components {
         };
         CNAVersionResponse: {
             /** @description Versions inside the range where status stops applying, such as a backported fix. */
-            changes?: components["schemas"]["CNAVersionChangeResponse"][] | null;
+            changes?: components["schemas"]["CNAVersionChangeResponse"][];
             less_than?: string;
             less_than_or_equal?: string;
             /** @description affected, unaffected or unknown. */
@@ -2229,12 +2229,12 @@ export interface components {
              */
             readonly $schema?: string;
             /** @description NVD's affected CPEs with their version ranges, one entry per range: NVD repeats a CPE with a different range per release branch. Empty until CVErt Ops ingests an NVD record with configurations for the CVE. A CPE that carries its version in the string has no range fields. */
-            affected_cpe_matches: components["schemas"]["CPEMatchResponse"][] | null;
+            affected_cpe_matches: components["schemas"]["CPEMatchResponse"][];
             /** @description Every CPE the sources name for this CVE, once each. Includes platforms NVD marks not vulnerable, such as the operating system an affected application runs on. For what is affected, read affected_cpe_matches. */
-            affected_cpes: components["schemas"]["AffectedCPEResponse"][] | null;
-            affected_packages: components["schemas"]["AffectedPackageResponse"][] | null;
+            affected_cpes: components["schemas"]["AffectedCPEResponse"][];
+            affected_packages: components["schemas"]["AffectedPackageResponse"][];
             /** @description Products and versions as the CVE Numbering Authority published them, which can be present before NVD analyses the CVE. Holds the distinct entries of both the CVE record and NVD's copy of it, so a product can appear twice when one copy lags the other. Empty until CVErt Ops ingests a record carrying this data, so an empty list does not mean the CNA published none. */
-            cna_affected: components["schemas"]["CNAAffectedResponse"][] | null;
+            cna_affected: components["schemas"]["CNAAffectedResponse"][];
             cve_id: string;
             cvss_score_diverges: boolean;
             /** Format: double */
@@ -2243,7 +2243,7 @@ export interface components {
             /** Format: double */
             cvss_v4_score?: number;
             cvss_v4_vector?: string;
-            cwe_ids: string[] | null;
+            cwe_ids: string[];
             date_first_seen: string;
             date_modified: string;
             date_published?: string;
@@ -2252,7 +2252,7 @@ export interface components {
             epss_score?: number;
             exploit_available: boolean;
             in_cisa_kev: boolean;
-            references: components["schemas"]["ReferenceResponse"][] | null;
+            references: components["schemas"]["ReferenceResponse"][];
             severity?: string;
             status?: string;
         };
@@ -2263,7 +2263,7 @@ export interface components {
             cvss_v3_score?: number;
             /** Format: double */
             cvss_v4_score?: number;
-            cwe_ids: string[] | null;
+            cwe_ids: string[];
             date_first_seen: string;
             date_modified: string;
             date_published?: string;
@@ -2314,7 +2314,7 @@ export interface components {
             /** @description The org the key belongs to; a key can reach no other org. Present only when principal is api_key. */
             org?: components["schemas"]["CallerOrg"];
             /** @description Each org where the user's membership is active, by name. Present only when principal is session. */
-            orgs?: components["schemas"]["CallerOrg"][] | null;
+            orgs?: components["schemas"]["CallerOrg"][];
             /**
              * @description api_key for a Bearer API key, session for a browser session cookie.
              * @enum {string}
@@ -2381,7 +2381,7 @@ export interface components {
              */
             readonly $schema?: string;
             /** @description Remaining pending items (if any) */
-            pending?: string[] | null;
+            pending?: string[];
         };
         ChannelCreateEntry: {
             /**
@@ -2421,7 +2421,7 @@ export interface components {
             /** @description Advisory or CVE ID; works with GET /cves/{cve_id}. */
             advisory_id: string;
             /** @description CVE IDs the advisory names. */
-            cve_ids: string[] | null;
+            cve_ids: string[];
             /**
              * Format: double
              * @description The advisory's CVSS v3 base score.
@@ -2444,7 +2444,7 @@ export interface components {
             /** @description Whether any CVE in cve_ids is in CISA KEV; null when the record names no CVE that is held, which means not known, not false. */
             in_cisa_kev: boolean | null;
             /** @description Ranges that contain the version. At most 20. */
-            matched_ranges: components["schemas"]["CheckMatchedRange"][] | null;
+            matched_ranges: components["schemas"]["CheckMatchedRange"][];
             /**
              * Format: int64
              * @description How many ranges contain the version. Verdicts and fixes use all of them.
@@ -2544,7 +2544,7 @@ export interface components {
         } | null;
         CheckItemResult: {
             /** @description Advisories that report the version affected or cannot be evaluated: affected first, then those in CISA KEV, then by score. At most 100. */
-            advisories: components["schemas"]["CheckAdvisory"][] | null;
+            advisories: components["schemas"]["CheckAdvisory"][];
             /** @description More advisories applied than are listed. Status and counts use all of them. */
             advisories_truncated: boolean;
             /** @description What the item was checked as; null for an invalid item. */
@@ -2573,7 +2573,7 @@ export interface components {
              */
             status: "affected" | "not_affected" | "unresolved" | "cannot_evaluate" | "no_advisory_found" | "invalid";
             /** @description Warnings about the answer. */
-            warnings: "cna_product_not_mapped"[] | null;
+            warnings: "cna_product_not_mapped"[];
         };
         CheckMatchedRange: {
             /** @description The CPE of an NVD CPE match. */
@@ -2600,7 +2600,7 @@ export interface components {
              */
             readonly $schema?: string;
             /** @description The components to check, answered in this order. An item that cannot be read is answered with status invalid; the others are still answered. */
-            items: components["schemas"]["CheckItem"][] | null;
+            items: components["schemas"]["CheckItem"][];
         };
         CheckResults: {
             /**
@@ -2612,9 +2612,9 @@ export interface components {
             /** @description Every feed a valid item depends on has finished a full walk and succeeded within 7 days. */
             data_complete: boolean;
             /** @description The feeds the valid items depend on, sorted by name. */
-            feeds: components["schemas"]["CheckFeedStatus"][] | null;
+            feeds: components["schemas"]["CheckFeedStatus"][];
             /** @description One result per request item, in request order. */
-            results: components["schemas"]["CheckItemResult"][] | null;
+            results: components["schemas"]["CheckItemResult"][];
         };
         CreateAPIKeyBody: {
             /**
@@ -2652,7 +2652,7 @@ export interface components {
             enabled: boolean;
             logic: string;
             name: string;
-            watchlist_ids: string[] | null;
+            watchlist_ids: string[];
         };
         CreateChannelBody: {
             /**
@@ -2718,7 +2718,7 @@ export interface components {
             send_on_empty: boolean | null;
             severity_threshold: string | null;
             timezone: string;
-            watchlist_ids: string[] | null;
+            watchlist_ids: string[];
         };
         CreateSSOBody: {
             /**
@@ -2732,7 +2732,8 @@ export interface components {
             display_name: string;
             enabled: boolean | null;
             issuer_url: string;
-            scopes: string[] | null;
+            /** @description OIDC scopes to request. Omit to request openid, profile and email. */
+            scopes?: string[];
         };
         CreateSavedSearchRequest: {
             /**
@@ -2845,7 +2846,7 @@ export interface components {
             /** Format: int64 */
             match_count: number;
             partial: boolean;
-            sample_cves: string[] | null;
+            sample_cves: string[];
         };
         DslErrorEntry: {
             field: string;
@@ -2875,7 +2876,7 @@ export interface components {
              */
             detail?: string;
             /** @description Optional list of individual error details */
-            errors?: components["schemas"]["ErrorDetail"][] | null;
+            errors?: components["schemas"]["ErrorDetail"][];
             /**
              * Format: uri
              * @description A URI reference that identifies the specific occurrence of the problem.
@@ -2927,7 +2928,7 @@ export interface components {
             last_success_at?: string;
             /** Format: date-time */
             paused_at?: string;
-            recent_logs: components["schemas"]["FeedLogEntry"][] | null;
+            recent_logs: components["schemas"]["FeedLogEntry"][];
         };
         ForgotPasswordInputBody: {
             /**
@@ -2958,7 +2959,7 @@ export interface components {
              * @example /api/v1/schemas/GetCVESourcesBody.json
              */
             readonly $schema?: string;
-            sources: components["schemas"]["CVESourceResponse"][] | null;
+            sources: components["schemas"]["CVESourceResponse"][];
         };
         GetInvitationOutputBody: {
             /**
@@ -3007,11 +3008,11 @@ export interface components {
             date_published?: string;
             description?: string;
             raw_payload?: unknown;
-            references?: components["schemas"]["IngestRef"][] | null;
+            references?: components["schemas"]["IngestRef"][];
             severity?: string;
         };
         IngestRef: {
-            tags?: string[] | null;
+            tags?: string[];
             url: string;
         };
         IngestRequest: {
@@ -3021,7 +3022,7 @@ export interface components {
              * @example /api/v1/schemas/IngestRequest.json
              */
             readonly $schema?: string;
-            patches: components["schemas"]["IngestPatch"][] | null;
+            patches: components["schemas"]["IngestPatch"][];
             source_name: string;
         };
         IngestResponse: {
@@ -3033,7 +3034,7 @@ export interface components {
             readonly $schema?: string;
             /** Format: int64 */
             accepted: number;
-            errors: components["schemas"]["IngestError"][] | null;
+            errors: components["schemas"]["IngestError"][];
             /** Format: int64 */
             rejected: number;
         };
@@ -3064,7 +3065,7 @@ export interface components {
              * @example /api/v1/schemas/ListCVEsBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["CVEItem"][] | null;
+            items: components["schemas"]["CVEItem"][];
             next_cursor?: string;
         };
         ListResponseAdminDeliveryRow: {
@@ -3074,7 +3075,7 @@ export interface components {
              * @example /api/v1/schemas/ListResponseAdminDeliveryRow.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["AdminDeliveryRow"][] | null;
+            items: components["schemas"]["AdminDeliveryRow"][];
             next_cursor?: string;
         };
         ListResponseAdminOrgRow: {
@@ -3084,7 +3085,7 @@ export interface components {
              * @example /api/v1/schemas/ListResponseAdminOrgRow.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["AdminOrgRow"][] | null;
+            items: components["schemas"]["AdminOrgRow"][];
             next_cursor?: string;
         };
         ListResponseAdminUserRow: {
@@ -3094,7 +3095,7 @@ export interface components {
              * @example /api/v1/schemas/ListResponseAdminUserRow.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["AdminUserRow"][] | null;
+            items: components["schemas"]["AdminUserRow"][];
             next_cursor?: string;
         };
         ListResponseAuditRow: {
@@ -3104,7 +3105,7 @@ export interface components {
              * @example /api/v1/schemas/ListResponseAuditRow.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["AuditRow"][] | null;
+            items: components["schemas"]["AuditRow"][];
             next_cursor?: string;
         };
         ListResponseCVEItem: {
@@ -3114,7 +3115,7 @@ export interface components {
              * @example /api/v1/schemas/ListResponseCVEItem.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["CVEItem"][] | null;
+            items: components["schemas"]["CVEItem"][];
             next_cursor?: string;
         };
         ListResponseFeedLogEntry: {
@@ -3124,7 +3125,7 @@ export interface components {
              * @example /api/v1/schemas/ListResponseFeedLogEntry.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["FeedLogEntry"][] | null;
+            items: components["schemas"]["FeedLogEntry"][];
             next_cursor?: string;
         };
         ListResponseFeedStatusEntry: {
@@ -3134,7 +3135,7 @@ export interface components {
              * @example /api/v1/schemas/ListResponseFeedStatusEntry.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["FeedStatusEntry"][] | null;
+            items: components["schemas"]["FeedStatusEntry"][];
             next_cursor?: string;
         };
         ListResponseSecurityEventRow: {
@@ -3144,7 +3145,7 @@ export interface components {
              * @example /api/v1/schemas/ListResponseSecurityEventRow.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["SecurityEventRow"][] | null;
+            items: components["schemas"]["SecurityEventRow"][];
             next_cursor?: string;
         };
         ListSCIMGroupsResponse: {
@@ -3154,7 +3155,7 @@ export interface components {
              * @example /api/v1/schemas/ListSCIMGroupsResponse.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["ScimGroupItem"][] | null;
+            items: components["schemas"]["ScimGroupItem"][];
         };
         LoginInputBody: {
             /**
@@ -3179,9 +3180,9 @@ export interface components {
              */
             readonly $schema?: string;
             /** @description Available MFA methods (only when pending contains mfa_challenge) */
-            methods?: string[] | null;
+            methods?: string[];
             /** @description Remaining auth steps (empty = fully authenticated) */
-            pending: string[] | null;
+            pending: string[];
             /** @description Authenticated user ID */
             user_id: string;
         };
@@ -3204,7 +3205,7 @@ export interface components {
             /** @description False for accounts that sign in only through an external identity provider */
             has_password: boolean;
             is_site_admin: boolean;
-            orgs: components["schemas"]["OrgEntry"][] | null;
+            orgs: components["schemas"]["OrgEntry"][];
             user_id: string;
         };
         MemberEntry: {
@@ -3248,7 +3249,7 @@ export interface components {
              */
             readonly $schema?: string;
             /** @description One-time recovery codes (only on first MFA enrollment) */
-            recovery_codes?: string[] | null;
+            recovery_codes?: string[];
         };
         MfaMethodEntry: {
             /**
@@ -3266,13 +3267,13 @@ export interface components {
              * @example /api/v1/schemas/MfaMethodsOutputBody.json
              */
             readonly $schema?: string;
-            methods: components["schemas"]["MfaMethodEntry"][] | null;
+            methods: components["schemas"]["MfaMethodEntry"][];
             /** Format: int64 */
             recovery_codes_remaining: number;
             /** @description Whether MFA is required for this user */
             required: boolean;
             /** @description Why MFA is required */
-            required_reasons: components["schemas"]["MFARequiredReason"][] | null;
+            required_reasons: components["schemas"]["MFARequiredReason"][];
         };
         MfaRegenerateCodesInputBody: {
             /**
@@ -3292,7 +3293,7 @@ export interface components {
              */
             readonly $schema?: string;
             /** @description 10 new one-time recovery codes */
-            recovery_codes: string[] | null;
+            recovery_codes: string[];
         };
         MfaRemoveMethodInputBody: {
             /**
@@ -3322,7 +3323,7 @@ export interface components {
              */
             readonly $schema?: string;
             /** @description One-time recovery codes (only on first MFA enrollment) */
-            recovery_codes?: string[] | null;
+            recovery_codes?: string[];
         };
         MfaTOTPSetupOutputBody: {
             /**
@@ -3360,8 +3361,8 @@ export interface components {
              * @example /api/v1/schemas/MfaVerifyOutputBody.json
              */
             readonly $schema?: string;
-            methods?: string[] | null;
-            pending: string[] | null;
+            methods?: string[];
+            pending: string[];
             user_id: string;
         };
         NlSearchRequest: {
@@ -3384,7 +3385,7 @@ export interface components {
             interpreted_query: unknown;
             model: string;
             next_cursor?: string;
-            results: components["schemas"]["CVEItem"][] | null;
+            results: components["schemas"]["CVEItem"][];
         };
         OrgEntry: {
             name: string;
@@ -3498,7 +3499,7 @@ export interface components {
             display_name?: string;
             enabled?: boolean;
             issuer_url?: string;
-            scopes?: string[] | null;
+            scopes?: string[];
         };
         PatchSavedSearchRequest: {
             /**
@@ -3530,10 +3531,10 @@ export interface components {
              * @example /api/v1/schemas/PutSSODomainsBody.json
              */
             readonly $schema?: string;
-            domains: string[] | null;
+            domains: string[];
         };
         ReferenceResponse: {
-            tags: string[] | null;
+            tags: string[];
             url: string;
         };
         RegisterInputBody: {
@@ -3571,7 +3572,7 @@ export interface components {
              */
             readonly $schema?: string;
             /** @description The complete list of items the watchlist should hold. An empty array removes every item. */
-            items: components["schemas"]["CreateWatchlistItemBody"][] | null;
+            items: components["schemas"]["CreateWatchlistItemBody"][];
         };
         ReportEntry: {
             /**
@@ -3593,7 +3594,7 @@ export interface components {
             status: string;
             timezone: string;
             updated_at: string;
-            watchlist_ids: string[] | null;
+            watchlist_ids: string[];
         };
         ResendVerificationOutputBody: {
             /**
@@ -3624,9 +3625,9 @@ export interface components {
              */
             readonly $schema?: string;
             /** @description Available MFA methods (only when pending contains mfa_challenge) */
-            methods?: string[] | null;
+            methods?: string[];
             /** @description Remaining auth steps (empty = no MFA required) */
-            pending: string[] | null;
+            pending: string[];
         };
         RotateSecretResponse: {
             /**
@@ -3722,7 +3723,7 @@ export interface components {
              * @example /api/v1/schemas/SpecListAPIKeysOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["ApiKeyEntry"][] | null;
+            items: components["schemas"]["ApiKeyEntry"][];
         };
         SpecListAlertEventsOutputBody: {
             /**
@@ -3731,7 +3732,7 @@ export interface components {
              * @example /api/v1/schemas/SpecListAlertEventsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["AlertEventEntry"][] | null;
+            items: components["schemas"]["AlertEventEntry"][];
             next_cursor?: string;
         };
         SpecListAlertRulesOutputBody: {
@@ -3741,7 +3742,7 @@ export interface components {
              * @example /api/v1/schemas/SpecListAlertRulesOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["AlertRuleEntry"][] | null;
+            items: components["schemas"]["AlertRuleEntry"][];
             next_cursor?: string;
         };
         SpecListAuditLogOutputBody: {
@@ -3751,7 +3752,7 @@ export interface components {
              * @example /api/v1/schemas/SpecListAuditLogOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["AuditLogListEntry"][] | null;
+            items: components["schemas"]["AuditLogListEntry"][];
             next_cursor?: string;
         };
         SpecListChannelsOutputBody: {
@@ -3761,7 +3762,7 @@ export interface components {
              * @example /api/v1/schemas/SpecListChannelsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["ChannelEntry"][] | null;
+            items: components["schemas"]["ChannelEntry"][];
         };
         SpecListDeliveriesOutputBody: {
             /**
@@ -3770,7 +3771,7 @@ export interface components {
              * @example /api/v1/schemas/SpecListDeliveriesOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["DeliveryEntry"][] | null;
+            items: components["schemas"]["DeliveryEntry"][];
             next_cursor?: string;
         };
         SpecListGroupMembersOutputBody: {
@@ -3780,7 +3781,7 @@ export interface components {
              * @example /api/v1/schemas/SpecListGroupMembersOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["GroupMemberEntry"][] | null;
+            items: components["schemas"]["GroupMemberEntry"][];
         };
         SpecListGroupsOutputBody: {
             /**
@@ -3789,7 +3790,7 @@ export interface components {
              * @example /api/v1/schemas/SpecListGroupsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["GroupEntry"][] | null;
+            items: components["schemas"]["GroupEntry"][];
         };
         SpecListInvitationsOutputBody: {
             /**
@@ -3798,7 +3799,7 @@ export interface components {
              * @example /api/v1/schemas/SpecListInvitationsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["InvitationEntry"][] | null;
+            items: components["schemas"]["InvitationEntry"][];
         };
         SpecListMembersOutputBody: {
             /**
@@ -3807,7 +3808,7 @@ export interface components {
              * @example /api/v1/schemas/SpecListMembersOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["MemberEntry"][] | null;
+            items: components["schemas"]["MemberEntry"][];
         };
         SpecListReportChannelsOutputBody: {
             /**
@@ -3816,7 +3817,7 @@ export interface components {
              * @example /api/v1/schemas/SpecListReportChannelsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["ChannelEntry"][] | null;
+            items: components["schemas"]["ChannelEntry"][];
         };
         SpecListReportsOutputBody: {
             /**
@@ -3825,7 +3826,7 @@ export interface components {
              * @example /api/v1/schemas/SpecListReportsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["ReportEntry"][] | null;
+            items: components["schemas"]["ReportEntry"][];
         };
         SpecListRuleChannelsOutputBody: {
             /**
@@ -3834,7 +3835,7 @@ export interface components {
              * @example /api/v1/schemas/SpecListRuleChannelsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["ChannelEntry"][] | null;
+            items: components["schemas"]["ChannelEntry"][];
         };
         SpecListSavedSearchesOutputBody: {
             /**
@@ -3843,7 +3844,7 @@ export interface components {
              * @example /api/v1/schemas/SpecListSavedSearchesOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["SavedSearchEntry"][] | null;
+            items: components["schemas"]["SavedSearchEntry"][];
         };
         SpecListWatchlistItemsOutputBody: {
             /**
@@ -3852,7 +3853,7 @@ export interface components {
              * @example /api/v1/schemas/SpecListWatchlistItemsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["WatchlistItemEntry"][] | null;
+            items: components["schemas"]["WatchlistItemEntry"][];
             next_cursor?: string;
         };
         SpecListWatchlistsOutputBody: {
@@ -3862,7 +3863,7 @@ export interface components {
              * @example /api/v1/schemas/SpecListWatchlistsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["WatchlistEntry"][] | null;
+            items: components["schemas"]["WatchlistEntry"][];
             next_cursor?: string;
         };
         SpecMemberActionOutputBody: {
@@ -3882,7 +3883,7 @@ export interface components {
              * @example /api/v1/schemas/SpecPutSSODomainsOutputBody.json
              */
             readonly $schema?: string;
-            domains: string[] | null;
+            domains: string[];
         };
         SpecUpdateOrgMFASettingsOutputBody: {
             /**
@@ -3907,12 +3908,12 @@ export interface components {
             client_secret: string;
             created_at: string;
             display_name: string;
-            domains: string[] | null;
+            domains: string[];
             enabled: boolean;
             id: string;
             issuer_url: string;
             org_id: string;
-            scopes: string[] | null;
+            scopes: string[];
             updated_at: string;
         };
         SummarizeResponse: {
@@ -3989,7 +3990,7 @@ export interface components {
             readonly $schema?: string;
             conditions: unknown;
             logic: string;
-            watchlist_ids: string[] | null;
+            watchlist_ids: string[];
         };
         ValidateRuleResponse: {
             /**
@@ -3998,11 +3999,11 @@ export interface components {
              * @example /api/v1/schemas/ValidateRuleResponse.json
              */
             readonly $schema?: string;
-            errors: components["schemas"]["DslErrorEntry"][] | null;
+            errors: components["schemas"]["DslErrorEntry"][];
             has_epss_condition: boolean;
             is_epss_only: boolean;
             valid: boolean;
-            warnings: components["schemas"]["DslErrorEntry"][] | null;
+            warnings: components["schemas"]["DslErrorEntry"][];
         };
         VerifyEmailInputBody: {
             /**
@@ -5603,7 +5604,7 @@ export interface operations {
                 /** @description Full-text search query (supports quoted phrases and negation) */
                 q?: string;
                 /** @description Filter by severity: critical, high, medium, low, unknown */
-                severity?: string[] | null;
+                severity?: string[];
                 /** @description Filter CVEs modified on or after this date (ISO 8601); empty = no filter */
                 date_from?: string;
                 /** @description Filter CVEs modified on or before this date (ISO 8601); empty = no filter */

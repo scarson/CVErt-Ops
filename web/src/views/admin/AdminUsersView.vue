@@ -58,9 +58,9 @@ async function fetchUsers(cursor?: string) {
     }
 
     if (cursor) {
-      users.value = [...users.value, ...(data.items ?? [])]
+      users.value = [...users.value, ...data.items]
     } else {
-      users.value = data.items ?? []
+      users.value = data.items
     }
     nextCursor.value = data.next_cursor
   } catch {

@@ -55,7 +55,7 @@ async function fetchWatchlists() {
       return
     }
 
-    watchlists.value = data.items ?? []
+    watchlists.value = data.items
   } catch {
     error.value = 'Failed to load watchlists. Please try again.'
   } finally {

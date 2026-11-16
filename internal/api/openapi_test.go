@@ -491,6 +491,49 @@ func TestOpenAPISpec_PatchClearableFieldsNullable(t *testing.T) {
 	}
 }
 
+// TestOpenAPISpec_ArraysNotNullable verifies that no array in the spec is
+// documented as nullable. Responses encode nil slices as [], so a client never
+// receives null for an array.
+func TestOpenAPISpec_ArraysNotNullable(t *testing.T) {
+	spec := buildOpenAPISpec(t)
+
+	var walk func(node any, path string)
+	walk = func(node any, path string) {
+		switch n := node.(type) {
+		case map[string]any:
+			if fmt.Sprint(n["type"]) == "[array null]" {
+				t.Errorf("%s: type = [array null], want array", path)
+			}
+			for k, v := range n {
+				walk(v, path+"/"+k)
+			}
+		case []any:
+			for i, v := range n {
+				walk(v, fmt.Sprintf("%s/%d", path, i))
+			}
+		}
+	}
+	walk(spec, "#")
+}
+
+// TestOpenAPISpec_SSOCreateScopesOptional verifies that the SSO create body
+// documents scopes as optional: omitting them selects the default scopes.
+func TestOpenAPISpec_SSOCreateScopesOptional(t *testing.T) {
+	spec := buildOpenAPISpec(t)
+	schemas := spec["components"].(map[string]any)["schemas"].(map[string]any)
+
+	s, ok := schemas["CreateSSOBody"].(map[string]any)
+	if !ok {
+		t.Fatal("schema CreateSSOBody missing from spec")
+	}
+	required, _ := s["required"].([]any)
+	for _, r := range required {
+		if r == "scopes" {
+			t.Errorf("required = %v, want scopes optional", required)
+		}
+	}
+}
+
 // TestOpenAPISpec_SuccessStatusMatchesHandler verifies that endpoints whose
 // handlers answer 201 Created, 202 Accepted, 204 No Content or 302 Found
 // document that status, and do not document a 200 the handler never sends.

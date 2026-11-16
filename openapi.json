@@ -614,10 +614,7 @@
             "items": {
               "$ref": "#/components/schemas/AlertEventWatchlistMatch"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "name": {
             "description": "The rule's name.",
@@ -722,10 +719,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -927,10 +921,7 @@
             "items": {
               "$ref": "#/components/schemas/CNAVersionResponse"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -958,10 +949,7 @@
             "items": {
               "$ref": "#/components/schemas/CNAVersionChangeResponse"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "less_than": {
             "type": "string"
@@ -1028,39 +1016,27 @@
             "items": {
               "$ref": "#/components/schemas/CPEMatchResponse"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "affected_cpes": {
             "description": "Every CPE the sources name for this CVE, once each. Includes platforms NVD marks not vulnerable, such as the operating system an affected application runs on. For what is affected, read affected_cpe_matches.",
             "items": {
               "$ref": "#/components/schemas/AffectedCPEResponse"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "affected_packages": {
             "items": {
               "$ref": "#/components/schemas/AffectedPackageResponse"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "cna_affected": {
             "description": "Products and versions as the CVE Numbering Authority published them, which can be present before NVD analyses the CVE. Holds the distinct entries of both the CVE record and NVD's copy of it, so a product can appear twice when one copy lags the other. Empty until CVErt Ops ingests a record carrying this data, so an empty list does not mean the CNA published none.",
             "items": {
               "$ref": "#/components/schemas/CNAAffectedResponse"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "cve_id": {
             "type": "string"
@@ -1086,10 +1062,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "date_first_seen": {
             "type": "string"
@@ -1117,10 +1090,7 @@
             "items": {
               "$ref": "#/components/schemas/ReferenceResponse"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "severity": {
             "type": "string"
@@ -1166,10 +1136,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "date_first_seen": {
             "type": "string"
@@ -1301,10 +1268,7 @@
             "items": {
               "$ref": "#/components/schemas/CallerOrg"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "principal": {
             "description": "api_key for a Bearer API key, session for a browser session cookie.",
@@ -1440,10 +1404,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "type": "object"
@@ -1554,10 +1515,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "cvss_v3_score": {
             "description": "The advisory's CVSS v3 base score.",
@@ -1613,10 +1571,7 @@
             "items": {
               "$ref": "#/components/schemas/CheckMatchedRange"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "matched_ranges_total": {
             "description": "How many ranges contain the version. Verdicts and fixes use all of them.",
@@ -1870,10 +1825,7 @@
             "items": {
               "$ref": "#/components/schemas/CheckAdvisory"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "advisories_truncated": {
             "description": "More advisories applied than are listed. Status and counts use all of them.",
@@ -1953,10 +1905,7 @@
               ],
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -2032,10 +1981,7 @@
             },
             "maxItems": 500,
             "minItems": 1,
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -2064,20 +2010,14 @@
             "items": {
               "$ref": "#/components/schemas/CheckFeedStatus"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "results": {
             "description": "One result per request item, in request order.",
             "items": {
               "$ref": "#/components/schemas/CheckItemResult"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -2181,10 +2121,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -2364,10 +2301,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -2412,13 +2346,11 @@
             "type": "string"
           },
           "scopes": {
+            "description": "OIDC scopes to request. Omit to request openid, profile and email.",
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -2426,7 +2358,6 @@
           "issuer_url",
           "client_id",
           "client_secret",
-          "scopes",
           "enabled"
         ],
         "type": "object"
@@ -2740,10 +2671,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -2820,10 +2748,7 @@
             "items": {
               "$ref": "#/components/schemas/ErrorDetail"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "instance": {
             "description": "A URI reference that identifies the specific occurrence of the problem.",
@@ -2931,10 +2856,7 @@
             "items": {
               "$ref": "#/components/schemas/FeedLogEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -3005,10 +2927,7 @@
             "items": {
               "$ref": "#/components/schemas/CVESourceResponse"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -3157,10 +3076,7 @@
             "items": {
               "$ref": "#/components/schemas/IngestRef"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "severity": {
             "type": "string"
@@ -3178,10 +3094,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "url": {
             "type": "string"
@@ -3208,10 +3121,7 @@
             "items": {
               "$ref": "#/components/schemas/IngestPatch"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "source_name": {
             "type": "string"
@@ -3243,10 +3153,7 @@
             "items": {
               "$ref": "#/components/schemas/IngestError"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "rejected": {
             "format": "int64",
@@ -3330,10 +3237,7 @@
             "items": {
               "$ref": "#/components/schemas/CVEItem"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "next_cursor": {
             "type": "string"
@@ -3360,10 +3264,7 @@
             "items": {
               "$ref": "#/components/schemas/AdminDeliveryRow"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "next_cursor": {
             "type": "string"
@@ -3390,10 +3291,7 @@
             "items": {
               "$ref": "#/components/schemas/AdminOrgRow"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "next_cursor": {
             "type": "string"
@@ -3420,10 +3318,7 @@
             "items": {
               "$ref": "#/components/schemas/AdminUserRow"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "next_cursor": {
             "type": "string"
@@ -3450,10 +3345,7 @@
             "items": {
               "$ref": "#/components/schemas/AuditRow"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "next_cursor": {
             "type": "string"
@@ -3480,10 +3372,7 @@
             "items": {
               "$ref": "#/components/schemas/CVEItem"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "next_cursor": {
             "type": "string"
@@ -3510,10 +3399,7 @@
             "items": {
               "$ref": "#/components/schemas/FeedLogEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "next_cursor": {
             "type": "string"
@@ -3540,10 +3426,7 @@
             "items": {
               "$ref": "#/components/schemas/FeedStatusEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "next_cursor": {
             "type": "string"
@@ -3570,10 +3453,7 @@
             "items": {
               "$ref": "#/components/schemas/SecurityEventRow"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "next_cursor": {
             "type": "string"
@@ -3600,10 +3480,7 @@
             "items": {
               "$ref": "#/components/schemas/ScimGroupItem"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -3659,20 +3536,14 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "pending": {
             "description": "Remaining auth steps (empty = fully authenticated)",
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "user_id": {
             "description": "Authenticated user ID",
@@ -3734,10 +3605,7 @@
             "items": {
               "$ref": "#/components/schemas/OrgEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "user_id": {
             "type": "string"
@@ -3860,10 +3728,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "type": "object"
@@ -3903,10 +3768,7 @@
             "items": {
               "$ref": "#/components/schemas/MfaMethodEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "recovery_codes_remaining": {
             "format": "int64",
@@ -3921,10 +3783,7 @@
             "items": {
               "$ref": "#/components/schemas/MFARequiredReason"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -3975,10 +3834,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -4050,10 +3906,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "type": "object"
@@ -4139,19 +3992,13 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "pending": {
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "user_id": {
             "type": "string"
@@ -4210,10 +4057,7 @@
             "items": {
               "$ref": "#/components/schemas/CVEItem"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -4503,10 +4347,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "type": "object"
@@ -4579,10 +4420,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -4597,10 +4435,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "url": {
             "type": "string"
@@ -4689,10 +4524,7 @@
               "$ref": "#/components/schemas/CreateWatchlistItemBody"
             },
             "maxItems": 10000,
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -4755,10 +4587,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -4845,20 +4674,14 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "pending": {
             "description": "Remaining auth steps (empty = no MFA required)",
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -5155,10 +4978,7 @@
             "items": {
               "$ref": "#/components/schemas/ApiKeyEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -5182,10 +5002,7 @@
             "items": {
               "$ref": "#/components/schemas/AlertEventEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "next_cursor": {
             "type": "string"
@@ -5212,10 +5029,7 @@
             "items": {
               "$ref": "#/components/schemas/AlertRuleEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "next_cursor": {
             "type": "string"
@@ -5242,10 +5056,7 @@
             "items": {
               "$ref": "#/components/schemas/AuditLogListEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "next_cursor": {
             "type": "string"
@@ -5272,10 +5083,7 @@
             "items": {
               "$ref": "#/components/schemas/ChannelEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -5299,10 +5107,7 @@
             "items": {
               "$ref": "#/components/schemas/DeliveryEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "next_cursor": {
             "type": "string"
@@ -5329,10 +5134,7 @@
             "items": {
               "$ref": "#/components/schemas/GroupMemberEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -5356,10 +5158,7 @@
             "items": {
               "$ref": "#/components/schemas/GroupEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -5383,10 +5182,7 @@
             "items": {
               "$ref": "#/components/schemas/InvitationEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -5410,10 +5206,7 @@
             "items": {
               "$ref": "#/components/schemas/MemberEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -5437,10 +5230,7 @@
             "items": {
               "$ref": "#/components/schemas/ChannelEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -5464,10 +5254,7 @@
             "items": {
               "$ref": "#/components/schemas/ReportEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -5491,10 +5278,7 @@
             "items": {
               "$ref": "#/components/schemas/ChannelEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -5518,10 +5302,7 @@
             "items": {
               "$ref": "#/components/schemas/SavedSearchEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -5545,10 +5326,7 @@
             "items": {
               "$ref": "#/components/schemas/WatchlistItemEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "next_cursor": {
             "type": "string"
@@ -5575,10 +5353,7 @@
             "items": {
               "$ref": "#/components/schemas/WatchlistEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "next_cursor": {
             "type": "string"
@@ -5630,10 +5405,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -5699,10 +5471,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "enabled": {
             "type": "boolean"
@@ -5720,10 +5489,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "updated_at": {
             "type": "string"
@@ -5913,10 +5679,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -5942,10 +5705,7 @@
             "items": {
               "$ref": "#/components/schemas/DslErrorEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "has_epss_condition": {
             "type": "boolean"
@@ -5960,10 +5720,7 @@
             "items": {
               "$ref": "#/components/schemas/DslErrorEntry"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -8568,10 +8325,7 @@
               "items": {
                 "type": "string"
               },
-              "type": [
-                "array",
-                "null"
-              ]
+              "type": "array"
             }
           },
           {

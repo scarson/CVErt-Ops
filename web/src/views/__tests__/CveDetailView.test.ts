@@ -281,7 +281,7 @@ describe('CveDetailView', () => {
     })
 
     it('shows empty state when no affected products', async () => {
-      mockCveResponse(makeCVEDetail({ affected_packages: null, affected_cpes: null }))
+      mockCveResponse(makeCVEDetail({ affected_packages: [], affected_cpes: [] }))
       const wrapper = await mountView()
       await flushPromises()
 
@@ -309,7 +309,7 @@ describe('CveDetailView', () => {
     })
 
     it('shows empty state when no references', async () => {
-      mockCveResponse(makeCVEDetail({ references: null }))
+      mockCveResponse(makeCVEDetail({ references: [] }))
       const wrapper = await mountView()
       await flushPromises()
 

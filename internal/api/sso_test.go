@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -92,6 +93,44 @@ func doPutSSODomains(t *testing.T, ctx context.Context, ts *httptest.Server, acc
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
+
+// TestSSOConnection_CreateWithoutScopesUsesDefaults verifies that a create body
+// that omits scopes stores the default scopes, as the spec documents.
+func TestSSOConnection_CreateWithoutScopesUsesDefaults(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newSSOServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "sso-default-scopes@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "sso-default-scopes@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID := mustParseUUID(t, reg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "enterprise"); err != nil {
+		t.Fatalf("update tier: %v", err)
+	}
+	srv.tierCache.Invalidate(orgID)
+
+	createBody := `{"display_name":"Acme IdP","issuer_url":"https://idp.acme.com","client_id":"acme-client","client_secret":"super-secret"}`
+	resp := doCreateSSO(t, ctx, ts, token, reg.OrgID, createBody)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create: got %d, want 201. Body: %s", resp.StatusCode, body)
+	}
+	var created struct {
+		Scopes []string `json:"scopes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	want := []string{"openid", "profile", "email"}
+	if !slices.Equal(created.Scopes, want) {
+		t.Errorf("scopes = %v, want %v", created.Scopes, want)
+	}
+}
 
 func TestSSOConnection_CRUD(t *testing.T) {
 	t.Parallel()

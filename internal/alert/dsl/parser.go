@@ -44,11 +44,12 @@ func Parse(data []byte) (Rule, error) {
 	return r, nil
 }
 
-// ParseConditions decodes a stored conditions array with the same rules as
-// Parse and refuses an empty or null array, which Parse also refuses. Each
-// element must be a JSON object. Logic is stored in its own column, which a
-// CHECK constraint limits to "and" and "or". Like Parse, it checks no field
-// names, operators or values; Compile checks those for a stored rule.
+// ParseConditions decodes a stored conditions array with the key rules Parse
+// uses (an *UnknownKeyError for an undefined or case-variant key) and refuses
+// an empty or null array or an element that is not an object. Logic is stored
+// in its own column, which a CHECK constraint limits to "and" and "or". Like
+// Parse, it checks no field names, operators or values; Compile checks those
+// for a stored rule.
 func ParseConditions(data []byte) ([]Condition, error) {
 	// Pointer elements tell a null element, which v2 decodes into a struct as
 	// its zero value, apart from an object.

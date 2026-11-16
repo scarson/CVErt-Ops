@@ -155,15 +155,53 @@ func TestParse_InvalidJSON(t *testing.T) {
 
 // ─── ParseConditions ─────────────────────────────────────────────────────────
 
+// TestParseConditions_Valid verifies the stored condition shapes ParseConditions
+// accepts, including the spacing and key order PostgreSQL gives a JSONB value.
+// Value checks are left to Compile, so a null, missing or object value decodes.
 func TestParseConditions_Valid(t *testing.T) {
 	t.Parallel()
-	conds, err := dsl.ParseConditions([]byte(`[{"field":"severity","operator":"in","value":["critical"]}]`))
-	if err != nil {
-		t.Fatalf("ParseConditions: %v", err)
+	tests := []struct {
+		name string
+		data string
+		want []dsl.Condition
+	}{
+		{
+			name: "compact",
+			data: `[{"field":"severity","operator":"in","value":["critical"]}]`,
+			want: []dsl.Condition{{Field: "severity", Op: "in", Value: json.RawMessage(`["critical"]`)}},
+		},
+		{
+			name: "JSONB output: spaces and reordered keys",
+			data: `[{"field": "severity", "value": ["critical"], "operator": "in"}]`,
+			want: []dsl.Condition{{Field: "severity", Op: "in", Value: json.RawMessage(`["critical"]`)}},
+		},
+		{
+			name: "null value",
+			data: `[{"field":"severity","operator":"in","value":null}]`,
+			want: []dsl.Condition{{Field: "severity", Op: "in", Value: json.RawMessage(`null`)}},
+		},
+		{
+			name: "no value",
+			data: `[{"field":"severity","operator":"in"}]`,
+			want: []dsl.Condition{{Field: "severity", Op: "in", Value: nil}},
+		},
+		{
+			name: "object value with keys the DSL does not define",
+			data: `[{"field":"severity","operator":"eq","value":{"anything":1}}]`,
+			want: []dsl.Condition{{Field: "severity", Op: "eq", Value: json.RawMessage(`{"anything":1}`)}},
+		},
 	}
-	want := []dsl.Condition{{Field: "severity", Op: "in", Value: json.RawMessage(`["critical"]`)}}
-	if !reflect.DeepEqual(conds, want) {
-		t.Errorf("ParseConditions = %+v, want %+v", conds, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			conds, err := dsl.ParseConditions([]byte(tt.data))
+			if err != nil {
+				t.Fatalf("ParseConditions: %v", err)
+			}
+			if !reflect.DeepEqual(conds, tt.want) {
+				t.Errorf("ParseConditions = %+v, want %+v", conds, tt.want)
+			}
+		})
 	}
 }
 

@@ -92,7 +92,7 @@ async function fetchItems() {
     })
 
     if (!fetchError) {
-      items.value = (data.items ?? []) as WatchlistItemEntry[]
+      items.value = data.items as WatchlistItemEntry[]
       itemsHasMore.value = !!data.next_cursor
     } else {
       itemsError.value = 'Failed to load items. Please try again.'

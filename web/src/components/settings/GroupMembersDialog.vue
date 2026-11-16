@@ -77,8 +77,8 @@ async function fetchData() {
     if (groupResult.error || orgResult.error) {
       fetchError.value = 'Failed to load group members. Please try again.'
     } else {
-      groupMembers.value = groupResult.data.items ?? []
-      orgMembers.value = orgResult.data.items ?? []
+      groupMembers.value = groupResult.data.items
+      orgMembers.value = orgResult.data.items
     }
   } catch {
     fetchError.value = 'Failed to load group members. Please try again.'

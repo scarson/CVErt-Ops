@@ -57,9 +57,9 @@ async function fetchAuditLog(cursor?: string) {
     }
 
     if (cursor) {
-      entries.value = [...entries.value, ...(data.items ?? [])]
+      entries.value = [...entries.value, ...data.items]
     } else {
-      entries.value = data.items ?? []
+      entries.value = data.items
     }
     nextCursor.value = data.next_cursor
   } catch {

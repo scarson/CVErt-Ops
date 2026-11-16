@@ -58,9 +58,9 @@ async function fetchOrgs(cursor?: string) {
     }
 
     if (cursor) {
-      orgs.value = [...orgs.value, ...(data.items ?? [])]
+      orgs.value = [...orgs.value, ...data.items]
     } else {
-      orgs.value = data.items ?? []
+      orgs.value = data.items
     }
     nextCursor.value = data.next_cursor
   } catch {

@@ -58,10 +58,7 @@ async function fetchFeeds() {
       return
     }
 
-    feeds.value = (data.items ?? []).map((f) => ({
-      ...f,
-      recent_logs: f.recent_logs ?? [],
-    }))
+    feeds.value = data.items
   } catch {
     error.value = 'Failed to load feed status.'
   } finally {

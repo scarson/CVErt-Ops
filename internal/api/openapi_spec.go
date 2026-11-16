@@ -34,8 +34,34 @@ func noopHandler[I, O any]() func(context.Context, *I) (*O, error) {
 // value that validation never checked. ValidateStrictCasing is a huma package
 // variable read on every request, so it is set once for the process here rather
 // than in a constructor.
+//
+// huma.NewError builds every problem response huma writes, and is wrapped by
+// problemWithoutValues so that no response echoes request data.
 func init() {
 	huma.ValidateStrictCasing = true
+	huma.NewError = problemWithoutValues(huma.NewError)
+}
+
+// problemWithoutValues wraps a huma error constructor so that the problem it
+// returns has no errors[].value. huma fills that member with the request data it
+// refused: the raw body when the body does not decode, the refused object or
+// member when schema validation fails, and the parameter value for a refused
+// path, query or header parameter. For auth bodies and invitation paths that is
+// a password or token, which any proxy, APM agent or log that captures problem
+// responses would then store. Each error keeps its location and message, which
+// name the defect; the sender already has the data it sent.
+func problemWithoutValues(newError func(int, string, ...error) huma.StatusError) func(int, string, ...error) huma.StatusError {
+	return func(status int, msg string, errs ...error) huma.StatusError {
+		err := newError(status, msg, errs...)
+		if model, ok := err.(*huma.ErrorModel); ok {
+			for _, detail := range model.Errors {
+				if detail != nil {
+					detail.Value = nil
+				}
+			}
+		}
+		return err
+	}
 }
 
 // newHumaConfig returns the configuration shared by the production and spec-only

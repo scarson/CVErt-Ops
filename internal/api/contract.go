@@ -64,13 +64,19 @@ func writeProblem(w http.ResponseWriter, status int, detail string) {
 }
 
 // writeProblemWithErrors writes an RFC 9457 response with field-level error details.
-// Uses huma.ErrorDetail directly — no custom clone types.
+// Uses huma.ErrorDetail directly — no custom clone types. Like huma's own
+// problems (problemWithoutValues), the details are written without their value,
+// so no response echoes request data.
 func writeProblemWithErrors(w http.ResponseWriter, status int, detail string, errs ...*huma.ErrorDetail) {
+	details := make([]*huma.ErrorDetail, len(errs))
+	for i, e := range errs {
+		details[i] = &huma.ErrorDetail{Message: e.Message, Location: e.Location}
+	}
 	writeEncoded(w, status, "application/problem+json", huma.ErrorModel{
 		Title:  http.StatusText(status),
 		Status: status,
 		Detail: detail,
-		Errors: errs,
+		Errors: details,
 	})
 }
 

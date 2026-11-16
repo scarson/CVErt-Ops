@@ -100,6 +100,10 @@ func TestWriteValidationProblem_MatchesHumaFormat(t *testing.T) {
 			t.Errorf("errors[0].%s: got %v, want %v", key, chiErr0[key], humaErr0[key])
 		}
 	}
+	// Neither writer echoes request data: see problemWithoutValues.
+	if _, ok := chiErr0["value"]; ok {
+		t.Errorf("errors[0] has a value; want none")
+	}
 }
 
 func TestWriteProblem_ParityAcrossStatusCodes(t *testing.T) {

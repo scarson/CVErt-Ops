@@ -66,7 +66,7 @@ Why this matters here: the phases ship as separate PRs over several sessions, tw
      in the Deviations / Discoveries subsections below it — never above the table. -->
 
 **Plan review:** ✅ 2026-11-14 — 5 rounds (2 self, 2 independent cold reads with go1.27.4 probes, 1 self pass on round-4 fixes): 11, 17, 0, 9, 0 findings; all fixed in place
-**Overall:** 🚧 In progress (Phases 1–4 shipped 2026-11-15, Phases 5–6 2026-11-16)
+**Overall:** 🚧 In progress (Phases 1–4 shipped 2026-11-15, Phases 5–7 2026-11-16)
 
 | Phase | Status | Ship SHA(s) | PR | Notes |
 |---|---|---|---|---|
@@ -77,7 +77,7 @@ Why this matters here: the phases ship as separate PRs over several sessions, tw
 | 4 — Opaque pagination cursors | ✅ Shipped 2026-11-15 | `02867f3`, `f1c873f`, `38bd58f`, `9e6309a`; merge `af57344` | [#261](https://github.com/scarson/CVErt-Ops/pull/261) | Full suite passed at `7df99cd`. Also carries the Phase 3 regression fix `17d2cc2` |
 | 5 — Stored alert-rule conditions fail closed | ✅ Shipped 2026-11-16 | `b25569b`, `db003c3`, `b3c56ce`, `bdfcf67`; merge `1b17f78` | [#262](https://github.com/scarson/CVErt-Ops/pull/262) | Full suite passed at `bdfcf67`. Pre-deploy check: 0 `alert_rules` rows in every database on the host |
 | 6 — API response encoding | ✅ Shipped 2026-11-16 | `250c0ba`, `1ff8098`, `df93bf0`, `326cc3b`, `ba535b3`; merge `4af04b2` | [#263](https://github.com/scarson/CVErt-Ops/pull/263) | Full suite at `8afcc23`: 38 packages ok, `internal/audit` failed at testcontainers reaper start-up and passed when rerun alone (earlier full runs at `c9eee76`, `89c84f4` passed). Measurement: 0 error, 0 other |
-| 7 — Replace the JCS dependency with `jsontext.Value.Canonicalize` | 🚧 IN PROGRESS 2026-11-16T01:14Z, branch `claude/json-v2-phase-7` | | | Decision 2 accepted 2026-11-15 |
+| 7 — Replace the JCS dependency with `jsontext.Value.Canonicalize` | ✅ Shipped 2026-11-16 | `efdc8f7`, `77d8418`, `ab45eae`; merge `effcbf3` | [#264](https://github.com/scarson/CVErt-Ops/pull/264) | Full suite passed at `ab45eae`. Golden `material_hash` pins unchanged; 62-case and 5.4M-value randomized differentials found no difference; `match_inputs_hash` pinned |
 | 8 — Pitfall entries, PLAN.md, final full suite | ⬜ | | | Last |
 
 ### Deviations
@@ -107,6 +107,7 @@ Why this matters here: the phases ship as separate PRs over several sessions, tw
 - An alert-rule dry run of a stored rule that `dsl.ParseConditions` or `dsl.Compile` refuses answers 500 "internal error", not a 422 naming the key; pre-existing for compile errors. `internal/api/alert_rules.go` (dry-run handler).
 - Phase 6 measurement (Task 6.1, 2026-11-16, `TestResponseEncoding`): 129 response schema types resolved (none allowlisted) plus 12 writeJSON values no schema covers. Unique paths: 69 *expected* (nil slice/map: v1 `null`, v2 `[]`/`{}`), 55 *presence*, 0 *error*, 0 *other*. The presence paths are 53 `*string` fields tagged `omitempty` that v2 omits when they point at `""` (retagged `omitzero` in Task 6.2), plus huma's `ErrorModel.status` (allowlisted) and `ErrorDetail.value` (v1 writes `""`, v2 omits it; allowlisted in Task 6.4). Several *expected* paths are already guarded in production (`writeList` items, `doctor.Run`, ingest errors); the measurement is per type, not per handler. `internal/api/response_encoding_test.go`.
 - huma writes an operation's status before it encodes the body (`transformAndWrite`, `huma@v2.37.3/huma.go:601-637`; humachi's `SetStatus` calls `WriteHeader` at once), so if a huma response fails to encode the client gets the success status followed by huma's "error marshaling response" text; the format can only keep partial JSON out. No current response type fails to encode (Task 6.1: 0 *error* entries). Pre-existing in huma; would need a huma transformer that encodes first.
+- The Red Hat adapter parses CVSS scores with `strconv.ParseFloat` without the NaN/±Inf guard the EPSS adapter has, and `json.Marshal` fails on NaN/±Inf; `hash.go`'s comment that marshaling the material fields "never fails" is therefore not strictly true, and whether such a score can reach the `material_hash` panic is untraced. Pre-existing, found in the Phase 7 review. `internal/feed/redhat/adapter.go:206`, `internal/feed/epss/adapter.go:273-275`, `internal/merge/hash.go:87`.
 - SCIM group PATCH with a pathless replace (`{"op":"replace","value":{"displayName":"..."}}`, the shape Okta uses to rename a group) answers 400 `invalidPath`; pre-existing, outside this plan. `internal/api/scim_groups_handler.go` (pathless branch of the PATCH operation switch).
 
 ---

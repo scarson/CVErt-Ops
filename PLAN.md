@@ -66,7 +66,7 @@ The product ships as:
 | **Configuration** | `caarlos0/env/v11` | Env var parsing; startup checks are handwritten |
 | **Metrics** | `prometheus/client_golang` | `/metrics` endpoint |
 | **SSRF prevention** | `doyensec/safeurl` | Drop-in safe HTTP client for outbound webhooks |
-| **JSON canonicalization** | `cyberphone/json-canonicalization` | JCS/RFC 8785 for deterministic `material_hash` |
+| **JSON canonicalization** | `jsontext.Value.Canonicalize` (stdlib) | JCS/RFC 8785 for deterministic `material_hash` |
 | **Container memory** | `KimMachineGun/automemlimit` | Sets `GOMEMLIMIT` from the cgroup limit (§18.3) |
 | **Static analysis** | `golangci-lint` (includes `govet`, `staticcheck`, `gosec`), `govulncheck` | CI pipeline (GitHub Actions) |
 | **Frontend** | Vue 3 + Vite + TypeScript + Tailwind 4 + shadcn-vue | Single-page app in `web/`, embedded in the binary (§20) |
@@ -493,7 +493,7 @@ A "material change" is any change to one of these, after normalization:
 
 **`epss_score` is NOT in `material_hash`** (see below).
 
-Implementation: `material_hash = sha256(json_canonical(material_fields))`. If hash changes, alerts may re-fire depending on rule settings. JSON canonicalization uses deterministic key ordering and encoding (e.g., `github.com/cyberphone/json-canonicalization` or equivalent).
+Implementation: `material_hash = sha256(json_canonical(material_fields))`. If hash changes, alerts may re-fire depending on rule settings. JSON canonicalization uses deterministic key ordering and encoding (RFC 8785, via the standard library's `jsontext.Value.Canonicalize`).
 
 **CVSS vector normalization (required before hashing):** Different sources may represent the same CVSS vector with components in different order (e.g., `AV:N/AC:L` vs `AC:L/AV:N`) or with minor formatting differences. Including a raw CVSS vector string in `material_hash` would cause cosmetic source differences to trigger false material changes and spurious alerts. Before computing `material_hash`, CVSS vector strings must be normalized: split the vector into its metric components after the version prefix (`CVSS:3.1`) and sort them lexicographically. This ensures the hash is stable regardless of which source provided the vector or in which order it listed the metrics. Any fixed order would do; the sort is not the spec's metric order, and changing the order would change every stored `material_hash` once. The normalized form is hash input only: the stored vector keeps the source's order.
 

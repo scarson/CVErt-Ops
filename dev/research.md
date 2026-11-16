@@ -387,11 +387,13 @@ Subcommands:
 - Mitigates DNS rebinding attacks
 - Used for all outbound webhook HTTP calls
 
-### JSON Canonicalization: **cyberphone/json-canonicalization** (JCS/RFC 8785)
+### JSON Canonicalization: **`jsontext.Value.Canonicalize`** (standard library, JCS/RFC 8785)
 
 - Standards-compliant deterministic JSON serialization
-- Used for computing `material_hash = sha256(jcs(material_fields))`
+- Used for computing `material_hash = sha256(jcs(material_fields))` and `match_inputs_hash` (`canonicalJSON` in `internal/merge/canonical.go`)
 - RFC 8785 ensures reproducible hashes across platforms
+- Chosen over `cyberphone/json-canonicalization`, the RFC's reference implementation that the hash code used before: the standard library (Go 1.27 `encoding/json/jsontext`) implements the same RFC, so the `material_hash` path has one fewer third-party dependency. Both produced identical bytes on a differential test of every value kind the hash inputs marshal, and the golden `material_hash` pins (`internal/merge/testdata/golden_material_hashes.json`) did not move.
+- Canonicalize is stricter than the reference transform on malformed input (it refuses invalid UTF-8 and leading zeros), which `json.Marshal` never produces
 
 ### Password Hashing: **argon2id** via `alexedwards/argon2id`
 
@@ -659,5 +661,5 @@ This approach is not required for MVP — the API can accept the structured JSON
 - https://github.com/doyensec/safeurl
 
 ### JSON Canonicalization
-- https://github.com/cyberphone/json-canonicalization
+- https://pkg.go.dev/encoding/json/jsontext#Value.Canonicalize
 - RFC 8785

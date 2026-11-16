@@ -8,12 +8,22 @@ import (
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"net"
+	"net/netip"
+	"net/url"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/check"
 	"github.com/scarson/cvert-ops/internal/config"
@@ -37,8 +47,13 @@ const maxResponsePointerDepth = 3
 // no Go type in either registry, each with the reason.
 var unresolvableResponseSchemas = map[string]string{}
 
-// allowedEncodingDifferences lists differences, keyed "Schema.path", that are
-// accepted although they are not a nil collection becoming [] or {}.
+// arrayIndexPattern matches an array index in a difference's path, which the
+// allowlist writes as "[]".
+var arrayIndexPattern = regexp.MustCompile(`\[\d+\]`)
+
+// allowedEncodingDifferences lists differences, keyed "Schema.path" with each
+// array index written as "[]", that are accepted although they are not a nil
+// collection becoming [] or {}.
 var allowedEncodingDifferences = map[string]string{
 	// huma.ErrorModel.Status is an int tagged omitempty in huma itself and cannot
 	// be retagged. v2 writes "status":0 where v1 omits it, but every problem
@@ -46,10 +61,13 @@ var allowedEncodingDifferences = map[string]string{
 	// served response never carries a zero status.
 	"ErrorModel.status": "huma-owned field; every writer sets a non-zero status",
 	// huma.ErrorDetail.Value is an any tagged omitempty in huma itself and
-	// cannot be retagged. When it holds "", v1 writes "value":"" and v2 omits
-	// the member. An empty echoed value tells a client nothing, so its absence
-	// loses no information.
-	"ErrorDetail.value": "huma-owned field; an empty echoed value carries no information",
+	// cannot be retagged. When it holds "", [] or {}, v1 writes the member and v2
+	// omits it; huma echoes [] for example on a minItems failure. The client
+	// then loses which empty value it sent, a small loss for a value it already
+	// has.
+	"ErrorDetail.value": "huma-owned field; an empty echoed value is dropped",
+	// The same ErrorDetail.Value, inside a problem's errors list.
+	"ErrorModel.errors[].value": "huma-owned field; an empty echoed value is dropped",
 }
 
 // encodingDifferenceClass names how a v1 and a v2 output differ at one path.
@@ -97,15 +115,15 @@ func writeJSONResponseValues() []measuredResponse {
 	return []measuredResponse{
 		typeOf("huma.ErrorModel", reflect.TypeFor[huma.ErrorModel]()),
 		typeOf("huma.ErrorDetail", reflect.TypeFor[huma.ErrorDetail]()),
-		literal("admin_deliveries.go:107", map[string]any{"status": "", "delivery_id": "", "rows_affected": int64(0)}),
-		literal("admin_deliveries.go:139", map[string]any{"status": "", "rows_affected": int64(0)}),
-		literal("admin_doctor.go:54", map[string]any{"status": "", "checks": []doctor.Result(nil)}),
+		literal("adminRetryDeliveryHandler", map[string]any{"status": "", "delivery_id": "", "rows_affected": int64(0)}),
+		literal("adminBulkRetryDeliveriesHandler", map[string]any{"status": "", "rows_affected": int64(0)}),
+		literal("doctorHandler", map[string]any{"status": "", "checks": []doctor.Result(nil)}),
 		typeOf("doctor.Result", reflect.TypeFor[doctor.Result]()),
-		literal("admin_mfa.go:105", map[string]string{"status": "", "user_id": ""}),
-		literal("admin_mfa.go:396", map[string]any{"mfa_required_all": false, "mfa_remember_device_allowed": false, "mfa_remember_device_days": int32(0)}),
+		literal("adminResetMFAHandler", map[string]string{"status": "", "user_id": ""}),
+		literal("adminUpdateOrgMFASettingsHandler", map[string]any{"mfa_required_all": false, "mfa_remember_device_allowed": false, "mfa_remember_device_days": int32(0)}),
 		typeOf("adminOrgResponse", reflect.TypeFor[adminOrgResponse]()),
 		typeOf("store.AdminOrgUsage", reflect.TypeFor[*store.AdminOrgUsage]()),
-		literal("admin_system.go:39", map[string]any{"listen_addr": "", "cookie_secure": false, "db_max_conns": int32(0)}),
+		literal("adminConfigHandler", map[string]any{"listen_addr": "", "cookie_secure": false, "db_max_conns": int32(0)}),
 		typeOf("nlSearchResult", reflect.TypeFor[nlSearchResult]()),
 		typeOf("summarizeResponse", reflect.TypeFor[summarizeResponse]()),
 		typeOf("alertRuleEntry", reflect.TypeFor[alertRuleEntry]()),
@@ -132,13 +150,13 @@ func writeJSONResponseValues() []measuredResponse {
 		typeOf("listSCIMGroupsResponse", reflect.TypeFor[listSCIMGroupsResponse]()),
 		typeOf("scimGroupResponse", reflect.TypeFor[scimGroupResponse]()),
 		typeOf("ssoResponse", reflect.TypeFor[ssoResponse]()),
-		literal("sso.go:546", map[string]any{"domains": []string(nil)}),
+		literal("putSSODomainsHandler", map[string]any{"domains": []string(nil)}),
 		typeOf("discoverResponse", reflect.TypeFor[discoverResponse]()),
 		typeOf("watchlistEntry", reflect.TypeFor[watchlistEntry]()),
 		typeOf("watchlistItemEntry", reflect.TypeFor[watchlistItemEntry]()),
 		typeOf("watchlistItemsReplaced", reflect.TypeFor[watchlistItemsReplaced]()),
 		typeOf("callerIdentity", reflect.TypeFor[callerIdentity]()),
-		literal("readyz.go:86", map[string]any{
+		literal("readyzHandler", map[string]any{
 			"status": "",
 			"checks": map[string]any{
 				"database":        map[string]any{"status": "", "latency_ms": int64(0)},
@@ -147,7 +165,22 @@ func writeJSONResponseValues() []measuredResponse {
 				"delivery_worker": map[string]any{"status": ""},
 			},
 		}),
-		literal("server.go:583", map[string]string{"status": ""}),
+		literal("healthzHandler", map[string]string{"status": ""}),
+		// Handlers that write a map[string]string, which both versions encode alike.
+		literal("adminForcePasswordResetHandler", map[string]string{"status": "", "user_id": ""}),
+		literal("adminRequireMFAHandler", map[string]string{"status": "", "user_id": ""}),
+		literal("adminReindexHandler", map[string]string{"job_id": ""}),
+		literal("adminReloadConfigHandler", map[string]string{"message": ""}),
+		literal("adminDisableUserHandler", map[string]string{"status": "", "user_id": ""}),
+		literal("adminEnableUserHandler", map[string]string{"status": "", "user_id": ""}),
+		literal("adminUnlockUserHandler", map[string]string{"status": "", "user_id": ""}),
+		literal("adminResetPasswordHandler", map[string]string{"status": "", "user_id": ""}),
+		literal("versionHandler", map[string]string{"version": ""}),
+		literal("triggerFeedHandler", map[string]string{"job_id": ""}),
+		literal("pauseFeedHandler", map[string]string{"status": "", "feed": ""}),
+		literal("resumeFeedHandler", map[string]string{"status": "", "feed": ""}),
+		literal("oidcCallbackHandler", map[string]string{"user_id": ""}),
+		literal("oidcLinkCallbackHandler", map[string]string{"status": ""}),
 	}
 }
 
@@ -210,23 +243,10 @@ func TestResponseEncoding(t *testing.T) {
 		measured = append(measured, extra)
 	}
 
-	// The measured values leave every slice and map nil, so a struct type that
-	// appears only as an element of one is measured on its own. Schema types
-	// reach theirs through component references; the writeJSON values do not.
-	for i := 0; i < len(measured); i++ {
-		for _, elem := range collectionElementTypes(measured[i].typ) {
-			if !seen[elem] {
-				seen[elem] = true
-				t.Logf("element type %s of %s measured on its own", elem, measured[i].name)
-				measured = append(measured, measuredResponse{name: elem.String(), typ: elem})
-			}
-		}
-	}
-
 	checked := map[reflect.Type]bool{}
 	for _, m := range measured {
 		for _, field := range omitzeroNullablePointers(m.typ, checked) {
-			t.Errorf("%s: a pointer to a scalar tagged omitzero needs nullable:\"false\"; huma documents it as nullable otherwise, and v2 never writes null for it", field)
+			t.Errorf("%s: a pointer to a non-object value tagged omitzero needs nullable:\"false\"; huma documents it as nullable otherwise, and v2 never writes null for it", field)
 		}
 	}
 
@@ -249,7 +269,7 @@ func TestResponseEncoding(t *testing.T) {
 		if d.class == differenceExpected {
 			continue
 		}
-		if _, ok := allowedEncodingDifferences[d.key]; ok {
+		if _, ok := allowedEncodingDifferences[arrayIndexPattern.ReplaceAllString(d.key, "[]")]; ok {
 			continue
 		}
 		t.Errorf("encoding changes and is not allowlisted: %s", d)
@@ -259,10 +279,11 @@ func TestResponseEncoding(t *testing.T) {
 }
 
 // omitzeroNullablePointers returns, as "Type.Field", every struct field
-// reachable from t that is a pointer to a string, bool or number, is tagged
-// omitzero, and lacks nullable:"false". huma clears the nullable flag of a
-// scalar pointer only for omitempty (huma@v2.37.3 schema.go:927-931), so such a
-// field would appear as "type or null" in openapi.json.
+// reachable from t that is a pointer whose element is not a plain struct, is
+// tagged omitzero, and lacks nullable:"false". huma documents such a pointer
+// as nullable and clears that only for omitempty (huma@v2.37.3
+// schema.go:927-931), so the field would appear as "type or null" in
+// openapi.json although v2 never writes null for it.
 func omitzeroNullablePointers(t reflect.Type, checked map[reflect.Type]bool) []string {
 	for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice || t.Kind() == reflect.Array || t.Kind() == reflect.Map {
 		t = t.Elem()
@@ -274,7 +295,7 @@ func omitzeroNullablePointers(t reflect.Type, checked map[reflect.Type]bool) []s
 	var out []string
 	for i := range t.NumField() {
 		f := t.Field(i)
-		if f.Type.Kind() == reflect.Pointer && isScalarKind(f.Type.Elem().Kind()) &&
+		if f.Type.Kind() == reflect.Pointer && !isPlainStruct(f.Type.Elem()) &&
 			strings.Contains(f.Tag.Get("json"), "omitzero") && f.Tag.Get("nullable") != "false" {
 			out = append(out, t.String()+"."+f.Name)
 		}
@@ -283,16 +304,112 @@ func omitzeroNullablePointers(t reflect.Type, checked map[reflect.Type]bool) []s
 	return out
 }
 
-func isScalarKind(k reflect.Kind) bool {
-	switch k {
-	case reflect.String, reflect.Bool,
-		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-		reflect.Float32, reflect.Float64:
-		return true
-	default:
+// isPlainStruct reports whether huma documents t as an object: a struct that
+// is not time.Time or url.URL and has no UnmarshalText method (huma documents
+// those, netip.Addr among them, as strings). Anything else, including
+// uuid.UUID, net.IP and every scalar, is documented as a value huma makes
+// nullable behind a pointer.
+func isPlainStruct(t reflect.Type) bool {
+	return t.Kind() == reflect.Struct &&
+		t != reflect.TypeFor[time.Time]() &&
+		t != reflect.TypeFor[url.URL]() &&
+		!reflect.PointerTo(t).Implements(reflect.TypeFor[encoding.TextUnmarshaler]())
+}
+
+func TestIsPlainStruct(t *testing.T) {
+	for _, tc := range []struct {
+		typ  reflect.Type
+		want bool
+	}{
+		{reflect.TypeFor[check.Advisory](), true},
+		{reflect.TypeFor[huma.ErrorModel](), true},
+		{reflect.TypeFor[string](), false},
+		{reflect.TypeFor[int64](), false},
+		{reflect.TypeFor[time.Time](), false},
+		{reflect.TypeFor[url.URL](), false},
+		{reflect.TypeFor[netip.Addr](), false},
+		{reflect.TypeFor[netip.Prefix](), false},
+		{reflect.TypeFor[net.IP](), false},
+		{reflect.TypeFor[uuid.UUID](), false},
+		{reflect.TypeFor[[]string](), false},
+	} {
+		if got := isPlainStruct(tc.typ); got != tc.want {
+			t.Errorf("isPlainStruct(%s) = %v, want %v", tc.typ, got, tc.want)
+		}
+	}
+}
+
+// TestWriteJSONMapLiteralsListed verifies that every handler in this package
+// that passes writeJSON a map, written inline or held in a variable assigned
+// from a map literal in the same function, has an entry in
+// writeJSONResponseValues, so TestResponseEncoding measures its shape. A
+// named type needs no entry: its schema or typeOf entry covers it.
+func TestWriteJSONMapLiteralsListed(t *testing.T) {
+	listed := map[string]bool{}
+	for _, v := range writeJSONResponseValues() {
+		if v.build != nil {
+			listed[v.name] = true
+		}
+	}
+
+	paths, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	fset := token.NewFileSet()
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			mapVars := map[string]bool{}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if assign, ok := n.(*ast.AssignStmt); ok {
+					for i, rhs := range assign.Rhs {
+						if isMapLiteral(rhs) && i < len(assign.Lhs) {
+							if id, ok := assign.Lhs[i].(*ast.Ident); ok {
+								mapVars[id.Name] = true
+							}
+						}
+					}
+				}
+				return true
+			})
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok || len(call.Args) != 3 {
+					return true
+				}
+				if id, ok := call.Fun.(*ast.Ident); !ok || id.Name != "writeJSON" {
+					return true
+				}
+				arg := call.Args[2]
+				id, isIdent := arg.(*ast.Ident)
+				if (isMapLiteral(arg) || (isIdent && mapVars[id.Name])) && !listed[fn.Name.Name] {
+					t.Errorf("%s: %s passes writeJSON a map and has no entry in writeJSONResponseValues", fset.Position(call.Pos()), fn.Name.Name)
+				}
+				return true
+			})
+		}
+	}
+}
+
+// isMapLiteral reports whether e is a composite literal of a map type.
+func isMapLiteral(e ast.Expr) bool {
+	lit, ok := e.(*ast.CompositeLit)
+	if !ok {
 		return false
 	}
+	_, isMap := lit.Type.(*ast.MapType)
+	return isMap
 }
 
 // specAsMap returns an OpenAPI document as generic JSON values.
@@ -381,32 +498,48 @@ func collectSchemaRefs(node any, visit func(string)) {
 	}
 }
 
-// responseValueVariant sets how a measured value fills its json.RawMessage
-// and empty-interface fields; every other slice and map stays nil.
+// responseValueVariant sets how a measured value fills its json.RawMessage,
+// empty-interface, slice and map fields.
 type responseValueVariant struct {
 	name  string
 	raw   json.RawMessage // nil leaves every json.RawMessage nil
 	iface any             // nil leaves every empty interface nil
+	// elements puts one element, filled the same way, into every slice and
+	// one entry with the zero key into every map; otherwise they stay nil.
+	elements bool
 }
 
-// responseValueVariants are the fills each measured type is encoded with. The
-// raw values are what JSONB columns produce; a zero-length non-nil
-// json.RawMessage is left out because no column can produce one.
-var responseValueVariants = []responseValueVariant{
-	{name: "nil"},
-	{name: "empty-string", iface: ""},
-	{name: "empty-object", raw: json.RawMessage(`{}`), iface: map[string]any{}},
-	{name: "empty-array", raw: json.RawMessage(`[]`), iface: []any{}},
-	{name: "null-raw", raw: json.RawMessage(`null`)},
-}
+// responseValueVariants are the fills each measured type is encoded with:
+// each raw and interface fill, once with nil collections and once with one
+// element in each. The raw values are what JSONB columns produce; a
+// zero-length non-nil json.RawMessage is left out because no column can
+// produce one.
+var responseValueVariants = func() []responseValueVariant {
+	fills := []responseValueVariant{
+		{name: "nil"},
+		{name: "empty-string", iface: ""},
+		{name: "empty-object", raw: json.RawMessage(`{}`), iface: map[string]any{}},
+		{name: "empty-array", raw: json.RawMessage(`[]`), iface: []any{}},
+		{name: "null-raw", raw: json.RawMessage(`null`)},
+	}
+	variants := make([]responseValueVariant, 0, 2*len(fills))
+	for _, f := range fills {
+		variants = append(variants, f)
+		f.name += "+elements"
+		f.elements = true
+		variants = append(variants, f)
+	}
+	return variants
+}()
 
 // rawMessageType is the type of json.RawMessage fields.
 var rawMessageType = reflect.TypeFor[json.RawMessage]()
 
-// buildResponseValue returns a value of type t in which every settable pointer,
-// to maxResponsePointerDepth hops, points at a zero value, every slice and map
-// is nil, and every json.RawMessage and empty interface holds the variant's
-// value.
+// buildResponseValue returns a value of type t in which every settable pointer
+// points at a zero value, every json.RawMessage and empty interface holds the
+// variant's value, and every slice and map is nil or, with the variant's
+// elements, holds one element filled the same way. Pointers, slice elements
+// and map values together go at most maxResponsePointerDepth levels deep.
 func buildResponseValue(t reflect.Type, variant responseValueVariant) reflect.Value {
 	v := reflect.New(t).Elem()
 	fillResponseValue(v, 0, variant)
@@ -434,52 +567,32 @@ func fillResponseValue(v reflect.Value, depth int, variant responseValueVariant)
 			// even when the embedded field itself is not.
 			fillResponseValue(v.Field(i), depth, variant)
 		}
+	case reflect.Array:
+		for i := range v.Len() {
+			fillResponseValue(v.Index(i), depth, variant)
+		}
+	case reflect.Slice:
+		if !variant.elements || depth >= maxResponsePointerDepth || !v.CanSet() {
+			return
+		}
+		s := reflect.MakeSlice(v.Type(), 1, 1)
+		fillResponseValue(s.Index(0), depth+1, variant)
+		v.Set(s)
+	case reflect.Map:
+		if !variant.elements || depth >= maxResponsePointerDepth || !v.CanSet() {
+			return
+		}
+		m := reflect.MakeMapWithSize(v.Type(), 1)
+		elem := reflect.New(v.Type().Elem()).Elem()
+		fillResponseValue(elem, depth+1, variant)
+		m.SetMapIndex(reflect.New(v.Type().Key()).Elem(), elem)
+		v.Set(m)
 	case reflect.Interface:
 		if variant.iface != nil && v.CanSet() && v.NumMethod() == 0 {
 			v.Set(reflect.ValueOf(variant.iface))
 		}
 	default:
 	}
-}
-
-// collectionElementTypes returns the struct types that t holds as elements of
-// a slice, array or map, directly or through struct fields and pointers.
-func collectionElementTypes(t reflect.Type) []reflect.Type {
-	var out []reflect.Type
-	visited := map[reflect.Type]bool{}
-	var walk func(t reflect.Type, inCollection bool)
-	walk = func(t reflect.Type, inCollection bool) {
-		for t.Kind() == reflect.Pointer {
-			t = t.Elem()
-		}
-		switch t.Kind() {
-		case reflect.Slice, reflect.Array, reflect.Map:
-			walk(t.Elem(), true)
-		case reflect.Struct:
-			// A type with its own encoding, such as time.Time, has no fields
-			// for the encoders to differ on.
-			if reflect.PointerTo(t).Implements(reflect.TypeFor[json.Marshaler]()) ||
-				reflect.PointerTo(t).Implements(reflect.TypeFor[encoding.TextMarshaler]()) {
-				return
-			}
-			if inCollection {
-				out = append(out, t)
-				return
-			}
-			if visited[t] {
-				return
-			}
-			visited[t] = true
-			for i := range t.NumField() {
-				if f := t.Field(i); f.IsExported() || f.Anonymous {
-					walk(f.Type, false)
-				}
-			}
-		default:
-		}
-	}
-	walk(t, false)
-	return out
 }
 
 // compareEncodings encodes v with v1 and with v2 and returns each path at

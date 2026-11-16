@@ -5,7 +5,6 @@ package api
 import (
 	"bytes"
 	"encoding/json"
-	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"fmt"
 	"reflect"
@@ -20,10 +19,6 @@ import (
 	"github.com/scarson/cvert-ops/internal/doctor"
 	"github.com/scarson/cvert-ops/internal/store"
 )
-
-// responseJSONOptions are the encoding/json/v2 options the API's response
-// writers are measured against: map keys sorted, invalid UTF-8 replaced.
-var responseJSONOptions = jsonv2.JoinOptions(jsonv2.Deterministic(true), jsontext.AllowInvalidUTF8(true))
 
 // schemaRefPrefix is the prefix huma gives every component schema reference.
 const schemaRefPrefix = "#/components/schemas/"

@@ -4,7 +4,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -577,11 +576,7 @@ func (srv *Server) releaseArgon2() { <-srv.argon2Sem }
 // are checked — if the process can respond, it's alive. Kubernetes uses this
 // to decide whether to restart the pod.
 func healthzHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		if err := json.NewEncoder(w).Encode(map[string]string{"status": "alive"}); err != nil {
-			slog.ErrorContext(r.Context(), "healthz: failed to encode response", "error", err)
-		}
+	return func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
 	}
 }

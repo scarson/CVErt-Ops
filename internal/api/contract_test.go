@@ -3,18 +3,25 @@
 package api
 
 import (
+	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/json/jsontext"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humachi"
+	"github.com/go-chi/chi/v5"
 )
 
 func mustJSON(v any) []byte {
@@ -637,4 +644,168 @@ func TestParseLimitParam(t *testing.T) {
 			t.Errorf("status = %d, want 400", rec.Code)
 		}
 	})
+}
+
+func TestWriteJSON_NilSliceIsEmptyArray(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeJSON(rec, http.StatusOK, struct {
+		Tags []string `json:"tags"`
+	}{})
+	if got, want := rec.Body.String(), "{\"tags\":[]}\n"; got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+// failingMarshaler is a response value whose encoding always fails.
+type failingMarshaler struct{}
+
+func (failingMarshaler) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("marshal refused")
+}
+
+func TestWriteJSON_MarshalFailureWritesProblem(t *testing.T) {
+	var logs bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	rec := httptest.NewRecorder()
+	writeJSON(rec, http.StatusOK, map[string]any{"value": failingMarshaler{}})
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+	var problem huma.ErrorModel
+	if err := json.Unmarshal(rec.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("body is not a problem document: %v; body %q", err, rec.Body.String())
+	}
+	if problem.Status != http.StatusInternalServerError || problem.Title != http.StatusText(http.StatusInternalServerError) {
+		t.Errorf("problem = %+v, want status 500 and title %q", problem, http.StatusText(http.StatusInternalServerError))
+	}
+	if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "marshal refused") {
+		t.Errorf("log = %q, want an ERROR record carrying the marshal error", logs.String())
+	}
+}
+
+func TestWriteJSON_InvalidUTF8IsReplaced(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeJSON(rec, http.StatusOK, map[string]string{"name": "a\xffb"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got, want := body["name"], "a"+string(utf8.RuneError)+"b"; got != want {
+		t.Errorf("name = %q, want %q", got, want)
+	}
+}
+
+func TestWriteJSON_MapKeyOrderIsStable(t *testing.T) {
+	v := map[string]int{}
+	for i := range 20 {
+		v[fmt.Sprintf("key%02d", i)] = i
+	}
+	first := httptest.NewRecorder()
+	writeJSON(first, http.StatusOK, v)
+	for range 10 {
+		rec := httptest.NewRecorder()
+		writeJSON(rec, http.StatusOK, v)
+		if rec.Body.String() != first.Body.String() {
+			t.Fatalf("body differs between calls:\n%s\n%s", first.Body.String(), rec.Body.String())
+		}
+	}
+}
+
+func TestWriteJSON_BodyEndsWithNewline(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeJSON(rec, http.StatusCreated, map[string]string{"status": "ok"})
+	if rec.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201", rec.Code)
+	}
+	if !strings.HasSuffix(rec.Body.String(), "}\n") {
+		t.Errorf("body = %q, want it to end with a newline", rec.Body.String())
+	}
+}
+
+func TestWriteProblem_NilErrorsOmitted(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeProblemWithErrors(rec, http.StatusUnprocessableEntity, "bad input")
+	if !strings.HasSuffix(rec.Body.String(), "}\n") {
+		t.Errorf("body = %q, want it to end with a newline", rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := body["errors"]; ok {
+		t.Errorf("errors present in %v, want it omitted when there are none", body)
+	}
+}
+
+type humaResponseProbeOutput struct {
+	Body struct {
+		Tags   []string          `json:"tags"`
+		Labels map[string]string `json:"labels"`
+		Note   string            `json:"note"`
+	}
+}
+
+// TestHumaResponseFormat verifies that huma operations encode responses with
+// the same options as writeJSON: nil collections as [] and {}, HTML characters
+// unescaped, and a trailing newline.
+func TestHumaResponseFormat(t *testing.T) {
+	mux := chi.NewMux()
+	api := humachi.New(mux, newHumaConfig())
+	huma.Register(api, huma.Operation{
+		OperationID: "response-format-probe",
+		Method:      http.MethodGet,
+		Path:        "/probe",
+	}, func(context.Context, *struct{}) (*humaResponseProbeOutput, error) {
+		out := &humaResponseProbeOutput{}
+		out.Body.Note = "<a&b>"
+		return out, nil
+	})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/probe", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.HasSuffix(body, "}\n") {
+		t.Errorf("body = %q, want it to end with a newline", body)
+	}
+	if !strings.Contains(body, `"note":"<a&b>"`) {
+		t.Errorf("body = %q, want the note with HTML characters unescaped", body)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if tags, ok := decoded["tags"].([]any); !ok || len(tags) != 0 {
+		t.Errorf("tags = %#v, want an empty array", decoded["tags"])
+	}
+	if labels, ok := decoded["labels"].(map[string]any); !ok || len(labels) != 0 {
+		t.Errorf("labels = %#v, want an empty object", decoded["labels"])
+	}
+}
+
+// TestHumaResponseFormat_MarshalFailureWritesNothing verifies that the huma
+// response format returns an encoding error without writing part of a body.
+func TestHumaResponseFormat_MarshalFailureWritesNothing(t *testing.T) {
+	var buf bytes.Buffer
+	err := newHumaConfig().Formats["application/json"].Marshal(&buf, map[string]any{"value": failingMarshaler{}})
+	if err == nil || !strings.Contains(err.Error(), "marshal refused") {
+		t.Errorf("err = %v, want the marshal error", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("wrote %q, want nothing", buf.String())
+	}
 }

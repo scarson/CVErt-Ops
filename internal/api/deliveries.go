@@ -61,13 +61,13 @@ type DeliveryEntry struct {
 	RuleID          string  `json:"rule_id"`
 	ChannelID       string  `json:"channel_id"`
 	Kind            string  `json:"kind"`
-	ReportID        *string `json:"report_id,omitempty"`
+	ReportID        *string `json:"report_id,omitzero" nullable:"false"`
 	Status          string  `json:"status"`
 	AttemptCount    int32   `json:"attempt_count"`
 	SendAfter       string  `json:"send_after"`
-	LastAttemptedAt *string `json:"last_attempted_at,omitempty"`
-	DeliveredAt     *string `json:"delivered_at,omitempty"`
-	LastError       *string `json:"last_error,omitempty"`
+	LastAttemptedAt *string `json:"last_attempted_at,omitzero" nullable:"false"`
+	DeliveredAt     *string `json:"delivered_at,omitzero" nullable:"false"`
+	LastError       *string `json:"last_error,omitzero" nullable:"false"`
 	CreatedAt       string  `json:"created_at"`
 	UpdatedAt       string  `json:"updated_at"`
 }

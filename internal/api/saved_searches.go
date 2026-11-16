@@ -40,7 +40,7 @@ type savedSearchEntry struct {
 	ID        string          `json:"id"`
 	Name      string          `json:"name"`
 	QueryJSON json.RawMessage `json:"query_json"`
-	NlQuery   *string         `json:"nl_query,omitempty"`
+	NlQuery   *string         `json:"nl_query,omitzero" nullable:"false"`
 	IsShared  bool            `json:"is_shared"`
 	CreatedAt string          `json:"created_at"`
 	UpdatedAt string          `json:"updated_at"`

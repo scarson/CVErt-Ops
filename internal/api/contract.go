@@ -20,60 +20,69 @@ import (
 	"github.com/danielgtaylor/huma/v2/validation"
 )
 
+// responseJSONOptions encode API responses: nil slices and maps as [] and {},
+// map keys sorted so equal responses are equal bytes, and invalid UTF-8 replaced
+// with U+FFFD rather than failing the response.
+var responseJSONOptions = jsonv2.JoinOptions(jsonv2.Deterministic(true), jsontext.AllowInvalidUTF8(true))
+
+// encodingFailureProblem is the response body written when a response value
+// cannot be encoded. It is fixed text so that writing it cannot fail too.
+const encodingFailureProblem = `{"title":"Internal Server Error","status":500}`
+
+// writeEncoded encodes v before writing anything, so a value that fails to
+// encode produces a 500 problem response instead of a success status followed
+// by a cut-off body. The body ends with a newline.
+func writeEncoded(w http.ResponseWriter, status int, contentType string, v any) {
+	body, err := jsonv2.Marshal(v, responseJSONOptions)
+	if err != nil {
+		slog.Error("response encoding failed", "status", status, "error", err)
+		body = []byte(encodingFailureProblem)
+		status = http.StatusInternalServerError
+		contentType = "application/problem+json"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(status)
+	//nolint:gosec // G705: body is a JSON encoding served as application/json or application/problem+json with X-Content-Type-Options: nosniff, never as HTML
+	if _, err := w.Write(append(body, '\n')); err != nil {
+		slog.Error("response write failed", "error", err)
+	}
+}
+
 // writeJSON writes v as JSON with the given status code.
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Error("writeJSON: encode failed", "error", err)
-	}
+	writeEncoded(w, status, "application/json", v)
 }
 
 // writeProblem writes an RFC 9457 Problem Details response using huma's ErrorModel.
 // Does NOT set the "type" field — huma omits it via omitempty, so we must too.
 func writeProblem(w http.ResponseWriter, status int, detail string) {
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(status)
-	resp := huma.ErrorModel{
+	writeEncoded(w, status, "application/problem+json", huma.ErrorModel{
 		Title:  http.StatusText(status),
 		Status: status,
 		Detail: detail,
-	}
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.Error("writeProblem: encode failed", "error", err)
-	}
+	})
 }
 
 // writeProblemWithErrors writes an RFC 9457 response with field-level error details.
 // Uses huma.ErrorDetail directly — no custom clone types.
 func writeProblemWithErrors(w http.ResponseWriter, status int, detail string, errs ...*huma.ErrorDetail) {
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(status)
-	resp := huma.ErrorModel{
+	writeEncoded(w, status, "application/problem+json", huma.ErrorModel{
 		Title:  http.StatusText(status),
 		Status: status,
 		Detail: detail,
 		Errors: errs,
-	}
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.Error("writeProblemWithErrors: encode failed", "error", err)
-	}
+	})
 }
 
 // writeProblemTyped writes an RFC 9457 response with a custom problem type URI.
 // Used for tier-limit failures to distinguish from RBAC 403s.
 func writeProblemTyped(w http.ResponseWriter, status int, problemType, detail string) {
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(status)
-	resp := huma.ErrorModel{
+	writeEncoded(w, status, "application/problem+json", huma.ErrorModel{
 		Type:   problemType,
 		Title:  http.StatusText(status),
 		Status: status,
 		Detail: detail,
-	}
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.Error("writeProblemTyped: encode failed", "error", err)
-	}
+	})
 }
 
 // Tier-limit problem type URI.

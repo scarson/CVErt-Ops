@@ -32,7 +32,10 @@ type AuditEntry struct {
 	Metadata   json.RawMessage // nil means NULL
 }
 
-// AuditRow represents a single audit log row returned from a query.
+// AuditRow represents a single audit log row returned from a query. The raw
+// JSON fields are omitted only when nil, so a stored {} or null is still
+// written. A non-nil zero-length value would fail to encode; a JSONB column
+// cannot produce one.
 type AuditRow struct {
 	ID         uuid.UUID       `json:"id"`
 	OrgID      uuid.UUID       `json:"org_id"`
@@ -44,9 +47,9 @@ type AuditRow struct {
 	EntityID   string          `json:"entity_id"`
 	EntityName string          `json:"entity_name,omitempty"`
 	Success    bool            `json:"success"`
-	OldState   json.RawMessage `json:"old_state,omitempty"`
-	NewState   json.RawMessage `json:"new_state,omitempty"`
-	Metadata   json.RawMessage `json:"metadata,omitempty"`
+	OldState   json.RawMessage `json:"old_state,omitzero"`
+	NewState   json.RawMessage `json:"new_state,omitzero"`
+	Metadata   json.RawMessage `json:"metadata,omitzero"`
 	CreatedAt  time.Time       `json:"created_at"`
 }
 

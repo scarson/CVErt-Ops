@@ -24,12 +24,12 @@ This document serves three audiences. Start here, then go directly to the sectio
 
 | § | Section | You're working on... | Entries | Checklist |
 |---|---------|---------------------|---------|-----------|
-| 1 | [Feed Adapters & Data Ingestion](#1-feed-adapters--data-ingestion) | Feed adapters, streaming, ZIP, cursors, aliases | FEED-1 – FEED-20 | §1.C |
-| 2 | [Database & Query Patterns](#2-database--query-patterns) | Store methods, migrations, SQL, RLS, transaction helpers | DB-1 – DB-26 | §2.C |
-| 3 | [Authentication & Security](#3-authentication--security) | Auth, OAuth, JWT, API keys, MFA, lockout, secrets | AUTH-1 – AUTH-25 | §3.C |
-| 4 | [API Design & HTTP](#4-api-design--http) | HTTP handlers, middleware, pagination, validation | API-1 – API-13 | §4.C |
+| 1 | [Feed Adapters & Data Ingestion](#1-feed-adapters--data-ingestion) | Feed adapters, streaming, ZIP, cursors, aliases | FEED-1 – FEED-24 | §1.C |
+| 2 | [Database & Query Patterns](#2-database--query-patterns) | Store methods, migrations, SQL, RLS, transaction helpers | DB-1 – DB-27 | §2.C |
+| 3 | [Authentication & Security](#3-authentication--security) | Auth, OAuth, JWT, API keys, MFA, lockout, secrets | AUTH-1 – AUTH-26 | §3.C |
+| 4 | [API Design & HTTP](#4-api-design--http) | HTTP handlers, middleware, pagination, validation | API-1 – API-17 | §4.C |
 | 5 | [Notification & Alert Evaluation](#5-notification--alert-evaluation) | Alerts, delivery, webhooks, fan-out, debounce | NOTIFY-1 – NOTIFY-25 | §5.C |
-| 6 | [Architecture & Operations](#6-architecture--operations) | Startup, config, deployment, scheduling, cross-cutting | ARCH-1 – ARCH-45 | §6.C |
+| 6 | [Architecture & Operations](#6-architecture--operations) | Startup, config, deployment, scheduling, cross-cutting | ARCH-1 – ARCH-48 | §6.C |
 | A | [Historical Changelog](#appendix-a-historical-changelog) | Provenance, validation dates, review process meta-observations | — | — |
 | B | [Unified Summary Table](#appendix-b-unified-summary-table) | All pitfalls at a glance, with severity and status | — | — |
 | C | [Document Maintenance Guide](#appendix-c-document-maintenance-guide) | How to update this document correctly | — | — |
@@ -401,6 +401,12 @@ _, _ = io.Copy(io.Discard, resp.Body)
 
 ---
 
+### FEED-24: Feed Adapters Stay on v1 `encoding/json`
+
+Feed adapters MUST keep decoding upstream JSON with v1 `encoding/json`, not `encoding/json/v2`. Upstream data drifts (FEED-1, FEED-4). Under v2's defaults, one upstream record with a duplicate key or an invalid UTF-8 byte aborts the whole page instead of decoding as it does under v1, and invalid UTF-8 that v1 replaces with U+FFFD becomes an error, which also changes what reaches `material_hash`. The NVD and KEV skip-bad-record logic branches on v1's `*json.SyntaxError` and `*json.UnmarshalTypeError` (`internal/feed/nvd/adapter.go`, `internal/feed/kev/adapter.go`); v2 returns `*jsontext.SyntacticError` and `*jsonv2.SemanticError`. v2 with options that restore all of v1's behaviour is v1 under another name, and decoder speed alone does not justify the change. Reasoning: `dev/plans/2026-11-14-json-v2-migration-plan.md` — encoding/json/v2 migration plan, section "Category 4 — feed adapters stay on v1", which also maps the streaming rule of FEED-1 onto v2's `jsontext.Decoder` calls for a future change that does move a streaming loop.
+
+---
+
 ### Review Checklist
 
 When building or reviewing a feed adapter, verify each of the following:
@@ -424,6 +430,7 @@ When building or reviewing a feed adapter, verify each of the following:
 - [ ] **Rate limiter dynamic** — rate configured based on API key presence (FEED-11)
 - [ ] **One page per Fetch()** — adapter returns one logical page; handler persists between pages (FEED-19)
 - [ ] **Response body drained** — `io.Copy(io.Discard, resp.Body)` after `json.Decoder` use (FEED-20)
+- [ ] **Upstream JSON decoded with v1** — feed adapters import `encoding/json`, not `encoding/json/v2` (FEED-24)
 
 ### See Also
 - Feed adapter data seeded in tests: see testing-pitfalls.md §9 (Feed Data Quality)
@@ -1445,6 +1452,7 @@ Use this checklist when implementing or reviewing authentication and security co
 - Security enforcement test patterns: see testing-pitfalls.md Section 11
 - Webhook SSRF in delivery path: see NOTIFY-8 (Webhook Tarpitting)
 - HTTP server timeouts (Slowloris): see API-4
+- Request validator and decoder matching member names differently (a case-variant `Password` decoded as an empty password): see API-15
 # Section 4: API Design & HTTP
 
 > **Reader context:** "I'm writing or reviewing HTTP handlers or middleware"
@@ -1713,6 +1721,71 @@ Rejected: ordering by the inserting transaction's ID (`xid8` from `pg_current_xa
 
 ---
 
+### API-14: A Value Validated in One Place and Used in Another Must Be Decoded by One Function
+
+**The Flaw:** The API validated a notification channel's `config` by decoding it into `map[string]any` and looking up keys by exact name (`cfg["url"]`), validated email config with v1 `encoding/json`, which matches struct field names case-insensitively, and masked config for responses and audit records by exact key. Delivery decoded the same stored bytes into a struct with v1, case-insensitively.
+
+**Why It Matters:** Each reader was correct by its own rules, and they read different values from the same bytes. An email channel stored as `{"Recipients":["x@example.com"]}` passed validation, was shown to admins and in the audit log as `"Recipients":"[REDACTED]"` rather than as a recipient list, and was delivered to `x@example.com`. A webhook `custom_headers` value `{"X-A":1}` passed the API, because any value fits `map[string]any`; at delivery v1 reported a type error that the caller discarded, and the request went out with `X-A` empty. Nothing logged an error. The same split held for semantic rules: a reserved header name was accepted by the API and silently dropped at send time, so the stored config and what was sent differed.
+
+**The Fix:** One parser per stored type, in the package that acts on the value, called by both the API and the consumer: `notify.ParseWebhookSettings` and `notify.ParseEmailSettings` (`internal/notify/channel_config.go`) decode with `encoding/json/v2` and `RejectUnknownMembers(true)`, so names match exactly and keys delivery does not read are refused. `notify.CheckWebhookSettings` and `notify.CheckEmailRecipients` in the same file hold the semantic rules (URL present, header names and values, reserved headers, recipient count, address syntax, duplicates). The API maps their errors to 422 locations; delivery treats the same errors as permanent failures. The parsers also refuse JSON `null` for a string value, because v2 decodes `null` into a Go `string` as `""` without an error. Background and the stored-row check: `dev/plans/2026-11-14-json-v2-migration-plan.md` — encoding/json/v2 migration plan, section "Phase 1 — Notification channel config: one strict decoder for API and delivery".
+
+**The Lesson:** "Validated" means only "this decoder accepted it". Two decoders that differ on name case, unknown keys, value types or `null` can read different values from the same bytes. When a value is validated in one component and acted on in another, find every function that decodes it (grep the column name and the struct type); if there is more than one, make them one. Every rule either side enforces belongs in that shared code. API-9 is the same rule between POST and PATCH.
+
+---
+
+### API-15: A Request Validator and Its Decoder Must Match Member Names the Same Way
+
+**The Flaw:** huma validates a request body against its schema and then decodes it with the configured format. In huma v2.37.3 the validator matches member names with `strings.EqualFold` unless `huma.ValidateStrictCasing` is true (`huma@v2.37.3/validate.go:44`, read at :657 for `required` and property lookup and :707 for `additionalProperties`). The request format was moved to `encoding/json/v2`, which matches names exactly and ignores names it does not know.
+
+**Why It Matters:** This is a security defect. For `{"email":"..","Password":"<16 characters>"}` the validator found `Password`, accepted it as `password` for `required` and `minLength`, and the decoder ignored it, so the handler received an empty password. Register, reset-password and change-password could set an empty password. With v1 the defect ran the other way: `{"password":"<valid>","PASSWORD":"x"}` passed validation on the exact key, and v1 decoded the last case-insensitive match, `"x"`. Tests that send well-formed bodies pass in both configurations.
+
+**The Fix:** `init` in `internal/api/openapi_spec.go` sets `huma.ValidateStrictCasing = true`, so huma validates names exactly as the v2 format decodes them, and a case-variant name is a 422 `unexpected property` at its own location. `TestHumaBodyMemberNamesMatchExactly` (`internal/api/huma_member_names_test.go`), `TestRegisterCaseVariantMemberRefused` and `TestLoginCaseVariantSiblingRefused` (`internal/api/auth_test.go`) cover it. chi bodies are decoded by `decodeJSON` (`internal/api/contract.go`), which has no separate validator: the v2 decode with `RejectUnknownMembers(true)` is the name check.
+
+**The Lesson:** When validation and decoding are two passes over the same bytes, they MUST agree on name matching, duplicate names, and which of two spellings wins; the handler acts on what the decoder produced, not on what the validator saw. Whenever the options of either pass change, test a body whose only spelling of a required member is a case variant, and a body with both an exact and a case-variant spelling. A library's default setting is part of this contract: read it rather than assume it.
+
+---
+
+### API-16: `encoding/json/v2` Options Do Not Reach an `UnmarshalJSON([]byte)` Method
+
+**The Flaw:** A type implements the v1 interface `UnmarshalJSON([]byte) error` and decodes its contents with `json.Unmarshal`. When the outer decode is `jsonv2.Unmarshal` with strict options (`RejectUnknownMembers(true)`, case-sensitive names), v2 passes the method the raw bytes and none of the options, so the inner decode follows v1's rules. The case in this code base was `clearableField[T]` (`internal/api/contract.go`), which records whether a PATCH key was sent so that an absent key and `null` differ.
+
+**Why It Matters:** Inside such a field an unknown member and a case-variant name are accepted (probed on go1.27.4), while the rest of the request body is strict. A struct `T` would silently drop a misspelled member, and the client would get 200 for a change that was not made. At the time `T` was `uuid.UUID` or `string`, so nothing was exposed; the first struct `T` would have been.
+
+**The Fix:** Implement `UnmarshalJSONFrom(*jsontext.Decoder) error` and decode with `jsonv2.UnmarshalDecode`, which uses the decoder's options:
+```go
+func (f *clearableField[T]) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	f.Sent = true
+	if dec.PeekKind() == 'n' {
+		_, err := dec.ReadToken()
+		f.Value = nil
+		return err
+	}
+	var v T
+	if err := jsonv2.UnmarshalDecode(dec, &v); err != nil {
+		return err
+	}
+	f.Value = &v
+	return nil
+}
+```
+v1 `json.Unmarshal` also calls `UnmarshalJSONFrom`, so v1 callers keep working. A `json.RawMessage` member has a related limit: the outer v2 decode checks its syntax, duplicate names and UTF-8, but not its member names, which are checked only when something decodes it with strict options.
+
+**The Lesson:** A strict decode is strict only as far as its options travel. Before relying on `encoding/json/v2` strictness for a type, grep for `UnmarshalJSON(` on every type reachable from it; each one is a point where the options stop.
+
+---
+
+### API-17: Retagging `omitempty` as `omitzero` Changes huma's Schema, and v2's `omitempty` Omits Empty Raw JSON
+
+**The Flaw:** `encoding/json/v2` gives `omitempty` a different meaning: it omits a field that encodes as `null`, `""`, `{}` or `[]`, where v1 omitted `false`, `0`, a nil pointer, a nil interface and an empty slice, map or string. Under v2 a `*string` pointing at `""` and a `json.RawMessage` holding `{}`, `null` or `[]` are omitted where v1 wrote them, and `false` and `0` are written where v1 omitted them. `omitzero` keeps v1's output for these fields, but huma v2.37.3 marks a pointer-to-scalar field nullable (`huma@v2.37.3/schema.go:985`) and clears that only for `omitempty` (`schema.go:927-931`), so retagging a `*string` field `omitzero` changes its `openapi.json` type to `["string","null"]`.
+
+**Why It Matters:** A changed field presence is invisible to tests that check values only: audit-log `old_state`, `new_state` and `metadata` and security-event `details`, which hold `{}` or `null` in real rows, would have lost the key. The schema change regenerates the SPA's TypeScript types as `string | null` for properties the server never sets to `null`; with 45 `*string` fields retagged, 53 `openapi.json` properties changed.
+
+**The Fix:** A pointer-to-scalar response field that must keep v1's output gets `omitzero` and `nullable:"false"`; a `json.RawMessage` response field that holds stored JSON gets `omitzero`. `TestResponseEncoding` (`internal/api/response_encoding_test.go`) encodes every response type with v1 and with the API's v2 options and fails on any difference in field presence that is not on its allowlist, and fails when a response-reachable pointer-to-scalar field has `omitzero` without `nullable:"false"`. After any tag change, regenerate the spec with `GENERATE_OPENAPI=1 go test -run '^TestOpenAPISpec$' ./internal/api/` and expect no diff in `openapi.json`. Request-only structs keep pointer fields with `omitempty` (API-2); decoding ignores both options.
+
+**The Lesson:** A struct tag is read by every library that reflects over the type, not only by the encoder. When a tag changes for one of them, regenerate every artifact the others derive from it (here `openapi.json` and `web/src/lib/api/schema.d.ts`) and diff it.
+
+---
+
 ### Review Checklist
 
 When writing or reviewing HTTP handlers and middleware, verify each item:
@@ -1728,10 +1801,15 @@ When writing or reviewing HTTP handlers and middleware, verify each item:
 - [ ] Admin/management endpoints discover resources dynamically, not from hardcoded lists (API-11)
 - [ ] A polling cursor's key is assigned in commit order: a sequence value is drawn only while holding a lock released after commit, by every writer, before it locks the row (API-12)
 - [ ] A request dispatched to the server's own router in process gets a fresh context with none of the outer request's values (API-13)
+- [ ] A JSON value validated by the API and used by a worker is decoded by one shared function, and every rule either side enforces lives in shared code (API-14)
+- [ ] `huma.ValidateStrictCasing` stays true, so huma's validator matches member names exactly as the `encoding/json/v2` request format decodes them (API-15)
+- [ ] No type reachable from a strict `encoding/json/v2` decode implements `UnmarshalJSON([]byte)`; it implements `UnmarshalJSONFrom` with `jsonv2.UnmarshalDecode` (API-16)
+- [ ] A response field retagged `omitzero` that is a pointer to a scalar also has `nullable:"false"`, and `openapi.json` regenerates without a diff (API-17)
 
 ---
 
 ### See Also
+- Hashing or byte-comparing `encoding/json/v2` output: see ARCH-48 (map key order)
 - Background goroutine lifecycle (worker-side): see ARCH-44 (Goroutine Lifecycle)
 - Security enforcement in auth handlers: see AUTH-3 through AUTH-12
 - Validation symmetry testing: see testing-pitfalls.md section 4
@@ -2106,6 +2184,7 @@ When a webhook endpoint goes down, all deliveries targeting it fail and are sche
 - Webhook SSRF and redirect bypass: see AUTH-17
 - DB transaction during external I/O: see testing-pitfalls.md §8
 - Fan-out delivery testing: see testing-pitfalls.md §14
+- Channel config validated by the API and read by delivery through one shared parser: see API-14
 
 ---
 
@@ -2828,6 +2907,18 @@ Every consumer hit is a call site that needs updating. Infrastructure without co
 
 ---
 
+### ARCH-48: `encoding/json/v2` Writes Map Keys in No Fixed Order
+
+**The Flaw:** `jsonv2.Marshal` writes the entries of a Go map in an order that varies between runs (probed on go1.27.4); v1 `json.Marshal` sorts them. Code moved from v1 to v2 that hashes the output, compares it byte for byte, or uses it as a cache or dedupe key now gets different bytes for equal values.
+
+**Why It Matters:** A `material_hash` computed over such output would differ between two merges of the same data. The realtime evaluator fires on a changed hash, so every merge would look like a material change and send alerts for every matching rule. Tests that compare JSON bytes fail some of the time, which reads as a flaky test rather than a defect.
+
+**The Fix:** Hash and dedupe inputs MUST stay on v1 `json.Marshal` (`internal/merge/hash.go`, `match_inputs.go`, `resolve.go`, `internal/check/names.go`), and hashed bytes are canonicalized to RFC 8785 by `canonicalJSON` (`internal/merge/canonical.go`, `jsontext.Value.Canonicalize`). Wherever `jsonv2.Marshal` output is compared or reused as a key, pass `jsonv2.Deterministic(true)`; the API's `responseJSONOptions` include it. `Deterministic(true)` is not enough for a value that is stored and compared later: Go documents its output as stable across instances of one binary, not across builds (source, toolchain version, GOOS/GOARCH, build flags), so a stored hash still needs RFC 8785 canonicalization. Tests that compare JSON bytes use v1 or `Deterministic(true)`.
+
+**The Lesson:** Moving a call site to a new encoder changes every property its callers relied on, including ones nobody wrote down, such as key order. Before moving a marshal call, find what consumes the bytes; if anything hashes, stores or compares them, keep the bytes stable and prove it with a pinned test (`internal/merge/testdata/golden_material_hashes.json`).
+
+---
+
 ### Review Checklist
 
 - [ ] `import _ "time/tzdata"` present in `main.go`?
@@ -2842,6 +2933,7 @@ Every consumer hit is a call site that needs updating. Infrastructure without co
 - [ ] Deployment config matches code protections (DB role, env defaults, TLS)?
 - [ ] `_ =` on success paths audited — critical state writes propagate errors?
 - [ ] Background goroutines have join point + semaphore + timeout?
+- [ ] Hash and dedupe inputs marshaled with v1 `json.Marshal` and canonicalized; any compared `jsonv2.Marshal` output uses `jsonv2.Deterministic(true)` (ARCH-48)?
 
 ---
 
@@ -2886,6 +2978,7 @@ These findings were predictive. Many proved accurate when implementation began; 
 | 2026-03-17 | Phase 8E bug hunts | Architecture (now ARCH-41) | Empirical — hot-reload infrastructure disconnected from consumers |
 | 2026-03-17 | Phase 11 MFA bug hunts | Auth (now AUTH-23) | Empirical — password reset MFA bypass, stale token_version |
 | 2026-03-18 | Health review + audit | Multiple sections | Empirical — 10 new pitfalls added; 7 existing pitfalls strengthened |
+| 2026-11-16 | encoding/json/v2 migration (`dev/plans/2026-11-14-json-v2-migration-plan.md`) | Feeds (FEED-24), API (API-14–17), Architecture (ARCH-48) | Empirical — API-14, API-16 and ARCH-48 from probes and defects found while planning; API-15 (a security defect the migration introduced and fixed) and API-17 found during execution |
 
 ## A.3 Meta-Observations on the Review Process
 
@@ -2925,14 +3018,14 @@ All pitfalls by domain, with entry count and key themes. For detailed status per
 
 | Section | Entries | Key Themes |
 |---------|---------|------------|
-| §1 Feed Adapters | FEED-1 – FEED-20 | Streaming JSON (Token/More), ZIP temp-file bridging, timestamp parsing, null bytes, alias PK resolution, NVD rate limits/cursors, one-page-per-Fetch, response body drain |
-| §2 Database & Query | DB-1 – DB-26 | EPSS two-statement pattern + advisory locks, FTS isolation, RLS dual-layer (org_id + SET LOCAL), transaction helper selection, IS DISTINCT FROM guards, CREATE INDEX CONCURRENTLY, soft-delete partial indexes, ANY() arrays, nullable zero-value, bounded btree keys over feed text |
-| §3 Auth & Security | AUTH-1 – AUTH-25 | JWT WithValidMethods, argon2 semaphore (non-blocking), refresh JTI + theft detection, OAuth state/nonce, API keys (opaque + sha256), webhook HMAC + redirect SSRF, identity by provider_user_id, atomic token consumption, security code dedup, enumeration-safe error paths, in-memory state eviction/normalization |
-| §4 API & HTTP | API-1 – API-13 | WithoutCancel for background goroutines, PATCH pointer types, RequestSize + Slowloris timeouts, keyset pagination composite cursor, pgx SimpleProtocol, unique constraint → 409, PATCH/POST validation parity, API contract consistency, admin dynamic resource discovery, commit-order polling cursor, fresh context for in-process dispatch |
+| §1 Feed Adapters | FEED-1 – FEED-24 | Streaming JSON (Token/More), ZIP temp-file bridging, timestamp parsing, null bytes, alias PK resolution, NVD rate limits/cursors, one-page-per-Fetch, response body drain, range dedupe and withdrawal semantics, upstream JSON kept on v1 `encoding/json` |
+| §2 Database & Query | DB-1 – DB-27 | EPSS two-statement pattern + advisory locks, FTS isolation, RLS dual-layer (org_id + SET LOCAL), transaction helper selection, IS DISTINCT FROM guards, CREATE INDEX CONCURRENTLY, soft-delete partial indexes, ANY() arrays, nullable zero-value, bounded btree keys over feed text |
+| §3 Auth & Security | AUTH-1 – AUTH-26 | JWT WithValidMethods, argon2 semaphore (non-blocking), refresh JTI + theft detection, OAuth state/nonce, API keys (opaque + sha256), webhook HMAC + redirect SSRF, identity by provider_user_id, atomic token consumption, security code dedup, enumeration-safe error paths, in-memory state eviction/normalization |
+| §4 API & HTTP | API-1 – API-17 | WithoutCancel for background goroutines, PATCH pointer types, RequestSize + Slowloris timeouts, keyset pagination composite cursor, pgx SimpleProtocol, unique constraint → 409, PATCH/POST validation parity, API contract consistency, admin dynamic resource discovery, commit-order polling cursor, fresh context for in-process dispatch, one decoder for a value validated and used in different places, validator and decoder agreeing on member names (security: API-15), `UnmarshalJSONFrom` for v2 strictness, `omitzero` + `nullable:"false"` |
 | §5 Notification & Alert | NOTIFY-1 – NOTIFY-25 | Activation scan (silent + async + paginated + zombie sweep), EPSS separate evaluator, dry-run isolation, rejected CVE filter, webhook delivery (3-phase + timeout + MaxConnsPerHost + body drain), fan-out (WaitGroup + per-channel continue), debounce, soft-delete channels, retry jitter, evaluator cursor re-scan window, digest re-scan window with sent-version list, digest total count beyond the row limit, digest claim held for the whole run, alert debounce index over open batches only |
-| §6 Architecture & Ops | ARCH-1 – ARCH-45 | RLS deployment config, timezone/automemlimit/SimpleProtocol imports, migration locks, DST-safe scheduling, connection pool sizing, statement timeout, rate limiter eviction, feature flag enforcement points, infrastructure-consumer connection, silent error suppression, config constant invariants, goroutine lifecycle (WithoutCancel + join + semaphore + timeout) |
+| §6 Architecture & Ops | ARCH-1 – ARCH-48 | RLS deployment config, timezone/automemlimit/SimpleProtocol imports, migration locks, DST-safe scheduling, connection pool sizing, statement timeout, rate limiter eviction, feature flag enforcement points, infrastructure-consumer connection, silent error suppression, config constant invariants, goroutine lifecycle (WithoutCancel + join + semaphore + timeout), stable bytes for hash inputs (v1 marshal, RFC 8785, v2 map order) |
 
-**Total: ~144 pitfall entries across 6 domains.**
+**Total: ~167 pitfall entries across 6 domains.**
 
 ---
 

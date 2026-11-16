@@ -48,8 +48,8 @@ type reportEntry struct {
 	ScheduledTime     string   `json:"scheduled_time"`
 	Timezone          string   `json:"timezone"`
 	NextRunAt         string   `json:"next_run_at"`
-	LastRunAt         *string  `json:"last_run_at,omitempty"`
-	SeverityThreshold *string  `json:"severity_threshold,omitempty"`
+	LastRunAt         *string  `json:"last_run_at,omitzero" nullable:"false"`
+	SeverityThreshold *string  `json:"severity_threshold,omitzero" nullable:"false"`
 	WatchlistIDs      []string `json:"watchlist_ids"`
 	SendOnEmpty       bool     `json:"send_on_empty"`
 	AISummary         bool     `json:"ai_summary"`

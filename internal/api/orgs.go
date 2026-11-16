@@ -168,7 +168,7 @@ type memberEntry struct {
 	DisplayName   string  `json:"display_name"`
 	Role          string  `json:"role"`
 	Active        bool    `json:"active"`
-	DeactivatedAt *string `json:"deactivated_at,omitempty"`
+	DeactivatedAt *string `json:"deactivated_at,omitzero" nullable:"false"`
 	SCIMExempt    bool    `json:"scim_exempt"`
 	JoinedAt      string  `json:"joined_at"`
 }
@@ -186,7 +186,7 @@ type patchMemberResponseBody struct {
 	UserID        string  `json:"user_id"`
 	Role          string  `json:"role"`
 	Active        bool    `json:"active"`
-	DeactivatedAt *string `json:"deactivated_at,omitempty"`
+	DeactivatedAt *string `json:"deactivated_at,omitzero" nullable:"false"`
 	SCIMExempt    bool    `json:"scim_exempt"`
 }
 

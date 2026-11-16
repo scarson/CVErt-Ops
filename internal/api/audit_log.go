@@ -16,8 +16,8 @@ import (
 
 type auditLogListEntry struct {
 	ID         string          `json:"id"`
-	ActorID    *string         `json:"actor_id,omitempty"`
-	APIKeyID   *string         `json:"api_key_id,omitempty"`
+	ActorID    *string         `json:"actor_id,omitzero" nullable:"false"`
+	APIKeyID   *string         `json:"api_key_id,omitzero" nullable:"false"`
 	ActorEmail string          `json:"actor_email"`
 	Action     string          `json:"action"`
 	EntityType string          `json:"entity_type"`

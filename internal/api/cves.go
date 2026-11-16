@@ -66,12 +66,12 @@ func registerCVERoutes(api huma.API, srv *Server) {
 // CVEItem is the list-view representation of a CVE (no child tables).
 type CVEItem struct {
 	CVEID              string   `json:"cve_id"`
-	Status             *string  `json:"status,omitempty"`
-	DatePublished      *string  `json:"date_published,omitempty"` // RFC3339
+	Status             *string  `json:"status,omitzero" nullable:"false"`
+	DatePublished      *string  `json:"date_published,omitzero" nullable:"false"` // RFC3339
 	DateModified       string   `json:"date_modified"`            // RFC3339
 	DateFirstSeen      string   `json:"date_first_seen"`          // RFC3339
-	DescriptionPrimary *string  `json:"description_primary,omitempty"`
-	Severity           *string  `json:"severity,omitempty"`
+	DescriptionPrimary *string  `json:"description_primary,omitzero" nullable:"false"`
+	Severity           *string  `json:"severity,omitzero" nullable:"false"`
 	CVSSv3Score        *float64 `json:"cvss_v3_score,omitempty"`
 	CVSSv4Score        *float64 `json:"cvss_v4_score,omitempty"`
 	CVSSScoreDiverges  bool     `json:"cvss_score_diverges"`
@@ -84,8 +84,8 @@ type CVEItem struct {
 // CVEDetail extends CVEItem with child-table data.
 type CVEDetail struct {
 	CVEItem
-	CVSSv3Vector       *string                   `json:"cvss_v3_vector,omitempty"`
-	CVSSv4Vector       *string                   `json:"cvss_v4_vector,omitempty"`
+	CVSSv3Vector       *string                   `json:"cvss_v3_vector,omitzero" nullable:"false"`
+	CVSSv4Vector       *string                   `json:"cvss_v4_vector,omitzero" nullable:"false"`
 	AffectedPackages   []AffectedPackageResponse `json:"affected_packages"`
 	AffectedCPEs       []AffectedCPEResponse     `json:"affected_cpes" doc:"Every CPE the sources name for this CVE, once each. Includes platforms NVD marks not vulnerable, such as the operating system an affected application runs on. For what is affected, read affected_cpe_matches."`
 	AffectedCPEMatches []CPEMatchResponse        `json:"affected_cpe_matches" doc:"NVD's affected CPEs with their version ranges, one entry per range: NVD repeats a CPE with a different range per release branch. Empty until CVErt Ops ingests an NVD record with configurations for the CVE. A CPE that carries its version in the string has no range fields."`
@@ -97,10 +97,10 @@ type CVEDetail struct {
 type AffectedPackageResponse struct {
 	Ecosystem   string  `json:"ecosystem"`
 	PackageName string  `json:"package_name"`
-	Namespace   *string `json:"namespace,omitempty"`
-	RangeType   *string `json:"range_type,omitempty"`
-	Introduced  *string `json:"introduced,omitempty"`
-	Fixed       *string `json:"fixed,omitempty"`
+	Namespace   *string `json:"namespace,omitzero" nullable:"false"`
+	RangeType   *string `json:"range_type,omitzero" nullable:"false"`
+	Introduced  *string `json:"introduced,omitzero" nullable:"false"`
+	Fixed       *string `json:"fixed,omitzero" nullable:"false"`
 }
 
 // AffectedCPEResponse is the API representation of a cve_affected_cpes row.
@@ -113,19 +113,19 @@ type AffectedCPEResponse struct {
 type CPEMatchResponse struct {
 	CPE                   string  `json:"cpe"`
 	CPENormalized         string  `json:"cpe_normalized"`
-	VersionStartIncluding *string `json:"version_start_including,omitempty"`
-	VersionStartExcluding *string `json:"version_start_excluding,omitempty"`
-	VersionEndIncluding   *string `json:"version_end_including,omitempty"`
-	VersionEndExcluding   *string `json:"version_end_excluding,omitempty"`
+	VersionStartIncluding *string `json:"version_start_including,omitzero" nullable:"false"`
+	VersionStartExcluding *string `json:"version_start_excluding,omitzero" nullable:"false"`
+	VersionEndIncluding   *string `json:"version_end_including,omitzero" nullable:"false"`
+	VersionEndExcluding   *string `json:"version_end_excluding,omitzero" nullable:"false"`
 }
 
 // CNAAffectedResponse is the API representation of a cve_cna_affected row.
 type CNAAffectedResponse struct {
-	Vendor        *string              `json:"vendor,omitempty"`
-	Product       *string              `json:"product,omitempty"`
-	PackageName   *string              `json:"package_name,omitempty"`
-	CollectionURL *string              `json:"collection_url,omitempty"`
-	DefaultStatus *string              `json:"default_status,omitempty" doc:"Status of versions the versions list does not mention: affected, unaffected or unknown."`
+	Vendor        *string              `json:"vendor,omitzero" nullable:"false"`
+	Product       *string              `json:"product,omitzero" nullable:"false"`
+	PackageName   *string              `json:"package_name,omitzero" nullable:"false"`
+	CollectionURL *string              `json:"collection_url,omitzero" nullable:"false"`
+	DefaultStatus *string              `json:"default_status,omitzero" nullable:"false" doc:"Status of versions the versions list does not mention: affected, unaffected or unknown."`
 	Versions      []CNAVersionResponse `json:"versions"`
 }
 
@@ -155,10 +155,10 @@ type ReferenceResponse struct {
 // CVESourceResponse is the API representation of a cve_sources row.
 type CVESourceResponse struct {
 	SourceName         string          `json:"source_name"`
-	SourceID           *string         `json:"source_id,omitempty"`
+	SourceID           *string         `json:"source_id,omitzero" nullable:"false"`
 	NormalizedJSON     json.RawMessage `json:"normalized_json"`
-	SourceDateModified *string         `json:"source_date_modified,omitempty"` // RFC3339
-	SourceURL          *string         `json:"source_url,omitempty"`
+	SourceDateModified *string         `json:"source_date_modified,omitzero" nullable:"false"` // RFC3339
+	SourceURL          *string         `json:"source_url,omitzero" nullable:"false"`
 	IngestedAt         string          `json:"ingested_at"` // RFC3339
 }
 

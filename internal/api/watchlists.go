@@ -55,8 +55,8 @@ type patchWatchlistBody struct {
 type watchlistEntry struct {
 	ID          string  `json:"id"`
 	Name        string  `json:"name"`
-	Description *string `json:"description,omitempty"`
-	GroupID     *string `json:"group_id,omitempty"`
+	Description *string `json:"description,omitzero" nullable:"false"`
+	GroupID     *string `json:"group_id,omitzero" nullable:"false"`
 	ItemCount   int64   `json:"item_count"`
 	CreatedAt   string  `json:"created_at"`
 	UpdatedAt   string  `json:"updated_at"`
@@ -76,11 +76,11 @@ type createWatchlistItemBody struct {
 type watchlistItemEntry struct {
 	ID            string  `json:"id"`
 	ItemType      string  `json:"item_type" enum:"package,cpe,cve"`
-	Ecosystem     *string `json:"ecosystem,omitempty"`
-	PackageName   *string `json:"package_name,omitempty"`
-	Namespace     *string `json:"namespace,omitempty"`
-	CpeNormalized *string `json:"cpe_normalized,omitempty"`
-	CveID         *string `json:"cve_id,omitempty"`
+	Ecosystem     *string `json:"ecosystem,omitzero" nullable:"false"`
+	PackageName   *string `json:"package_name,omitzero" nullable:"false"`
+	Namespace     *string `json:"namespace,omitzero" nullable:"false"`
+	CpeNormalized *string `json:"cpe_normalized,omitzero" nullable:"false"`
+	CveID         *string `json:"cve_id,omitzero" nullable:"false"`
 	CreatedAt     string  `json:"created_at"`
 }
 

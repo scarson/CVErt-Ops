@@ -52,11 +52,11 @@ type AlertEventWatchlistMatch struct {
 	WatchlistID string  `json:"watchlist_id" format:"uuid" doc:"Watchlist ID."`
 	ItemID      string  `json:"item_id" format:"uuid" doc:"Watchlist item ID."`
 	ItemType    string  `json:"item_type" enum:"cve,package,cpe" doc:"Item type."`
-	CveID       *string `json:"cve_id,omitempty" doc:"For a cve item: the CVE ID."`
-	Ecosystem   *string `json:"ecosystem,omitempty" doc:"For a package item: the ecosystem as listed."`
-	PackageName *string `json:"package_name,omitempty" doc:"For a package item: the package name as listed."`
-	Namespace   *string `json:"namespace,omitempty" doc:"For a package item: the namespace, when listed."`
-	CPE         *string `json:"cpe,omitempty" doc:"For a cpe item: the normalized CPE prefix."`
+	CveID       *string `json:"cve_id,omitzero" nullable:"false" doc:"For a cve item: the CVE ID."`
+	Ecosystem   *string `json:"ecosystem,omitzero" nullable:"false" doc:"For a package item: the ecosystem as listed."`
+	PackageName *string `json:"package_name,omitzero" nullable:"false" doc:"For a package item: the package name as listed."`
+	Namespace   *string `json:"namespace,omitzero" nullable:"false" doc:"For a package item: the namespace, when listed."`
+	CPE         *string `json:"cpe,omitzero" nullable:"false" doc:"For a cpe item: the normalized CPE prefix."`
 }
 
 // parseAlertEventExpand reads ?expand=, a comma-separated subset of cve and rule.

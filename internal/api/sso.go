@@ -25,7 +25,7 @@ type createSSOBody struct {
 	IssuerURL    string   `json:"issuer_url"`
 	ClientID     string   `json:"client_id"`
 	ClientSecret string   `json:"client_secret"`
-	Scopes       []string `json:"scopes"`
+	Scopes       []string `json:"scopes,omitempty" doc:"OIDC scopes to request. Omit to request openid, profile and email."`
 	Enabled      *bool    `json:"enabled"`
 }
 

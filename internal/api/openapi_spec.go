@@ -35,10 +35,16 @@ func noopHandler[I, O any]() func(context.Context, *I) (*O, error) {
 // variable read on every request, so it is set once for the process here rather
 // than in a constructor.
 //
+// Responses encode nil slices as [] (responseJSONOptions and writeJSON), so the
+// spec documents arrays as non-nullable and generated clients type them without
+// null. DefaultArrayNullable is read while huma builds schemas, so it must be
+// set before any operation is registered.
+//
 // huma.NewError builds every problem response huma writes, and is wrapped by
 // problemWithoutValues so that no response echoes request data.
 func init() {
 	huma.ValidateStrictCasing = true
+	huma.DefaultArrayNullable = false
 	huma.NewError = problemWithoutValues(huma.NewError)
 }
 

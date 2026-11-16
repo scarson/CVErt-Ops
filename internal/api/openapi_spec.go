@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"fmt"
+	"io"
 	"net/http"
 	"reflect"
 
@@ -51,14 +52,24 @@ func newHumaConfig() huma.Config {
 	// exactly. Unknown members, case variants of a defined name among them, are
 	// left to huma's schema validation, which matches names exactly because init
 	// sets huma.ValidateStrictCasing, and reports them with huma's locations.
-	// Responses keep huma's encoder.
-	// huma looks a request's format up by its media type, or by the suffix of a
-	// "+json" media type, so these two keys cover every JSON body huma accepts.
-	requestJSON := huma.Format{
-		Marshal:   huma.DefaultJSONFormat.Marshal,
+	// Responses encode with responseJSONOptions, as writeJSON does: nil slices
+	// and maps as [] and {}, sorted map keys, invalid UTF-8 replaced, and a
+	// trailing newline. The value is encoded in full before any byte is written,
+	// so a failed encoding leaves the body empty.
+	// huma looks a format up by its media type, or by the suffix of a "+json"
+	// media type, so these two keys cover every JSON body huma reads or writes.
+	jsonFormat := huma.Format{
+		Marshal: func(w io.Writer, v any) error {
+			body, err := jsonv2.Marshal(v, responseJSONOptions)
+			if err != nil {
+				return err
+			}
+			_, err = w.Write(append(body, '\n'))
+			return err
+		},
 		Unmarshal: func(data []byte, v any) error { return jsonv2.Unmarshal(data, v) },
 	}
-	cfg.Formats = map[string]huma.Format{"application/json": requestJSON, "json": requestJSON}
+	cfg.Formats = map[string]huma.Format{"application/json": jsonFormat, "json": jsonFormat}
 	return cfg
 }
 

@@ -4,6 +4,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/json/jsontext"
@@ -19,6 +20,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humachi"
+	"github.com/go-chi/chi/v5"
 )
 
 func mustJSON(v any) []byte {
@@ -741,5 +744,68 @@ func TestWriteProblem_NilErrorsOmitted(t *testing.T) {
 	}
 	if _, ok := body["errors"]; ok {
 		t.Errorf("errors present in %v, want it omitted when there are none", body)
+	}
+}
+
+type humaResponseProbeOutput struct {
+	Body struct {
+		Tags   []string          `json:"tags"`
+		Labels map[string]string `json:"labels"`
+		Note   string            `json:"note"`
+	}
+}
+
+// TestHumaResponseFormat verifies that huma operations encode responses with
+// the same options as writeJSON: nil collections as [] and {}, HTML characters
+// unescaped, and a trailing newline.
+func TestHumaResponseFormat(t *testing.T) {
+	mux := chi.NewMux()
+	api := humachi.New(mux, newHumaConfig())
+	huma.Register(api, huma.Operation{
+		OperationID: "response-format-probe",
+		Method:      http.MethodGet,
+		Path:        "/probe",
+	}, func(context.Context, *struct{}) (*humaResponseProbeOutput, error) {
+		out := &humaResponseProbeOutput{}
+		out.Body.Note = "<a&b>"
+		return out, nil
+	})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/probe", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.HasSuffix(body, "}\n") {
+		t.Errorf("body = %q, want it to end with a newline", body)
+	}
+	if !strings.Contains(body, `"note":"<a&b>"`) {
+		t.Errorf("body = %q, want the note with HTML characters unescaped", body)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if tags, ok := decoded["tags"].([]any); !ok || len(tags) != 0 {
+		t.Errorf("tags = %#v, want an empty array", decoded["tags"])
+	}
+	if labels, ok := decoded["labels"].(map[string]any); !ok || len(labels) != 0 {
+		t.Errorf("labels = %#v, want an empty object", decoded["labels"])
+	}
+}
+
+// TestHumaResponseFormat_MarshalFailureWritesNothing verifies that the huma
+// response format returns an encoding error without writing part of a body.
+func TestHumaResponseFormat_MarshalFailureWritesNothing(t *testing.T) {
+	var buf bytes.Buffer
+	err := newHumaConfig().Formats["application/json"].Marshal(&buf, map[string]any{"value": failingMarshaler{}})
+	if err == nil || !strings.Contains(err.Error(), "marshal refused") {
+		t.Errorf("err = %v, want the marshal error", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("wrote %q, want nothing", buf.String())
 	}
 }

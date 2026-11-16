@@ -78,7 +78,7 @@ Why this matters here: the phases ship as separate PRs over several sessions, tw
 | 5 — Stored alert-rule conditions fail closed | ✅ Shipped 2026-11-16 | `b25569b`, `db003c3`, `b3c56ce`, `bdfcf67`; merge `1b17f78` | [#262](https://github.com/scarson/CVErt-Ops/pull/262) | Full suite passed at `bdfcf67`. Pre-deploy check: 0 `alert_rules` rows in every database on the host |
 | 6 — API response encoding | ✅ Shipped 2026-11-16 | `250c0ba`, `1ff8098`, `df93bf0`, `326cc3b`, `ba535b3`; merge `4af04b2` | [#263](https://github.com/scarson/CVErt-Ops/pull/263) | Full suite at `8afcc23`: 38 packages ok, `internal/audit` failed at testcontainers reaper start-up and passed when rerun alone (earlier full runs at `c9eee76`, `89c84f4` passed). Measurement: 0 error, 0 other |
 | 7 — Replace the JCS dependency with `jsontext.Value.Canonicalize` | ✅ Shipped 2026-11-16 | `efdc8f7`, `77d8418`, `ab45eae`; merge `effcbf3` | [#264](https://github.com/scarson/CVErt-Ops/pull/264) | Full suite passed at `ab45eae`. Golden `material_hash` pins unchanged; 62-case and 5.4M-value randomized differentials found no difference; `match_inputs_hash` pinned |
-| 8 — Pitfall entries, PLAN.md, final full suite | ⬜ | | | Last |
+| 8 — Pitfall entries, PLAN.md, final full suite | 🚧 IN PROGRESS 2026-11-16T01:31Z, branch `claude/json-v2-phase-8` | | | Last |
 
 ### Deviations
 - Phase 1 (Task 1.1): the channel config parsers also refuse JSON `null` for every string value (`url`, a `custom_headers` value, a `recipients` element), because v2 decodes `null` into a Go `string` as `""` without error and `{"X-A":null}` would otherwise reach delivery as an empty header; `"custom_headers":null` and `"recipients":null` stay accepted. Found in the Task 1.1 review; `internal/notify/channel_config.go`.

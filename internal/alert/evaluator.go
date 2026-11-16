@@ -704,8 +704,8 @@ func (e *Evaluator) loadAndCompileRule(rule *store.AlertRuleRow) (*dsl.CompiledR
 	if compiled, ok := e.cache.Get(rule.ID, int(rule.DslVersion)); ok {
 		return compiled, nil
 	}
-	var conditions []dsl.Condition
-	if err := json.Unmarshal(rule.Conditions, &conditions); err != nil {
+	conditions, err := dsl.ParseConditions(rule.Conditions)
+	if err != nil {
 		return nil, fmt.Errorf("parse conditions for rule %s: %w", rule.ID, err)
 	}
 	r := dsl.Rule{

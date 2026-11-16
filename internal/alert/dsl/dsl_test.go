@@ -105,6 +105,18 @@ func TestParse_UnknownKey(t *testing.T) {
 			wantIndex: -1,
 			wantKey:   "limit",
 		},
+		{
+			name:      "key holding a slash, escaped in the JSON Pointer",
+			data:      `{"logic":"and","conditions":[{"a/b":1,"field":"severity","operator":"eq","value":"critical"}]}`,
+			wantIndex: 0,
+			wantKey:   "a/b",
+		},
+		{
+			name:      "key holding a tilde, escaped in the JSON Pointer",
+			data:      `{"logic":"and","conditions":[{"a~b":1,"field":"severity","operator":"eq","value":"critical"}]}`,
+			wantIndex: 0,
+			wantKey:   "a~b",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -183,6 +195,18 @@ func TestParseConditions_UnknownKey(t *testing.T) {
 			data:      `[{"field":"severity","operator":"in","value":["critical"]},{"field":"in_cisa_kev","operater":"eq","value":true}]`,
 			wantIndex: 1,
 			wantKey:   "operater",
+		},
+		{
+			name:      "key holding a slash, escaped in the JSON Pointer",
+			data:      `[{"a/b":1,"field":"severity","operator":"in","value":["critical"]}]`,
+			wantIndex: 0,
+			wantKey:   "a/b",
+		},
+		{
+			name:      "key holding a tilde, escaped in the JSON Pointer",
+			data:      `[{"a~b":1,"field":"severity","operator":"in","value":["critical"]}]`,
+			wantIndex: 0,
+			wantKey:   "a~b",
 		},
 	}
 	for _, tt := range tests {

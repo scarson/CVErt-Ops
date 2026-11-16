@@ -50,6 +50,11 @@ func TestEvaluateBatch_StoredConditionWithUnknownKeyFailsClosed(t *testing.T) {
 	if err := ev.EvaluateBatch(ctx); err != nil {
 		t.Fatalf("EvaluateBatch: %v", err)
 	}
+	// A rule set to error is not a rule that failed to evaluate: it does not
+	// hold the batch cursor back for the other rules.
+	if held := getCursorHeldRuns(t, tdb.DB(), "alert:batch"); held != 0 {
+		t.Errorf("batch cursor held_runs = %d, want 0", held)
+	}
 
 	if s := getRuleStatus(t, tdb.DB(), control.ID); s != "active" {
 		t.Errorf("control rule status = %q, want active", s)

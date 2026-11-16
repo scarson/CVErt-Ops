@@ -11,8 +11,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-
-	jsoncanonical "github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 )
 
 // MaterialFields contains all fields that contribute to material_hash. Any
@@ -90,7 +88,7 @@ func ComputeMaterialHash(f MaterialFields) string {
 		panic(fmt.Sprintf("merge: marshal material fields: %v", err))
 	}
 
-	jcs, err := jsoncanonical.Transform(raw)
+	jcs, err := canonicalJSON(raw)
 	if err != nil {
 		// JCS transform fails only on invalid JSON, which cannot happen here.
 		panic(fmt.Sprintf("merge: JCS transform: %v", err))

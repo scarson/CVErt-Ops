@@ -24,7 +24,7 @@ This document serves three audiences. Start here, then go directly to the sectio
 
 | § | Section | You're working on... | Entries | Checklist |
 |---|---------|---------------------|---------|-----------|
-| 1 | [Feed Adapters & Data Ingestion](#1-feed-adapters--data-ingestion) | Feed adapters, streaming, ZIP, cursors, aliases | FEED-1 – FEED-24 | §1.C |
+| 1 | [Feed Adapters & Data Ingestion](#1-feed-adapters--data-ingestion) | Feed adapters, streaming, ZIP, cursors, aliases | FEED-1 – FEED-25 | §1.C |
 | 2 | [Database & Query Patterns](#2-database--query-patterns) | Store methods, migrations, SQL, RLS, transaction helpers | DB-1 – DB-27 | §2.C |
 | 3 | [Authentication & Security](#3-authentication--security) | Auth, OAuth, JWT, API keys, MFA, lockout, secrets | AUTH-1 – AUTH-26 | §3.C |
 | 4 | [API Design & HTTP](#4-api-design--http) | HTTP handlers, middleware, pagination, validation | API-1 – API-17 | §4.C |
@@ -407,6 +407,18 @@ Feed adapters MUST keep decoding upstream JSON with v1 `encoding/json`, not `enc
 
 ---
 
+### FEED-25: A Score Parsed From Text Can Be NaN or Infinite
+
+**The Flaw:** Parsing a score from a string with `strconv.ParseFloat`, or through gjson's `Result.Float()` (which calls `ParseFloat` on string values), and keeping it when the error is nil. `ParseFloat` accepts `NaN`, `Inf`, `+Infinity` and other spellings without error, and gjson turns a JSON number too large for `float64` (such as `1e400`) into `+Inf`. A `float64` struct field decoded by `encoding/json` cannot receive these: JSON has no NaN or infinity, and an overflowing number is a decode error.
+
+**Why It Matters:** `json.Marshal` fails on NaN and ±Inf. `merge.Ingest` marshals the patch for `cve_sources` first, so the merge returns an error, and the ingest handler stops the feed run at that CVE without advancing the cursor. Every retry fetches the same record again, so one bad upstream value stops the whole feed. If the patch got past that, `ComputeMaterialHash` would panic on the same marshal. In Postgres, NaN sorts above every number, so a stored NaN would match every `>` alert rule.
+
+**The Fix:** After parsing, reject the value when `math.IsNaN(f) || math.IsInf(f, 0)`. Drop the score, keep the rest of the record, and log a warning with the CVE ID and the raw value. The Red Hat adapter (`detailToPatch`, warning logged in `Fetch`), the generic adapter (`mapScore`) and the EPSS adapter (which also checks the 0 to 1 range) do this.
+
+**The Lesson:** "Parsed without error" does not mean "a usable number". Every float that comes from text needs a finiteness check before it leaves the adapter.
+
+---
+
 ### Review Checklist
 
 When building or reviewing a feed adapter, verify each of the following:
@@ -431,6 +443,7 @@ When building or reviewing a feed adapter, verify each of the following:
 - [ ] **One page per Fetch()** — adapter returns one logical page; handler persists between pages (FEED-19)
 - [ ] **Response body drained** — `io.Copy(io.Discard, resp.Body)` after `json.Decoder` use (FEED-20)
 - [ ] **Upstream JSON decoded with v1** — feed adapters import `encoding/json`, not `encoding/json/v2` (FEED-24)
+- [ ] **Text-parsed scores are finite** — every score from `strconv.ParseFloat` or gjson `Float()` is dropped with a warning when NaN or ±Inf (FEED-25)
 
 ### See Also
 - Feed adapter data seeded in tests: see testing-pitfalls.md §9 (Feed Data Quality)
@@ -2979,6 +2992,7 @@ These findings were predictive. Many proved accurate when implementation began; 
 | 2026-03-17 | Phase 11 MFA bug hunts | Auth (now AUTH-23) | Empirical — password reset MFA bypass, stale token_version |
 | 2026-03-18 | Health review + audit | Multiple sections | Empirical — 10 new pitfalls added; 7 existing pitfalls strengthened |
 | 2026-11-16 | encoding/json/v2 migration (`dev/plans/2026-11-14-json-v2-migration-plan.md`) | Feeds (FEED-24), API (API-14–17), Architecture (ARCH-48) | Empirical — API-14, API-16 and ARCH-48 from probes and defects found while planning; API-15 (a security defect the migration introduced and fixed) and API-17 found during execution |
+| 2026-11-15 | Review during the encoding/json/v2 migration (Red Hat CVSS parsing) | Feeds (FEED-25) | Empirical — Red Hat and generic adapters could emit NaN/±Inf scores, which fail `merge.Ingest` and stop the feed run |
 
 ## A.3 Meta-Observations on the Review Process
 
@@ -3018,7 +3032,7 @@ All pitfalls by domain, with entry count and key themes. For detailed status per
 
 | Section | Entries | Key Themes |
 |---------|---------|------------|
-| §1 Feed Adapters | FEED-1 – FEED-24 | Streaming JSON (Token/More), ZIP temp-file bridging, timestamp parsing, null bytes, alias PK resolution, NVD rate limits/cursors, one-page-per-Fetch, response body drain, range dedupe and withdrawal semantics, upstream JSON kept on v1 `encoding/json` |
+| §1 Feed Adapters | FEED-1 – FEED-25 | Streaming JSON (Token/More), ZIP temp-file bridging, timestamp parsing, null bytes, alias PK resolution, NVD rate limits/cursors, one-page-per-Fetch, response body drain, range dedupe and withdrawal semantics, upstream JSON kept on v1 `encoding/json`, non-finite scores dropped |
 | §2 Database & Query | DB-1 – DB-27 | EPSS two-statement pattern + advisory locks, FTS isolation, RLS dual-layer (org_id + SET LOCAL), transaction helper selection, IS DISTINCT FROM guards, CREATE INDEX CONCURRENTLY, soft-delete partial indexes, ANY() arrays, nullable zero-value, bounded btree keys over feed text |
 | §3 Auth & Security | AUTH-1 – AUTH-26 | JWT WithValidMethods, argon2 semaphore (non-blocking), refresh JTI + theft detection, OAuth state/nonce, API keys (opaque + sha256), webhook HMAC + redirect SSRF, identity by provider_user_id, atomic token consumption, security code dedup, enumeration-safe error paths, in-memory state eviction/normalization |
 | §4 API & HTTP | API-1 – API-17 | WithoutCancel for background goroutines, PATCH pointer types, RequestSize + Slowloris timeouts, keyset pagination composite cursor, pgx SimpleProtocol, unique constraint → 409, PATCH/POST validation parity, API contract consistency, admin dynamic resource discovery, commit-order polling cursor, fresh context for in-process dispatch, one decoder for a value validated and used in different places, validator and decoder agreeing on member names (security: API-15), `UnmarshalJSONFrom` for v2 strictness, `omitzero` + `nullable:"false"` |

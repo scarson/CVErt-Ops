@@ -154,6 +154,69 @@ func TestAdapter_CVSS00Preserved(t *testing.T) {
 	assert.Equal(t, 0.0, *result.Patches[0].CVSSv3Score)
 }
 
+func TestAdapter_NonFiniteCVSSScoresDropped(t *testing.T) {
+	// No t.Parallel() — replaces the global slog logger to capture the warnings.
+	var logBuf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	// gjson's Float() parses a string value with strconv.ParseFloat, which
+	// accepts NaN and infinity spellings, and turns a number too large for
+	// float64 into +Inf. A non-finite score cannot be marshaled to JSON, so
+	// merge.Ingest would fail on the patch.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"items": [
+			{"cve": "CVE-2026-0010", "v3": "NaN", "v4": "Infinity"},
+			{"cve": "CVE-2026-0011", "v3": 1e400, "v4": "-Inf"},
+			{"cve": "CVE-2026-0012", "v3": 7.5, "v4": "9.3"}
+		]}`)
+	}))
+	defer srv.Close()
+
+	cfg := &Config{
+		Name: "nonfinite-feed", URL: srv.URL, Format: "json",
+		RateLimit: 100, Timeout: "5s",
+		Mapping: MappingConfig{
+			Root: "items",
+			Fields: map[string]string{
+				"cve_id":        "cve",
+				"cvss_v3_score": "v3",
+				"cvss_v4_score": "v4",
+			},
+		},
+	}
+	adapter := NewAdapter(cfg, srv.Client())
+	result, err := adapter.Fetch(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, result.Patches, 3, "records with a non-finite score are kept without that score")
+
+	for _, p := range result.Patches[:2] {
+		assert.Nil(t, p.CVSSv3Score, "%s: non-finite v3 score must be dropped", p.CVEID)
+		assert.Nil(t, p.CVSSv4Score, "%s: non-finite v4 score must be dropped", p.CVEID)
+	}
+	finite := result.Patches[2]
+	require.NotNil(t, finite.CVSSv3Score)
+	assert.Equal(t, 7.5, *finite.CVSSv3Score)
+	require.NotNil(t, finite.CVSSv4Score)
+	assert.Equal(t, 9.3, *finite.CVSSv4Score)
+
+	// merge.Ingest marshals each patch before anything else.
+	for _, p := range result.Patches {
+		_, err := json.Marshal(p)
+		assert.NoError(t, err, "%s: patch must marshal", p.CVEID)
+	}
+
+	logOutput := logBuf.String()
+	assert.Equal(t, 4, strings.Count(logOutput, "generic feed: dropping non-finite CVSS score"),
+		"one warning per dropped score, got %q", logOutput)
+	for _, want := range []string{"CVE-2026-0010", "CVE-2026-0011", "cvss_v3_score", "cvss_v4_score", "nonfinite-feed"} {
+		assert.Contains(t, logOutput, want)
+	}
+	assert.NotContains(t, logOutput, "CVE-2026-0012", "a finite score must not be logged")
+}
+
 func TestAdapter_NullByteSanitized(t *testing.T) {
 	t.Parallel()
 

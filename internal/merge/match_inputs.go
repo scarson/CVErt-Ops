@@ -11,8 +11,6 @@ import (
 	"slices"
 	"strings"
 
-	jsoncanonical "github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
-
 	"github.com/scarson/cvert-ops/internal/check"
 	"github.com/scarson/cvert-ops/internal/feed"
 )
@@ -66,9 +64,9 @@ func ComputeMatchInputsHash(cna []feed.CNAAffected, cpe []feed.CPEMatch) string 
 		// json.Marshal on string arrays never fails.
 		panic(fmt.Sprintf("merge: marshal match inputs: %v", err))
 	}
-	jcs, err := jsoncanonical.Transform(raw)
+	jcs, err := canonicalJSON(raw)
 	if err != nil {
-		// JCS transform fails only on invalid JSON, which cannot happen here.
+		// canonicalJSON fails only on input json.Marshal never produces.
 		panic(fmt.Sprintf("merge: JCS transform of match inputs: %v", err))
 	}
 	sum := sha256.Sum256(jcs)

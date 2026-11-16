@@ -8,7 +8,6 @@ require (
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/containerd/errdefs v1.0.0
 	github.com/coreos/go-oidc/v3 v3.18.0
-	github.com/cyberphone/json-canonicalization v0.0.0-20241213102144-19d51d7fe467
 	github.com/danielgtaylor/huma/v2 v2.37.3
 	github.com/doyensec/safeurl v0.2.5
 	github.com/go-chi/chi/v5 v5.5.0

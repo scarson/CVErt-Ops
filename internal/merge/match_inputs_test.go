@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	nodeCPE   = "cpe:2.3:a:nodejs:node.js:*:*:*:*:*:*:*:*"
+	nodeCPE    = "cpe:2.3:a:nodejs:node.js:*:*:*:*:*:*:*:*"
 	opensslCPE = "cpe:2.3:a:openssl:openssl:3.0.0:*:*:*:*:*:*:*"
 )
 
@@ -136,6 +136,30 @@ func TestComputeMatchInputsHash_OtherFieldsDoNotCount(t *testing.T) {
 	}}
 	if got := ComputeMatchInputsHash(cnaVersions, cpeVersions); got != base {
 		t.Errorf("versions and other fields changed the hash: %s, want %s", got, base)
+	}
+}
+
+func TestComputeMatchInputsHash_PinnedValue(t *testing.T) {
+	t.Parallel()
+	// match_inputs_hash is stored on every CVE row; a change in how it is
+	// computed would re-check every CVE against alert rules. The input covers
+	// case folding, duplicates, characters JSON escapes, non-ASCII text, and a
+	// CPE match that is not vulnerable.
+	cna := []feed.CNAAffected{
+		{Vendor: "OpenSSL", Product: "OpenSSL"},
+		{Vendor: "Node.js", Product: "Node.js"},
+		{Vendor: "node.js", Product: "node.js"},
+		{Vendor: "", Product: "<lib>&\"x\""},
+		{Vendor: "v\xc3\xa9ndor", Product: "\xe6\x97\xa5\xe6\x9c\xac"},
+	}
+	cpe := []feed.CPEMatch{
+		{CPENormalized: opensslCPE, Vulnerable: true},
+		{CPENormalized: nodeCPE, Vulnerable: true},
+		{CPENormalized: "cpe:2.3:o:linux:linux_kernel:*:*:*:*:*:*:*:*", Vulnerable: false},
+	}
+	const want = "ae153fc4b96062d18b5dba61a6ad74e09d6df4ed2b4fad1b4b1d35e01183e237"
+	if got := ComputeMatchInputsHash(cna, cpe); got != want {
+		t.Errorf("ComputeMatchInputsHash = %s, want %s", got, want)
 	}
 }
 

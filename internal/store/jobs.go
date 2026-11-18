@@ -70,8 +70,10 @@ func (s *Store) FailJob(ctx context.Context, id uuid.UUID, errMsg string) error 
 	return nil
 }
 
-// RecoverStaleJobs resets jobs stuck in 'running' state longer than staleAfter
-// back to 'pending'. Returns the number of jobs recovered.
+// RecoverStaleJobs releases jobs stuck in 'running' state longer than staleAfter.
+// A job with attempts left goes back to 'pending'; a job that has used all its
+// attempts becomes 'dead' with finished_at and last_error set. Returns the number
+// of jobs released.
 func (s *Store) RecoverStaleJobs(ctx context.Context, staleAfter time.Duration) (int, error) {
 	rows, err := s.q.RecoverStaleJobs(ctx, int64(staleAfter.Seconds()))
 	if err != nil {

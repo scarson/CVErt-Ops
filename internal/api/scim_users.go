@@ -29,16 +29,37 @@ type scimUserRequest struct {
 	Active      *bool    `json:"active,omitempty"`
 }
 
+// namesAttributeTwice reports whether two keys of a pathless PATCH value name
+// the same attribute: whether their strings.ToLower forms are equal. It must
+// normalise keys exactly as scimPatchUser's pathless switch does
+// (strings.ToLower), so that no two keys can reach the same case of that
+// switch. The keys go into a set, so the cost is linear in the number of keys.
+func namesAttributeTwice(m map[string]json.RawMessage) bool {
+	seen := make(map[string]struct{}, len(m))
+	for k := range m {
+		lower := strings.ToLower(k)
+		if _, dup := seen[lower]; dup {
+			return true
+		}
+		seen[lower] = struct{}{}
+	}
+	return false
+}
+
 // scimProvider returns the SCIM identity provider string for the given config ID.
 func scimProvider(scimConfigID uuid.UUID) string {
 	return fmt.Sprintf("scim:%s", scimConfigID)
 }
 
 // scimScheme returns "https" or "http" based on TLS state and X-Forwarded-Proto.
-// Only trusts X-Forwarded-Proto if it's a valid scheme.
+// X-Forwarded-Proto is honoured only when the TCP peer is a TRUSTED_PROXIES
+// proxy (ctxTrustedProxyPeer, set by clientIPMiddleware) and only if it names a
+// valid scheme; any other client gets the scheme of its own connection.
 func scimScheme(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-Proto"); fwd == "https" || fwd == "http" {
-		return fwd
+	if fromProxy, _ := r.Context().Value(ctxTrustedProxyPeer).(bool); fromProxy {
+		if fwd := r.Header.Get("X-Forwarded-Proto"); fwd == "https" || fwd == "http" {
+			return fwd
+		}
 	}
 	if r.TLS != nil {
 		return "https"
@@ -83,8 +104,7 @@ func (srv *Server) scimCreateUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var req scimUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeSCIMError(w, http.StatusBadRequest, "", "invalid JSON body")
+	if !decodeSCIMBody(w, r, &req, "") {
 		return
 	}
 
@@ -587,8 +607,7 @@ func (srv *Server) scimReplaceUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req scimUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeSCIMError(w, http.StatusBadRequest, "", "invalid JSON body")
+	if !decodeSCIMBody(w, r, &req, "") {
 		return
 	}
 
@@ -749,8 +768,7 @@ func (srv *Server) scimPatchUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var patchOp SCIMPatchOp
-	if err := json.NewDecoder(r.Body).Decode(&patchOp); err != nil {
-		writeSCIMError(w, http.StatusBadRequest, "", "invalid JSON body")
+	if !decodeSCIMBody(w, r, &patchOp, "") {
 		return
 	}
 
@@ -892,6 +910,11 @@ func (srv *Server) scimPatchUser(w http.ResponseWriter, r *http.Request) {
 			var valMap map[string]json.RawMessage
 			if err := json.Unmarshal(op.Value, &valMap); err != nil {
 				writeSCIMError(w, http.StatusBadRequest, "invalidValue", "pathless operation value must be an object")
+				return
+			}
+			// namesAttributeTwice normalises keys with strings.ToLower, as the switch below does.
+			if namesAttributeTwice(valMap) {
+				writeSCIMError(w, http.StatusBadRequest, "invalidValue", "pathless operation value has duplicate attributes")
 				return
 			}
 			for attr, val := range valMap {

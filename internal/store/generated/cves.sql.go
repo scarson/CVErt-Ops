@@ -15,6 +15,17 @@ import (
 	"github.com/sqlc-dev/pqtype"
 )
 
+const countCVESources = `-- name: CountCVESources :one
+SELECT count(*) FROM cve_sources WHERE cve_id = $1
+`
+
+func (q *Queries) CountCVESources(ctx context.Context, cveID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countCVESources, cveID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteCVEAffectedCPEs = `-- name: DeleteCVEAffectedCPEs :exec
 DELETE FROM cve_affected_cpes WHERE cve_id = $1
 `
@@ -35,6 +46,26 @@ func (q *Queries) DeleteCVEAffectedPackages(ctx context.Context, cveID string) e
 	return err
 }
 
+const deleteCVECNAAffected = `-- name: DeleteCVECNAAffected :exec
+DELETE FROM cve_cna_affected WHERE cve_id = $1
+`
+
+// Delete all CNA affected rows before re-inserting in merge pipeline (§5.1).
+func (q *Queries) DeleteCVECNAAffected(ctx context.Context, cveID string) error {
+	_, err := q.db.ExecContext(ctx, deleteCVECNAAffected, cveID)
+	return err
+}
+
+const deleteCVECPEMatches = `-- name: DeleteCVECPEMatches :exec
+DELETE FROM cve_cpe_matches WHERE cve_id = $1
+`
+
+// Delete all CPE match rows before re-inserting in merge pipeline (§5.1).
+func (q *Queries) DeleteCVECPEMatches(ctx context.Context, cveID string) error {
+	_, err := q.db.ExecContext(ctx, deleteCVECPEMatches, cveID)
+	return err
+}
+
 const deleteCVEReferences = `-- name: DeleteCVEReferences :exec
 DELETE FROM cve_references WHERE cve_id = $1
 `
@@ -42,6 +73,21 @@ DELETE FROM cve_references WHERE cve_id = $1
 // Delete all reference rows before re-inserting in merge pipeline (§5.1).
 func (q *Queries) DeleteCVEReferences(ctx context.Context, cveID string) error {
 	_, err := q.db.ExecContext(ctx, deleteCVEReferences, cveID)
+	return err
+}
+
+const deleteCVESource = `-- name: DeleteCVESource :exec
+DELETE FROM cve_sources WHERE cve_id = $1 AND source_name = $2 AND source_id = $3
+`
+
+type DeleteCVESourceParams struct {
+	CveID      string
+	SourceName string
+	SourceID   string
+}
+
+func (q *Queries) DeleteCVESource(ctx context.Context, arg DeleteCVESourceParams) error {
+	_, err := q.db.ExecContext(ctx, deleteCVESource, arg.CveID, arg.SourceName, arg.SourceID)
 	return err
 }
 
@@ -56,13 +102,20 @@ func (q *Queries) DeleteEPSSStaging(ctx context.Context, cveID string) error {
 
 const digestCVEs = `-- name: DigestCVEs :many
 SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
-       description_primary, exploit_available, in_cisa_kev
+       description_primary, exploit_available, in_cisa_kev, date_modified_canonical,
+       count(*) OVER () AS total_count
 FROM cves
 WHERE date_modified_canonical > $1
-  AND status NOT IN ('rejected', 'withdrawn')
-  AND ($2::text[] IS NULL OR severity = ANY($2::text[]))
+  AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
+  AND ($2::text[] IS NULL OR lower(severity) = ANY($2::text[]))
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_to_recordset($3::jsonb) AS sent(cve_id text, date_modified_canonical timestamptz)
+      WHERE sent.cve_id = cves.cve_id
+        AND sent.date_modified_canonical = cves.date_modified_canonical
+  )
 ORDER BY
-    CASE severity
+    CASE lower(severity)
         WHEN 'critical' THEN 1
         WHEN 'high'     THEN 2
         WHEN 'medium'   THEN 3
@@ -76,23 +129,32 @@ LIMIT 500
 type DigestCVEsParams struct {
 	DateModifiedCanonical time.Time
 	Column2               []string
+	Column3               json.RawMessage
 }
 
 type DigestCVEsRow struct {
-	CveID              string
-	Severity           sql.NullString
-	CvssV3Score        sql.NullFloat64
-	CvssV4Score        sql.NullFloat64
-	EpssScore          sql.NullFloat64
-	DescriptionPrimary sql.NullString
-	ExploitAvailable   bool
-	InCisaKev          bool
+	CveID                 string
+	Severity              sql.NullString
+	CvssV3Score           sql.NullFloat64
+	CvssV4Score           sql.NullFloat64
+	EpssScore             sql.NullFloat64
+	DescriptionPrimary    sql.NullString
+	ExploitAvailable      bool
+	InCisaKev             bool
+	DateModifiedCanonical time.Time
+	TotalCount            int64
 }
 
-// Fetch CVEs modified since $1, optionally filtered by severity.
+// Fetch CVEs modified since $1, optionally filtered by severity, leaving out the
+// CVE versions in $3: a JSON array of {"cve_id", "date_modified_canonical"}
+// objects a previous digest of the report already sent.
 // Sort: severity desc (critical > high > medium > low), CVSS v3 tiebreaker.
+// total_count is the number of matching CVEs before LIMIT, so callers can tell
+// when the limit cut the result short. A window function keeps that count on the
+// same predicate and snapshot as the rows, at the cost of buffering every
+// matching row before the sort.
 func (q *Queries) DigestCVEs(ctx context.Context, arg DigestCVEsParams) ([]DigestCVEsRow, error) {
-	rows, err := q.db.QueryContext(ctx, digestCVEs, arg.DateModifiedCanonical, pq.Array(arg.Column2))
+	rows, err := q.db.QueryContext(ctx, digestCVEs, arg.DateModifiedCanonical, pq.Array(arg.Column2), arg.Column3)
 	if err != nil {
 		return nil, err
 	}
@@ -109,6 +171,8 @@ func (q *Queries) DigestCVEs(ctx context.Context, arg DigestCVEsParams) ([]Diges
 			&i.DescriptionPrimary,
 			&i.ExploitAvailable,
 			&i.InCisaKev,
+			&i.DateModifiedCanonical,
+			&i.TotalCount,
 		); err != nil {
 			return nil, err
 		}
@@ -124,25 +188,28 @@ func (q *Queries) DigestCVEs(ctx context.Context, arg DigestCVEsParams) ([]Diges
 }
 
 const findCVEBySourceID = `-- name: FindCVEBySourceID :one
-SELECT cve_id FROM cve_sources WHERE source_name = $1 AND source_id = $2 LIMIT 1
+SELECT cve_id FROM cve_sources
+WHERE source_name = $1 AND source_id = $2 AND cve_id <> $3
+ORDER BY cve_id LIMIT 1
 `
 
 type FindCVEBySourceIDParams struct {
 	SourceName string
-	SourceID   sql.NullString
+	SourceID   string
+	CveID      string
 }
 
-// Used for late-binding PK migration: find a CVE row stored under its native
-// GHSA/OSV ID when a CVE alias has since been added (§3.2).
+// Finds where an advisory is stored other than under the CVE it now names, for
+// late-binding migration (§3.2).
 func (q *Queries) FindCVEBySourceID(ctx context.Context, arg FindCVEBySourceIDParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, findCVEBySourceID, arg.SourceName, arg.SourceID)
+	row := q.db.QueryRowContext(ctx, findCVEBySourceID, arg.SourceName, arg.SourceID, arg.CveID)
 	var cve_id string
 	err := row.Scan(&cve_id)
 	return cve_id, err
 }
 
 const getAllCVESources = `-- name: GetAllCVESources :many
-SELECT cve_id, source_name, source_id, normalized_json, source_date_modified, source_url, ingested_at FROM cve_sources WHERE cve_id = $1 ORDER BY source_name
+SELECT cve_id, source_name, source_id, normalized_json, source_date_modified, source_url, ingested_at FROM cve_sources WHERE cve_id = $1 ORDER BY source_name, source_id
 `
 
 func (q *Queries) GetAllCVESources(ctx context.Context, cveID string) ([]CveSource, error) {
@@ -177,7 +244,7 @@ func (q *Queries) GetAllCVESources(ctx context.Context, cveID string) ([]CveSour
 }
 
 const getCVE = `-- name: GetCVE :one
-SELECT cve_id, status, date_published, date_modified_source_max, date_modified_canonical, date_first_seen, description_primary, severity, cvss_v3_score, cvss_v3_vector, cvss_v3_source, cvss_v4_score, cvss_v4_vector, cvss_v4_source, cvss_score_diverges, cwe_ids, exploit_available, in_cisa_kev, epss_score, date_epss_updated, material_hash FROM cves WHERE cve_id = $1
+SELECT cve_id, status, date_published, date_modified_source_max, date_modified_canonical, date_first_seen, description_primary, severity, cvss_v3_score, cvss_v3_vector, cvss_v3_source, cvss_v4_score, cvss_v4_vector, cvss_v4_source, cvss_score_diverges, cwe_ids, exploit_available, in_cisa_kev, epss_score, date_epss_updated, material_hash, match_inputs_hash, date_match_inputs_changed FROM cves WHERE cve_id = $1
 `
 
 func (q *Queries) GetCVE(ctx context.Context, cveID string) (CVE, error) {
@@ -205,6 +272,8 @@ func (q *Queries) GetCVE(ctx context.Context, cveID string) (CVE, error) {
 		&i.EpssScore,
 		&i.DateEpssUpdated,
 		&i.MaterialHash,
+		&i.MatchInputsHash,
+		&i.DateMatchInputsChanged,
 	)
 	return i, err
 }
@@ -279,6 +348,45 @@ func (q *Queries) GetCVEAffectedPackages(ctx context.Context, cveID string) ([]C
 	return items, nil
 }
 
+const getCVECNAAffected = `-- name: GetCVECNAAffected :many
+SELECT id, cve_id, vendor, product, package_name, collection_url, default_status, versions, package_key FROM cve_cna_affected
+WHERE cve_id = $1
+ORDER BY vendor, product, package_name, collection_url, default_status, versions::text
+`
+
+func (q *Queries) GetCVECNAAffected(ctx context.Context, cveID string) ([]CveCnaAffected, error) {
+	rows, err := q.db.QueryContext(ctx, getCVECNAAffected, cveID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CveCnaAffected
+	for rows.Next() {
+		var i CveCnaAffected
+		if err := rows.Scan(
+			&i.ID,
+			&i.CveID,
+			&i.Vendor,
+			&i.Product,
+			&i.PackageName,
+			&i.CollectionUrl,
+			&i.DefaultStatus,
+			&i.Versions,
+			&i.PackageKey,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getCVEReferences = `-- name: GetCVEReferences :many
 SELECT id, cve_id, url, url_canonical, tags FROM cve_references WHERE cve_id = $1 ORDER BY url_canonical
 `
@@ -314,7 +422,7 @@ func (q *Queries) GetCVEReferences(ctx context.Context, cveID string) ([]CveRefe
 
 const getCVESnapshot = `-- name: GetCVESnapshot :one
 SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
-       description_primary, exploit_available, in_cisa_kev
+       description_primary, exploit_available, in_cisa_kev, status
 FROM cves WHERE cve_id = $1
 `
 
@@ -327,6 +435,7 @@ type GetCVESnapshotRow struct {
 	DescriptionPrimary sql.NullString
 	ExploitAvailable   bool
 	InCisaKev          bool
+	Status             sql.NullString
 }
 
 // Returns the fields needed for alert delivery payloads.
@@ -342,8 +451,50 @@ func (q *Queries) GetCVESnapshot(ctx context.Context, cveID string) (GetCVESnaps
 		&i.DescriptionPrimary,
 		&i.ExploitAvailable,
 		&i.InCisaKev,
+		&i.Status,
 	)
 	return i, err
+}
+
+const getCVEVulnerableCPEMatches = `-- name: GetCVEVulnerableCPEMatches :many
+SELECT id, cve_id, cpe, cpe_normalized, version_start_including, version_start_excluding, version_end_including, version_end_excluding, vulnerable FROM cve_cpe_matches
+WHERE cve_id = $1 AND vulnerable
+ORDER BY cpe_normalized, version_start_including, version_start_excluding,
+         version_end_including, version_end_excluding
+`
+
+// CPE matches for what a CVE affects: skips "running on" platform CPEs.
+func (q *Queries) GetCVEVulnerableCPEMatches(ctx context.Context, cveID string) ([]CveCpeMatch, error) {
+	rows, err := q.db.QueryContext(ctx, getCVEVulnerableCPEMatches, cveID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CveCpeMatch
+	for rows.Next() {
+		var i CveCpeMatch
+		if err := rows.Scan(
+			&i.ID,
+			&i.CveID,
+			&i.Cpe,
+			&i.CpeNormalized,
+			&i.VersionStartIncluding,
+			&i.VersionStartExcluding,
+			&i.VersionEndIncluding,
+			&i.VersionEndExcluding,
+			&i.Vulnerable,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getEPSSStaging = `-- name: GetEPSSStaging :one
@@ -365,7 +516,7 @@ func (q *Queries) GetEPSSStaging(ctx context.Context, cveID string) (EpssStaging
 const insertAffectedCPE = `-- name: InsertAffectedCPE :exec
 INSERT INTO cve_affected_cpes (cve_id, cpe, cpe_normalized)
 VALUES ($1, $2, $3)
-ON CONFLICT (cve_id, cpe_normalized) DO NOTHING
+ON CONFLICT (cve_id, text_key_digest(cpe_normalized)) DO NOTHING
 `
 
 type InsertAffectedCPEParams struct {
@@ -414,6 +565,73 @@ func (q *Queries) InsertAffectedPackage(ctx context.Context, arg InsertAffectedP
 	return err
 }
 
+const insertCNAAffected = `-- name: InsertCNAAffected :exec
+INSERT INTO cve_cna_affected (
+    cve_id, vendor, product, package_name, collection_url, default_status, versions, package_key
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+`
+
+type InsertCNAAffectedParams struct {
+	CveID         string
+	Vendor        sql.NullString
+	Product       sql.NullString
+	PackageName   sql.NullString
+	CollectionUrl sql.NullString
+	DefaultStatus sql.NullString
+	Versions      json.RawMessage
+	PackageKey    sql.NullString
+}
+
+func (q *Queries) InsertCNAAffected(ctx context.Context, arg InsertCNAAffectedParams) error {
+	_, err := q.db.ExecContext(ctx, insertCNAAffected,
+		arg.CveID,
+		arg.Vendor,
+		arg.Product,
+		arg.PackageName,
+		arg.CollectionUrl,
+		arg.DefaultStatus,
+		arg.Versions,
+		arg.PackageKey,
+	)
+	return err
+}
+
+const insertCPEMatch = `-- name: InsertCPEMatch :exec
+INSERT INTO cve_cpe_matches (
+    cve_id, cpe, cpe_normalized,
+    version_start_including, version_start_excluding,
+    version_end_including, version_end_excluding,
+    vulnerable
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+`
+
+type InsertCPEMatchParams struct {
+	CveID                 string
+	Cpe                   string
+	CpeNormalized         string
+	VersionStartIncluding sql.NullString
+	VersionStartExcluding sql.NullString
+	VersionEndIncluding   sql.NullString
+	VersionEndExcluding   sql.NullString
+	Vulnerable            bool
+}
+
+func (q *Queries) InsertCPEMatch(ctx context.Context, arg InsertCPEMatchParams) error {
+	_, err := q.db.ExecContext(ctx, insertCPEMatch,
+		arg.CveID,
+		arg.Cpe,
+		arg.CpeNormalized,
+		arg.VersionStartIncluding,
+		arg.VersionStartExcluding,
+		arg.VersionEndIncluding,
+		arg.VersionEndExcluding,
+		arg.Vulnerable,
+	)
+	return err
+}
+
 const insertCVERawPayload = `-- name: InsertCVERawPayload :exec
 INSERT INTO cve_raw_payloads (cve_id, source_name, payload)
 VALUES ($1, $2, $3)
@@ -433,7 +651,7 @@ func (q *Queries) InsertCVERawPayload(ctx context.Context, arg InsertCVERawPaylo
 const insertCVEReference = `-- name: InsertCVEReference :exec
 INSERT INTO cve_references (cve_id, url, url_canonical, tags)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT (cve_id, url_canonical) DO NOTHING
+ON CONFLICT (cve_id, text_key_digest(url_canonical)) DO NOTHING
 `
 
 type InsertCVEReferenceParams struct {
@@ -453,8 +671,44 @@ func (q *Queries) InsertCVEReference(ctx context.Context, arg InsertCVEReference
 	return err
 }
 
+const listCVEIDsAfter = `-- name: ListCVEIDsAfter :many
+SELECT cve_id FROM cves
+WHERE cve_id > $1::text
+ORDER BY cve_id
+LIMIT $2
+`
+
+type ListCVEIDsAfterParams struct {
+	AfterCveID string
+	BatchSize  int32
+}
+
+// Keyset page of CVE IDs for full-corpus walks (search index rebuild).
+func (q *Queries) ListCVEIDsAfter(ctx context.Context, arg ListCVEIDsAfterParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listCVEIDsAfter, arg.AfterCveID, arg.BatchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var cve_id string
+		if err := rows.Scan(&cve_id); err != nil {
+			return nil, err
+		}
+		items = append(items, cve_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCVEs = `-- name: ListCVEs :many
-SELECT c.cve_id, c.status, c.date_published, c.date_modified_source_max, c.date_modified_canonical, c.date_first_seen, c.description_primary, c.severity, c.cvss_v3_score, c.cvss_v3_vector, c.cvss_v3_source, c.cvss_v4_score, c.cvss_v4_vector, c.cvss_v4_source, c.cvss_score_diverges, c.cwe_ids, c.exploit_available, c.in_cisa_kev, c.epss_score, c.date_epss_updated, c.material_hash
+SELECT c.cve_id, c.status, c.date_published, c.date_modified_source_max, c.date_modified_canonical, c.date_first_seen, c.description_primary, c.severity, c.cvss_v3_score, c.cvss_v3_vector, c.cvss_v3_source, c.cvss_v4_score, c.cvss_v4_vector, c.cvss_v4_source, c.cvss_score_diverges, c.cwe_ids, c.exploit_available, c.in_cisa_kev, c.epss_score, c.date_epss_updated, c.material_hash, c.match_inputs_hash, c.date_match_inputs_changed
 FROM cves c
 ORDER BY c.date_modified_canonical DESC, c.cve_id
 LIMIT $1 OFFSET $2
@@ -498,6 +752,8 @@ func (q *Queries) ListCVEs(ctx context.Context, arg ListCVEsParams) ([]CVE, erro
 			&i.EpssScore,
 			&i.DateEpssUpdated,
 			&i.MaterialHash,
+			&i.MatchInputsHash,
+			&i.DateMatchInputsChanged,
 		); err != nil {
 			return nil, err
 		}
@@ -510,6 +766,72 @@ func (q *Queries) ListCVEs(ctx context.Context, arg ListCVEsParams) ([]CVE, erro
 		return nil, err
 	}
 	return items, nil
+}
+
+const listSearchIndexInputs = `-- name: ListSearchIndexInputs :many
+SELECT c.cve_id,
+       c.description_primary,
+       c.cwe_ids,
+       COALESCE(
+           array_agg(p.package_name) FILTER (WHERE p.package_name IS NOT NULL),
+           '{}'
+       )::text[] AS package_names
+FROM cves c
+LEFT JOIN cve_affected_packages p ON p.cve_id = c.cve_id
+WHERE c.cve_id = ANY($1::text[])
+GROUP BY c.cve_id
+ORDER BY c.cve_id
+`
+
+type ListSearchIndexInputsRow struct {
+	CveID              string
+	DescriptionPrimary sql.NullString
+	CweIds             []string
+	PackageNames       []string
+}
+
+// The fields UpsertCVESearchIndex builds the tsvector from, for a batch of
+// CVEs. Package names come back unordered and may repeat; the caller
+// de-duplicates and sorts them bytewise, as the merge pipeline does, because
+// an ORDER BY here would follow the database collation.
+func (q *Queries) ListSearchIndexInputs(ctx context.Context, cveIds []string) ([]ListSearchIndexInputsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listSearchIndexInputs, pq.Array(cveIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSearchIndexInputsRow
+	for rows.Next() {
+		var i ListSearchIndexInputsRow
+		if err := rows.Scan(
+			&i.CveID,
+			&i.DescriptionPrimary,
+			pq.Array(&i.CweIds),
+			pq.Array(&i.PackageNames),
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockCVEAdvisoryKeys = `-- name: LockCVEAdvisoryKeys :exec
+SELECT pg_advisory_xact_lock(k)
+FROM (SELECT unnest($1::bigint[]) AS k ORDER BY k) AS ordered
+`
+
+// Takes the per-CVE merge advisory lock (merge.CVEAdvisoryKey) for every key,
+// in ascending key order, until the transaction ends.
+func (q *Queries) LockCVEAdvisoryKeys(ctx context.Context, keys []int64) error {
+	_, err := q.db.ExecContext(ctx, lockCVEAdvisoryKeys, pq.Array(keys))
+	return err
 }
 
 const tombstoneCVE = `-- name: TombstoneCVE :exec
@@ -550,20 +872,44 @@ func (q *Queries) UpdateCVEEPSS(ctx context.Context, arg UpdateCVEEPSSParams) er
 	return err
 }
 
+const updateCVEEPSSBatch = `-- name: UpdateCVEEPSSBatch :exec
+UPDATE cves AS c
+SET epss_score = s.epss_score, date_epss_updated = now()
+FROM (
+    SELECT unnest($1::text[]) AS cve_id,
+           unnest($2::double precision[]) AS epss_score
+) AS s
+WHERE c.cve_id = s.cve_id AND c.epss_score IS DISTINCT FROM s.epss_score
+`
+
+type UpdateCVEEPSSBatchParams struct {
+	CveIds     []string
+	EpssScores []float64
+}
+
+// Two-statement EPSS pattern step 1 for a batch: update each live CVE row whose
+// score changed. cve_ids[i] pairs with epss_scores[i]; cve_ids must not repeat.
+func (q *Queries) UpdateCVEEPSSBatch(ctx context.Context, arg UpdateCVEEPSSBatchParams) error {
+	_, err := q.db.ExecContext(ctx, updateCVEEPSSBatch, pq.Array(arg.CveIds), pq.Array(arg.EpssScores))
+	return err
+}
+
 const upsertCVE = `-- name: UpsertCVE :exec
 INSERT INTO cves (
     cve_id, status, date_published, date_modified_source_max,
     date_modified_canonical, date_first_seen, description_primary,
     severity, cvss_v3_score, cvss_v3_vector, cvss_v3_source,
     cvss_v4_score, cvss_v4_vector, cvss_v4_source, cvss_score_diverges,
-    cwe_ids, exploit_available, in_cisa_kev, material_hash
+    cwe_ids, exploit_available, in_cisa_kev, material_hash,
+    match_inputs_hash, date_match_inputs_changed
 )
 VALUES (
     $1, $2, $3, $4,
     $5, now(), $6,
     $7, $8, $9, $10,
     $11, $12, $13, $14,
-    $15, $16, $17, $18
+    $15, $16, $17, $18,
+    $19, $5
 )
 ON CONFLICT (cve_id) DO UPDATE
     SET status                   = EXCLUDED.status,
@@ -587,7 +933,15 @@ ON CONFLICT (cve_id) DO UPDATE
         cwe_ids                  = EXCLUDED.cwe_ids,
         exploit_available        = EXCLUDED.exploit_available,
         in_cisa_kev              = EXCLUDED.in_cisa_kev,
-        material_hash            = EXCLUDED.material_hash
+        material_hash            = EXCLUDED.material_hash,
+        -- Stamp a change to the rule match inputs outside material_hash (re-checks
+        -- the CVE without firing unrelated rules). A stored NULL counts as changed.
+        date_match_inputs_changed = CASE
+            WHEN cves.match_inputs_hash IS DISTINCT FROM EXCLUDED.match_inputs_hash
+            THEN EXCLUDED.date_modified_canonical
+            ELSE cves.date_match_inputs_changed
+        END,
+        match_inputs_hash        = EXCLUDED.match_inputs_hash
 `
 
 type UpsertCVEParams struct {
@@ -609,6 +963,7 @@ type UpsertCVEParams struct {
 	ExploitAvailable      bool
 	InCisaKev             bool
 	MaterialHash          sql.NullString
+	MatchInputsHash       sql.NullString
 }
 
 func (q *Queries) UpsertCVE(ctx context.Context, arg UpsertCVEParams) error {
@@ -631,6 +986,7 @@ func (q *Queries) UpsertCVE(ctx context.Context, arg UpsertCVEParams) error {
 		arg.ExploitAvailable,
 		arg.InCisaKev,
 		arg.MaterialHash,
+		arg.MatchInputsHash,
 	)
 	return err
 }
@@ -670,9 +1026,8 @@ func (q *Queries) UpsertCVESearchIndex(ctx context.Context, arg UpsertCVESearchI
 const upsertCVESource = `-- name: UpsertCVESource :exec
 INSERT INTO cve_sources (cve_id, source_name, source_id, normalized_json, source_date_modified, source_url)
 VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (cve_id, source_name) DO UPDATE
-    SET source_id            = EXCLUDED.source_id,
-        normalized_json      = EXCLUDED.normalized_json,
+ON CONFLICT (cve_id, source_name, source_id) DO UPDATE
+    SET normalized_json      = EXCLUDED.normalized_json,
         source_date_modified = EXCLUDED.source_date_modified,
         source_url           = EXCLUDED.source_url,
         ingested_at          = now()
@@ -682,7 +1037,7 @@ ON CONFLICT (cve_id, source_name) DO UPDATE
 type UpsertCVESourceParams struct {
 	CveID              string
 	SourceName         string
-	SourceID           sql.NullString
+	SourceID           string
 	NormalizedJson     json.RawMessage
 	SourceDateModified sql.NullTime
 	SourceUrl          sql.NullString
@@ -724,5 +1079,34 @@ type UpsertEPSSStagingParams struct {
 // statement and UpdateCVEEPSS run unconditionally for every CSV row.
 func (q *Queries) UpsertEPSSStaging(ctx context.Context, arg UpsertEPSSStagingParams) error {
 	_, err := q.db.ExecContext(ctx, upsertEPSSStaging, arg.Column1, arg.Column2, arg.Column3)
+	return err
+}
+
+const upsertEPSSStagingBatch = `-- name: UpsertEPSSStagingBatch :exec
+INSERT INTO epss_staging (cve_id, epss_score, as_of_date)
+SELECT s.cve_id, s.epss_score, $1::date
+FROM (
+    SELECT unnest($2::text[]) AS cve_id,
+           unnest($3::double precision[]) AS epss_score
+) AS s
+WHERE NOT EXISTS (SELECT 1 FROM cves WHERE cves.cve_id = s.cve_id)
+ON CONFLICT (cve_id) DO UPDATE
+    SET epss_score  = EXCLUDED.epss_score,
+        as_of_date  = EXCLUDED.as_of_date,
+        ingested_at = now()
+    WHERE epss_staging.epss_score IS DISTINCT FROM EXCLUDED.epss_score
+`
+
+type UpsertEPSSStagingBatchParams struct {
+	AsOfDate   time.Time
+	CveIds     []string
+	EpssScores []float64
+}
+
+// Two-statement EPSS pattern step 2 for a batch: stage each score whose CVE does
+// not yet exist in cves. Same guards as UpsertEPSSStaging; cve_ids must not
+// repeat, because ON CONFLICT DO UPDATE cannot change one row twice.
+func (q *Queries) UpsertEPSSStagingBatch(ctx context.Context, arg UpsertEPSSStagingBatchParams) error {
+	_, err := q.db.ExecContext(ctx, upsertEPSSStagingBatch, arg.AsOfDate, pq.Array(arg.CveIds), pq.Array(arg.EpssScores))
 	return err
 }

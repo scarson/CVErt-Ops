@@ -5,10 +5,13 @@ package store_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -82,14 +85,31 @@ func getPayloadLength(t *testing.T, s *testutil.TestDB, ctx context.Context, rul
 	return len(items)
 }
 
+// resetAnyProcessingDelivery is a stuck-delivery threshold that selects every
+// processing delivery, including one whose updated_at is ahead of now() because
+// the database clock stepped backward.
+const resetAnyProcessingDelivery = -time.Minute
+
+// claimDeliveries claims every delivery written to be sent now, which atomically
+// marks them processing.
+func claimDeliveries(t *testing.T, s *testutil.TestDB, ctx context.Context) []store.ClaimedDelivery {
+	t.Helper()
+	var claimed []store.ClaimedDelivery
+	s.ClaimUntilDeliveriesAttempted(t, ctx, func() {
+		batch, err := s.ClaimPendingDeliveries(ctx, 10)
+		if err != nil {
+			t.Fatalf("ClaimPendingDeliveries: %v", err)
+		}
+		claimed = append(claimed, batch...)
+	})
+	return claimed
+}
+
 // claimAndMarkProcessing claims pending deliveries (which atomically marks them
 // processing) and returns the IDs of the claimed deliveries.
 func claimAndMarkProcessing(t *testing.T, s *testutil.TestDB, ctx context.Context) []uuid.UUID {
 	t.Helper()
-	claimed, err := s.ClaimPendingDeliveries(ctx, 10)
-	if err != nil {
-		t.Fatalf("ClaimPendingDeliveries: %v", err)
-	}
+	claimed := claimDeliveries(t, s, ctx)
 	if len(claimed) == 0 {
 		t.Fatal("expected at least 1 claimed delivery, got 0")
 	}
@@ -133,6 +153,27 @@ func TestUpsertDelivery_CreatesThenDebounces(t *testing.T) {
 	}
 }
 
+// TestClaimAndMarkProcessing_DeliveryAheadOfDatabaseClock covers a delivery whose
+// send_after is later than the next transaction's now(), the state left by the
+// database clock stepping backward between the two transactions.
+func TestClaimAndMarkProcessing_DeliveryAheadOfDatabaseClock(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "ClockAhead")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-8001"}`), 0)
+	if _, err := s.DB().ExecContext(ctx,
+		`UPDATE notification_deliveries SET send_after = now() + interval '300 milliseconds' WHERE rule_id = $1`,
+		ruleID); err != nil {
+		t.Fatalf("move send_after ahead of the database clock: %v", err)
+	}
+
+	if ids := claimAndMarkProcessing(t, s, ctx); len(ids) != 1 {
+		t.Errorf("claimed deliveries = %d, want 1", len(ids))
+	}
+}
+
 func TestClaimPendingDeliveries_SkipsNotReady(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
@@ -155,10 +196,7 @@ func TestClaimPendingDeliveries_SkipsNotReady(t *testing.T) {
 	orgID2, ruleID2, chanID2 := setupDeliveryFixture(t, s, ctx, "2b")
 	mustUpsertDelivery(t, s, ctx, orgID2, ruleID2, chanID2, []byte(`{"cve_id":"CVE-2024-0011"}`), 0)
 
-	ready, err := s.ClaimPendingDeliveries(ctx, 10)
-	if err != nil {
-		t.Fatalf("ClaimPendingDeliveries (ready): %v", err)
-	}
+	ready := claimDeliveries(t, s, ctx)
 	if len(ready) != 1 {
 		t.Errorf("expected 1 claimed delivery, got %d", len(ready))
 	}
@@ -201,7 +239,7 @@ func TestRetryDelivery_IncreasesAttemptCount(t *testing.T) {
 
 	ids := claimAndMarkProcessing(t, s, ctx)
 
-	if err := s.RetryDelivery(ctx, ids[0], 5, "connection refused"); err != nil {
+	if err := s.RetryDelivery(ctx, ids[0], 5, store.DeliveryFailure{Detail: "connection refused", ForOrg: "connection refused"}); err != nil {
 		t.Fatalf("RetryDelivery: %v", err)
 	}
 
@@ -228,7 +266,7 @@ func TestExhaustDelivery_SetsFailed(t *testing.T) {
 
 	initialAttempts := getAttemptCount(t, s, ctx, ids[0])
 
-	if err := s.ExhaustDelivery(ctx, ids[0], "max retries exceeded"); err != nil {
+	if err := s.ExhaustDelivery(ctx, ids[0], store.DeliveryFailure{Detail: "max retries exceeded", ForOrg: "max retries exceeded"}); err != nil {
 		t.Fatalf("ExhaustDelivery: %v", err)
 	}
 
@@ -240,6 +278,64 @@ func TestExhaustDelivery_SetsFailed(t *testing.T) {
 	attempts := getAttemptCount(t, s, ctx, ids[0])
 	if attempts != initialAttempts+1 {
 		t.Errorf("attempt_count = %d, want %d", attempts, initialAttempts+1)
+	}
+}
+
+func TestExhaustDelivery_OrgQueriesReturnOrgError(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "OrgErr")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-0041"}`), 0)
+	ids := claimAndMarkProcessing(t, s, ctx)
+
+	failure := store.DeliveryFailure{
+		Detail: "webhook POST: dial tcp 10.1.2.3:443: ip: 10.1.2.3 not found in allowlist",
+		ForOrg: "delivery failed, cause withheld",
+	}
+	if err := s.ExhaustDelivery(ctx, ids[0], failure); err != nil {
+		t.Fatalf("ExhaustDelivery: %v", err)
+	}
+
+	var detail string
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT last_error FROM notification_deliveries WHERE id=$1", ids[0]).Scan(&detail); err != nil {
+		t.Fatalf("scan last_error: %v", err)
+	}
+	if detail != failure.Detail {
+		t.Errorf("last_error = %q, want %q", detail, failure.Detail)
+	}
+
+	d, err := s.GetDelivery(ctx, ids[0], orgID)
+	if err != nil || d == nil {
+		t.Fatalf("GetDelivery: %v, %v", d, err)
+	}
+	if d.LastErrorForOrg.String != failure.ForOrg {
+		t.Errorf("GetDelivery LastErrorForOrg = %q, want %q", d.LastErrorForOrg.String, failure.ForOrg)
+	}
+
+	rows, err := s.ListDeliveries(ctx, orgID, uuid.Nil, uuid.Nil, "", time.Now().Add(24*time.Hour), uuid.Nil, 10)
+	if err != nil {
+		t.Fatalf("ListDeliveries: %v", err)
+	}
+	if len(rows) != 1 || rows[0].LastErrorForOrg.String != failure.ForOrg {
+		t.Errorf("ListDeliveries = %+v, want one row with LastErrorForOrg %q", rows, failure.ForOrg)
+	}
+}
+
+func TestExhaustDelivery_RejectsDetailWithoutOrgError(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "OrgErrPair")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-0042"}`), 0)
+	ids := claimAndMarkProcessing(t, s, ctx)
+
+	// The CHECK constraint keeps last_error and last_error_for_org set together.
+	if err := s.ExhaustDelivery(ctx, ids[0], store.DeliveryFailure{Detail: "connection refused"}); err == nil {
+		t.Fatal("ExhaustDelivery with no org error succeeded, want a check violation")
 	}
 }
 
@@ -258,9 +354,8 @@ func TestResetStuckDeliveries(t *testing.T) {
 		t.Fatalf("expected processing after mark, got %q", status)
 	}
 
-	// Reset with 0s threshold: any processing row updated before "now" qualifies.
-	// We use time.Duration(0) which passes 0 seconds to the query.
-	if err := s.ResetStuckDeliveries(ctx, 0); err != nil {
+	// A threshold below zero makes every processing row qualify.
+	if err := s.ResetStuckDeliveries(ctx, resetAnyProcessingDelivery); err != nil {
 		t.Fatalf("ResetStuckDeliveries: %v", err)
 	}
 
@@ -281,7 +376,7 @@ func TestReplayDelivery_ResetsFailedToZero(t *testing.T) {
 	ids := claimAndMarkProcessing(t, s, ctx)
 
 	// Exhaust the delivery to get it into status=failed.
-	if err := s.ExhaustDelivery(ctx, ids[0], "permanent failure"); err != nil {
+	if err := s.ExhaustDelivery(ctx, ids[0], store.DeliveryFailure{Detail: "permanent failure", ForOrg: "permanent failure"}); err != nil {
 		t.Fatalf("ExhaustDelivery: %v", err)
 	}
 
@@ -306,8 +401,8 @@ func TestReplayDelivery_ResetsFailedToZero(t *testing.T) {
 	}
 }
 
-// insertAlertEventBackdated inserts an alert_event with a custom first_fired_at via
-// raw SQL so that OrphanedAlertEvents (which checks first_fired_at < now() - 5 min)
+// insertAlertEventBackdated inserts an alert_event with custom fire times via
+// raw SQL so that OrphanedAlertEvents (which checks last_fired_at < now() - 5 min)
 // can see it in tests.
 func insertAlertEventBackdated(t *testing.T, s *testutil.TestDB, ctx context.Context, orgID, ruleID uuid.UUID, cveID string, backdateDuration time.Duration) {
 	t.Helper()
@@ -328,8 +423,8 @@ func insertAlertEventBackdated(t *testing.T, s *testutil.TestDB, ctx context.Con
 	// with PostgreSQL interval parsing (e.g., "10m0s" is not accepted by Postgres).
 	backdateSeconds := int(backdateDuration.Seconds())
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, first_fired_at)
-		VALUES ($1, $2, $3, $4, true, false, now() - ($5 * interval '1 second'))`,
+		INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, first_fired_at, last_fired_at, feed_seq)
+		VALUES ($1, $2, $3, $4, true, false, now() - ($5 * interval '1 second'), now() - ($5 * interval '1 second'), nextval('alert_event_feed_seq'))`,
 		orgID, ruleID, cveID, materialHash, backdateSeconds,
 	)
 	if err != nil {
@@ -384,6 +479,155 @@ func TestOrphanedAlertEvents(t *testing.T) {
 	}
 }
 
+// TestOrphanedAlertEvents_ReopenedEventWithoutNewDelivery covers a reopen whose fan-out
+// was lost: the delivery from the original fire must not count for the later reopen.
+func TestOrphanedAlertEvents_ReopenedEventWithoutNewDelivery(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "OrphReopen")
+	const cveID = "CVE-2024-0071"
+
+	insertAlertEventBackdated(t, s, ctx, orgID, ruleID, cveID, 2*time.Hour)
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-0071"}`), 0)
+	if _, err := s.DB().ExecContext(ctx,
+		`UPDATE notification_deliveries SET created_at = now() - interval '2 hours' WHERE org_id = $1 AND rule_id = $2`,
+		orgID, ruleID); err != nil {
+		t.Fatalf("backdate original delivery: %v", err)
+	}
+	if _, err := s.DB().ExecContext(ctx,
+		`UPDATE alert_events SET last_fired_at = now() - interval '10 minutes', times_fired = 2 WHERE org_id = $1 AND cve_id = $2`,
+		orgID, cveID); err != nil {
+		t.Fatalf("mark event reopened: %v", err)
+	}
+
+	orphaned, err := s.OrphanedAlertEvents(ctx, 10)
+	if err != nil {
+		t.Fatalf("OrphanedAlertEvents: %v", err)
+	}
+	for _, row := range orphaned {
+		if row.OrgID == orgID && row.RuleID == ruleID && row.CveID == cveID {
+			return
+		}
+	}
+	t.Errorf("expected %s in orphaned results, got %v", cveID, orphaned)
+}
+
+// TestOrphanedAlertEvents_ResolutionDeliveryIsNotProofOfAlert covers an alert that never
+// got a delivery row while another CVE on the same rule got a resolution notification.
+func TestOrphanedAlertEvents_ResolutionDeliveryIsNotProofOfAlert(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "OrphanResolution")
+	const orphanCVE = "CVE-2024-0071"
+	insertAlertEventBackdated(t, s, ctx, orgID, ruleID, orphanCVE, 10*time.Minute)
+
+	if err := s.UpsertResolutionDelivery(ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-0072"}`), 0); err != nil {
+		t.Fatalf("UpsertResolutionDelivery: %v", err)
+	}
+
+	orphaned, err := s.OrphanedAlertEvents(ctx, 10)
+	if err != nil {
+		t.Fatalf("OrphanedAlertEvents: %v", err)
+	}
+	found := false
+	for _, row := range orphaned {
+		if row.RuleID == ruleID && row.CveID == orphanCVE {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("%s missing from orphaned results %v: a resolution delivery does not show the alert was sent", orphanCVE, orphaned)
+	}
+}
+
+// pendingPayloadLengths returns each pending delivery's payload length for the rule, by kind.
+func pendingPayloadLengths(t *testing.T, s *testutil.TestDB, ctx context.Context, ruleID uuid.UUID) map[string][]int {
+	t.Helper()
+	rows, err := s.DB().QueryContext(ctx,
+		`SELECT kind, jsonb_array_length(payload) FROM notification_deliveries
+		 WHERE rule_id = $1 AND status = 'pending' ORDER BY created_at`, ruleID)
+	if err != nil {
+		t.Fatalf("query pending deliveries: %v", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	lengths := make(map[string][]int)
+	for rows.Next() {
+		var kind string
+		var length int
+		if err := rows.Scan(&kind, &length); err != nil {
+			t.Fatalf("scan pending delivery: %v", err)
+		}
+		lengths[kind] = append(lengths[kind], length)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate pending deliveries: %v", err)
+	}
+	return lengths
+}
+
+func TestUpsertResolutionDelivery_BatchesApartFromAlerts(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "ResolutionBatch")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-0080"}`), 300)
+	for _, payload := range []string{`{"cve_id":"CVE-2024-0081"}`, `{"cve_id":"CVE-2024-0082"}`} {
+		if err := s.UpsertResolutionDelivery(ctx, orgID, ruleID, chanID, []byte(payload), 300); err != nil {
+			t.Fatalf("UpsertResolutionDelivery: %v", err)
+		}
+	}
+
+	lengths := pendingPayloadLengths(t, s, ctx, ruleID)
+	if got := lengths["alert"]; !slices.Equal(got, []int{1}) {
+		t.Errorf("alert batches = %v, want one batch of 1", got)
+	}
+	if got := lengths["resolution"]; !slices.Equal(got, []int{2}) {
+		t.Errorf("resolution batches = %v, want one batch of 2", got)
+	}
+}
+
+func TestUpsertResolutionDelivery_ClaimClosesBatch(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "ResolutionClaim")
+	if err := s.UpsertResolutionDelivery(ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-0083"}`), 0); err != nil {
+		t.Fatalf("UpsertResolutionDelivery: %v", err)
+	}
+
+	claimed := claimDeliveries(t, s, ctx)
+	if len(claimed) != 1 || claimed[0].Kind != "resolution" {
+		t.Fatalf("claimed = %+v, want one delivery of kind resolution", claimed)
+	}
+
+	if err := s.UpsertResolutionDelivery(ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-0084"}`), 300); err != nil {
+		t.Fatalf("UpsertResolutionDelivery after claim: %v", err)
+	}
+	if got := pendingPayloadLengths(t, s, ctx, ruleID)["resolution"]; !slices.Equal(got, []int{1}) {
+		t.Errorf("resolution batches after claim = %v, want a new batch of 1", got)
+	}
+}
+
+func TestResolutionDelivery_RequiresRule(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, _, chanID := setupDeliveryFixture(t, s, ctx, "ResolutionRule")
+	_, err := s.DB().ExecContext(ctx,
+		`INSERT INTO notification_deliveries (org_id, channel_id, kind, payload) VALUES ($1, $2, 'resolution', '[]')`,
+		orgID, chanID)
+	if err == nil {
+		t.Fatal("insert of a resolution delivery with no rule succeeded, want a check constraint error")
+	}
+}
+
 func TestListDeliveries_FilterByStatus(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
@@ -401,10 +645,7 @@ func TestListDeliveries_FilterByStatus(t *testing.T) {
 	mustUpsertDelivery(t, s, ctx, orgID, ruleID2, chanID2, []byte(`{"cve_id":"CVE-2024-0081"}`), 0)
 
 	// Claim and complete only the second delivery.
-	claimed, err := s.ClaimPendingDeliveries(ctx, 10)
-	if err != nil {
-		t.Fatalf("ClaimPendingDeliveries: %v", err)
-	}
+	claimed := claimDeliveries(t, s, ctx)
 	// Find the one for ruleID2.
 	var id2 uuid.UUID
 	for _, c := range claimed {
@@ -570,7 +811,7 @@ func TestReplayDelivery_CrossOrgIsolation(t *testing.T) {
 	mustUpsertDelivery(t, s, ctx, orgID1, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-XO3"}`), 0)
 
 	ids := claimAndMarkProcessing(t, s, ctx)
-	if err := s.ExhaustDelivery(ctx, ids[0], "permanent failure"); err != nil {
+	if err := s.ExhaustDelivery(ctx, ids[0], store.DeliveryFailure{Detail: "permanent failure", ForOrg: "permanent failure"}); err != nil {
 		t.Fatalf("ExhaustDelivery: %v", err)
 	}
 
@@ -659,7 +900,7 @@ func TestRetryDelivery_EmptyLastError(t *testing.T) {
 	ids := claimAndMarkProcessing(t, s, ctx)
 
 	// Retry with empty lastError — should not error.
-	if err := s.RetryDelivery(ctx, ids[0], 5, ""); err != nil {
+	if err := s.RetryDelivery(ctx, ids[0], 5, store.DeliveryFailure{}); err != nil {
 		t.Fatalf("RetryDelivery(empty error): %v", err)
 	}
 
@@ -750,16 +991,16 @@ func TestOrphanedAlertEvents_SuppressedAndNonMatchingExcluded(t *testing.T) {
 		t.Fatalf("set bypass_rls: %v", err)
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, first_fired_at)
-		VALUES ($1, $2, 'CVE-SUPPRESS-1', $3, true, true, now() - interval '15 minutes')`,
+		INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, first_fired_at, last_fired_at, feed_seq)
+		VALUES ($1, $2, 'CVE-SUPPRESS-1', $3, true, true, now() - interval '15 minutes', now() - interval '15 minutes', nextval('alert_event_feed_seq'))`,
 		orgID, ruleID, uuid.New().String())
 	if err != nil {
 		t.Fatalf("insert suppressed event: %v", err)
 	}
 	// Insert a non-matching event (last_match_state=false) backdated.
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, first_fired_at)
-		VALUES ($1, $2, 'CVE-NOMATCH-1', $3, false, false, now() - interval '15 minutes')`,
+		INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, first_fired_at, last_fired_at, feed_seq)
+		VALUES ($1, $2, 'CVE-NOMATCH-1', $3, false, false, now() - interval '15 minutes', now() - interval '15 minutes', nextval('alert_event_feed_seq'))`,
 		orgID, ruleID, uuid.New().String())
 	if err != nil {
 		t.Fatalf("insert non-matching event: %v", err)
@@ -816,22 +1057,250 @@ func TestInsertDigestDelivery(t *testing.T) {
 		t.Errorf("report_id = %v, want %v", reportID, report.ID)
 	}
 
-	// Idempotent: second insert for same report+channel should not error (ON CONFLICT DO NOTHING).
+	// The next digest for the same report and channel gets its own row while the
+	// first is still pending, so neither digest's payload is lost.
 	if err := s.InsertDigestDelivery(ctx, org.ID, report.ID, chanID, payload); err != nil {
-		t.Fatalf("InsertDigestDelivery (idempotent): %v", err)
+		t.Fatalf("InsertDigestDelivery (second digest): %v", err)
 	}
 
-	// Should still be exactly one row.
 	var count int
 	countRow := s.DB().QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM notification_deliveries WHERE channel_id=$1 AND report_id=$2`,
+		`SELECT COUNT(*) FROM notification_deliveries WHERE channel_id=$1 AND report_id=$2 AND status='pending'`,
 		chanID, report.ID)
 	if err := countRow.Scan(&count); err != nil {
 		t.Fatalf("count digest deliveries: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("expected 1 digest delivery row (idempotent), got %d", count)
+	if count != 2 {
+		t.Errorf("pending digest delivery rows = %d, want 2", count)
 	}
+}
+
+// TestRetryDigestDelivery_NewerDigestPending covers a digest delivery that fails
+// while the next digest for the same report and channel is already pending. The
+// retry must return the failed delivery to pending rather than leave it stuck in
+// processing.
+func TestRetryDigestDelivery_NewerDigestPending(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org := s.MustCreateOrg(t, ctx, "DigestRetryOrg")
+	report := mustCreateScheduledReport(t, s, ctx, org.ID, "DigestRetryReport")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "DigestRetryChan")
+
+	payload := json.RawMessage(`[{"cve_id":"CVE-2025-0001","severity":"HIGH"}]`)
+	if err := s.InsertDigestDelivery(ctx, org.ID, report.ID, chanID, payload); err != nil {
+		t.Fatalf("InsertDigestDelivery (first digest): %v", err)
+	}
+	claimed := claimDeliveries(t, s, ctx)
+	var first *store.ClaimedDelivery
+	for i := range claimed {
+		if claimed[i].ReportID.Valid && claimed[i].ReportID.UUID == report.ID {
+			first = &claimed[i]
+		}
+	}
+	if first == nil {
+		t.Fatal("first digest delivery was not claimed")
+	}
+
+	if err := s.InsertDigestDelivery(ctx, org.ID, report.ID, chanID, payload); err != nil {
+		t.Fatalf("InsertDigestDelivery (second digest): %v", err)
+	}
+	failure := store.DeliveryFailure{Detail: "smtp unavailable", ForOrg: "smtp unavailable"}
+	if err := s.RetryDelivery(ctx, first.ID, 60, failure); err != nil {
+		t.Fatalf("RetryDelivery: %v", err)
+	}
+
+	var status string
+	if err := s.DB().QueryRowContext(ctx,
+		`SELECT status FROM notification_deliveries WHERE id = $1`, first.ID).Scan(&status); err != nil {
+		t.Fatalf("scan first digest status: %v", err)
+	}
+	if status != "pending" {
+		t.Errorf("first digest status = %q, want pending", status)
+	}
+}
+
+// countAlertDeliveries counts the deliveries for a (rule_id, channel_id) pair in the given status.
+func countAlertDeliveries(t *testing.T, s *testutil.TestDB, ctx context.Context, ruleID, chanID uuid.UUID, status string) int {
+	t.Helper()
+	var count int
+	row := s.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM notification_deliveries WHERE rule_id=$1 AND channel_id=$2 AND status=$3`,
+		ruleID, chanID, status)
+	if err := row.Scan(&count); err != nil {
+		t.Fatalf("countAlertDeliveries: %v", err)
+	}
+	return count
+}
+
+// assertPendingAlertCVEs checks that the pending deliveries for a (rule_id, channel_id)
+// pair hold exactly the given CVE IDs, across all of their payloads.
+func assertPendingAlertCVEs(t *testing.T, s *testutil.TestDB, ctx context.Context, ruleID, chanID uuid.UUID, want ...string) {
+	t.Helper()
+	rows, err := s.DB().QueryContext(ctx, `
+		SELECT elem->>'cve_id'
+		FROM notification_deliveries nd, jsonb_array_elements(nd.payload) AS elem
+		WHERE nd.rule_id=$1 AND nd.channel_id=$2 AND nd.status='pending'
+		ORDER BY 1`, ruleID, chanID)
+	if err != nil {
+		t.Fatalf("assertPendingAlertCVEs: %v", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	var got []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("assertPendingAlertCVEs scan: %v", err)
+		}
+		got = append(got, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("assertPendingAlertCVEs rows: %v", err)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("pending CVEs = %v, want %v", got, want)
+	}
+}
+
+// TestRetryAlertDelivery_NewerBatchPending covers an alert delivery that fails
+// while a newer batch for the same rule and channel is already pending. The newer
+// batch was inserted while the first one was in flight. The retry must return the
+// failed CVE to pending rather than leave it stuck in processing.
+func TestRetryAlertDelivery_NewerBatchPending(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "RetryBatch")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-1001"}`), 0)
+	ids := claimAndMarkProcessing(t, s, ctx)
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-1002"}`), 0)
+
+	failure := store.DeliveryFailure{Detail: "connection refused", ForOrg: "connection refused"}
+	if err := s.RetryDelivery(ctx, ids[0], 60, failure); err != nil {
+		t.Fatalf("RetryDelivery: %v", err)
+	}
+
+	if n := countAlertDeliveries(t, s, ctx, ruleID, chanID, "processing"); n != 0 {
+		t.Errorf("processing deliveries = %d, want 0", n)
+	}
+	assertPendingAlertCVEs(t, s, ctx, ruleID, chanID, "CVE-2025-1001", "CVE-2025-1002")
+}
+
+// TestUpsertDelivery_SkipsRetryingBatch covers a CVE that matches while an earlier
+// batch for the same rule and channel waits out a retry backoff. The CVE must start
+// its own batch, so it neither shortens the backoff nor inherits the attempt count.
+func TestUpsertDelivery_SkipsRetryingBatch(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "RetryingBatch")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-7001"}`), 0)
+	ids := claimAndMarkProcessing(t, s, ctx)
+	failure := store.DeliveryFailure{Detail: "connection refused", ForOrg: "connection refused"}
+	if err := s.RetryDelivery(ctx, ids[0], 3600, failure); err != nil {
+		t.Fatalf("RetryDelivery: %v", err)
+	}
+
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-7002"}`), 0)
+
+	if n := countAlertDeliveries(t, s, ctx, ruleID, chanID, "pending"); n != 2 {
+		t.Fatalf("pending deliveries = %d, want 2 (retrying batch and a fresh one)", n)
+	}
+	var payload []byte
+	var backoffLeft float64
+	if err := s.DB().QueryRowContext(ctx,
+		`SELECT payload, EXTRACT(EPOCH FROM send_after - now()) FROM notification_deliveries WHERE id=$1`,
+		ids[0]).Scan(&payload, &backoffLeft); err != nil {
+		t.Fatalf("read retrying batch: %v", err)
+	}
+	if string(payload) != `[{"cve_id": "CVE-2025-7001"}]` {
+		t.Errorf("retrying batch payload = %s, want only CVE-2025-7001", payload)
+	}
+	if backoffLeft < 3000 {
+		t.Errorf("retrying batch backoff left = %.0fs, want about 3600s", backoffLeft)
+	}
+}
+
+// TestResetStuckDeliveries_NewerAlertBatchPending covers a stuck alert delivery
+// whose rule and channel already have a newer pending batch. Recovery must reset
+// it, and must still reset the stuck deliveries of other rules and channels.
+func TestResetStuckDeliveries_NewerAlertBatchPending(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "StuckBatch")
+	otherOrgID, otherRuleID, otherChanID := setupDeliveryFixture(t, s, ctx, "StuckOther")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-2001"}`), 0)
+	mustUpsertDelivery(t, s, ctx, otherOrgID, otherRuleID, otherChanID, []byte(`{"cve_id":"CVE-2025-2003"}`), 0)
+	claimAndMarkProcessing(t, s, ctx)
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-2002"}`), 0)
+
+	if err := s.ResetStuckDeliveries(ctx, resetAnyProcessingDelivery); err != nil {
+		t.Fatalf("ResetStuckDeliveries: %v", err)
+	}
+
+	if n := countAlertDeliveries(t, s, ctx, ruleID, chanID, "processing"); n != 0 {
+		t.Errorf("processing deliveries = %d, want 0", n)
+	}
+	if n := countAlertDeliveries(t, s, ctx, otherRuleID, otherChanID, "processing"); n != 0 {
+		t.Errorf("processing deliveries for the other rule = %d, want 0", n)
+	}
+	assertPendingAlertCVEs(t, s, ctx, ruleID, chanID, "CVE-2025-2001", "CVE-2025-2002")
+	assertPendingAlertCVEs(t, s, ctx, otherRuleID, otherChanID, "CVE-2025-2003")
+}
+
+// TestResetStuckDeliveries_TwoAlertBatchesStuck covers two stuck alert deliveries
+// for the same rule and channel: the second batch was claimed while the first was
+// still in flight. Recovery resets both in one statement.
+func TestResetStuckDeliveries_TwoAlertBatchesStuck(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "StuckTwo")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-3001"}`), 0)
+	claimAndMarkProcessing(t, s, ctx)
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-3002"}`), 0)
+	claimAndMarkProcessing(t, s, ctx)
+
+	if err := s.ResetStuckDeliveries(ctx, resetAnyProcessingDelivery); err != nil {
+		t.Fatalf("ResetStuckDeliveries: %v", err)
+	}
+
+	if n := countAlertDeliveries(t, s, ctx, ruleID, chanID, "processing"); n != 0 {
+		t.Errorf("processing deliveries = %d, want 0", n)
+	}
+	assertPendingAlertCVEs(t, s, ctx, ruleID, chanID, "CVE-2025-3001", "CVE-2025-3002")
+}
+
+// TestReplayAlertDelivery_NewerBatchPending covers replaying a failed alert
+// delivery while a newer batch for the same rule and channel is pending.
+func TestReplayAlertDelivery_NewerBatchPending(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "ReplayBatch")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-4001"}`), 0)
+	ids := claimAndMarkProcessing(t, s, ctx)
+	failure := store.DeliveryFailure{Detail: "permanent failure", ForOrg: "permanent failure"}
+	if err := s.ExhaustDelivery(ctx, ids[0], failure); err != nil {
+		t.Fatalf("ExhaustDelivery: %v", err)
+	}
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-4002"}`), 0)
+
+	if err := s.ReplayDelivery(ctx, ids[0], orgID); err != nil {
+		t.Fatalf("ReplayDelivery: %v", err)
+	}
+
+	if n := countAlertDeliveries(t, s, ctx, ruleID, chanID, "failed"); n != 0 {
+		t.Errorf("failed deliveries = %d, want 0", n)
+	}
+	assertPendingAlertCVEs(t, s, ctx, ruleID, chanID, "CVE-2025-4001", "CVE-2025-4002")
 }
 
 func TestDigestCVEs(t *testing.T) {
@@ -881,7 +1350,7 @@ func TestDigestCVEs(t *testing.T) {
 	}
 
 	// Test 1: No severity filter — should return D001 and D002 (not D003, too old).
-	all, err := s.DigestCVEs(ctx, since, nil)
+	all, err := s.DigestCVEs(ctx, since, nil, nil)
 	if err != nil {
 		t.Fatalf("DigestCVEs(all): %v", err)
 	}
@@ -907,7 +1376,7 @@ func TestDigestCVEs(t *testing.T) {
 	}
 
 	// Test 2: Severity filter [critical, high] — only D001 should match.
-	filtered, err := s.DigestCVEs(ctx, since, []string{"critical", "high"})
+	filtered, err := s.DigestCVEs(ctx, since, []string{"critical", "high"}, nil)
 	if err != nil {
 		t.Fatalf("DigestCVEs(critical,high): %v", err)
 	}
@@ -965,7 +1434,7 @@ func TestDigestCVEs_ExcludesRejectedAndWithdrawn(t *testing.T) {
 		t.Fatalf("insert published CVE: %v", err)
 	}
 
-	rows, err := s.DigestCVEs(ctx, since, nil)
+	rows, err := s.DigestCVEs(ctx, since, nil, nil)
 	if err != nil {
 		t.Fatalf("DigestCVEs: %v", err)
 	}
@@ -989,6 +1458,128 @@ func TestDigestCVEs_ExcludesRejectedAndWithdrawn(t *testing.T) {
 	}
 	if !foundPublished {
 		t.Error("published CVE should be included in DigestCVEs")
+	}
+}
+
+// TestDigestCVEs_StatusFilter verifies the filter reads statuses as feeds send them:
+// NVD sends "Rejected" and MITRE "REJECTED", and a CVE known only from a feed with
+// no status, such as CISA KEV, has none.
+func TestDigestCVEs_StatusFilter(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		cveID  string
+		status any
+		want   bool
+	}{
+		{"CVE-2025-NOSTATUS", nil, true},
+		{"CVE-2025-ANALYZED", "Analyzed", true},
+		{"CVE-2025-NVDREJ", "Rejected", false},
+		{"CVE-2025-MITREREJ", "REJECTED", false},
+		{"CVE-2025-WITHDRAWN", "Withdrawn", false},
+	}
+	for _, tc := range cases {
+		_, err := s.DB().ExecContext(ctx, `
+			INSERT INTO cves (cve_id, status, severity, description_primary, material_hash, date_modified_canonical)
+			VALUES ($1, $2, 'critical', 'status filter', $3, now())`,
+			tc.cveID, tc.status, uuid.New().String())
+		if err != nil {
+			t.Fatalf("insert %s: %v", tc.cveID, err)
+		}
+	}
+
+	rows, err := s.DigestCVEs(ctx, time.Now().Add(-time.Hour), nil, nil)
+	if err != nil {
+		t.Fatalf("DigestCVEs: %v", err)
+	}
+	found := map[string]bool{}
+	for _, row := range rows {
+		found[row.CveID] = true
+	}
+	for _, tc := range cases {
+		if found[tc.cveID] != tc.want {
+			t.Errorf("%s (status %v): in digest = %v, want %v", tc.cveID, tc.status, found[tc.cveID], tc.want)
+		}
+	}
+}
+
+// TestDigestCVEs_SeverityMatchesStoredCase verifies a threshold, which is lowercase,
+// filters and ranks values as feeds store them: NVD and MITRE uppercase, GHSA lowercase.
+func TestDigestCVEs_SeverityMatchesStoredCase(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		cveID    string
+		severity string
+		score    float64
+	}{
+		{"CVE-2025-HIGH", "HIGH", 8.9},
+		{"CVE-2025-CRIT", "CRITICAL", 9.0},
+		{"CVE-2025-GHSA", "critical", 9.5},
+		{"CVE-2025-LOW", "LOW", 2.0},
+	} {
+		_, err := s.DB().ExecContext(ctx, `
+			INSERT INTO cves (cve_id, severity, cvss_v3_score, material_hash, date_modified_canonical)
+			VALUES ($1, $2, $3, $4, now())`,
+			tc.cveID, tc.severity, tc.score, uuid.New().String())
+		if err != nil {
+			t.Fatalf("insert %s: %v", tc.cveID, err)
+		}
+	}
+
+	rows, err := s.DigestCVEs(ctx, time.Now().Add(-time.Hour), []string{"critical", "high"}, nil)
+	if err != nil {
+		t.Fatalf("DigestCVEs: %v", err)
+	}
+	var got []string
+	for _, row := range rows {
+		got = append(got, row.CveID)
+	}
+	want := []string{"CVE-2025-GHSA", "CVE-2025-CRIT", "CVE-2025-HIGH"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("digest = %v, want %v", got, want)
+	}
+}
+
+func TestDigestCVEs_ExcludesSentVersions(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	since := time.Now().Add(-1 * time.Hour)
+	stampA := time.Now().Add(-10 * time.Minute).Truncate(time.Microsecond)
+	stampB := time.Now().Add(-5 * time.Minute).Truncate(time.Microsecond)
+	s.SeedTestCVE(t, "CVE-2025-SENT-A", "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stampA})
+	s.SeedTestCVE(t, "CVE-2025-SENT-B", "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stampB})
+
+	// A's current version was sent; B was sent at an earlier version only.
+	sent := []store.DigestSentCVE{
+		{CVEID: "CVE-2025-SENT-A", DateModifiedCanonical: stampA},
+		{CVEID: "CVE-2025-SENT-B", DateModifiedCanonical: stampB.Add(-time.Minute)},
+	}
+	rows, err := s.DigestCVEs(ctx, since, nil, sent)
+	if err != nil {
+		t.Fatalf("DigestCVEs: %v", err)
+	}
+
+	var gotB *store.DigestCVEsRow
+	for i, row := range rows {
+		switch row.CveID {
+		case "CVE-2025-SENT-A":
+			t.Error("CVE-2025-SENT-A: its current version was already sent and should be excluded")
+		case "CVE-2025-SENT-B":
+			gotB = &rows[i]
+		}
+	}
+	if gotB == nil {
+		t.Fatal("CVE-2025-SENT-B: a version other than the sent one should be included")
+	}
+	if !gotB.DateModifiedCanonical.Equal(stampB) {
+		t.Errorf("CVE-2025-SENT-B date_modified_canonical = %v, want %v", gotB.DateModifiedCanonical, stampB)
 	}
 }
 
@@ -1027,7 +1618,7 @@ func TestDigestCVEs_SortOrder(t *testing.T) {
 		}
 	}
 
-	rows, err := s.DigestCVEs(ctx, since, nil)
+	rows, err := s.DigestCVEs(ctx, since, nil, nil)
 	if err != nil {
 		t.Fatalf("DigestCVEs: %v", err)
 	}
@@ -1056,6 +1647,51 @@ func TestDigestCVEs_SortOrder(t *testing.T) {
 	for i, id := range sortIDs {
 		if id != expected[i] {
 			t.Errorf("position %d: got %s, want %s", i, id, expected[i])
+		}
+	}
+}
+
+// TestDigestCVEs_TotalCountBeyondLimit checks that each row reports how many CVEs
+// matched before the row limit cut the result, counting only CVEs the result
+// itself could include.
+func TestDigestCVEs_TotalCountBeyondLimit(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	since := time.Now().Add(-1 * time.Hour)
+	stamp := time.Now().Add(-10 * time.Minute).Truncate(time.Microsecond)
+	for i := range 500 {
+		s.SeedTestCVE(t, fmt.Sprintf("CVE-2025-TOTAL-%04d", i), "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
+	}
+	s.SeedTestCVE(t, "CVE-2025-TOTAL-LOW", "low", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
+	s.SeedTestCVE(t, "CVE-2025-TOTAL-REJECTED", "high", &testutil.SeedCVEOpts{Status: "rejected", DateModifiedCanonical: &stamp})
+	s.SeedTestCVE(t, "CVE-2025-TOTAL-SENT", "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
+	sent := []store.DigestSentCVE{{CVEID: "CVE-2025-TOTAL-SENT", DateModifiedCanonical: stamp}}
+
+	cases := []struct {
+		name       string
+		severities []string
+		wantRows   int
+		wantTotal  int64
+	}{
+		{"all severities", nil, 500, 501},
+		{"high and above", []string{"critical", "high"}, 500, 500},
+		{"low only", []string{"low"}, 1, 1},
+	}
+	for _, tc := range cases {
+		rows, err := s.DigestCVEs(ctx, since, tc.severities, sent)
+		if err != nil {
+			t.Fatalf("%s: DigestCVEs: %v", tc.name, err)
+		}
+		if len(rows) != tc.wantRows {
+			t.Errorf("%s: got %d rows, want %d", tc.name, len(rows), tc.wantRows)
+		}
+		for _, row := range rows {
+			if row.TotalCount != tc.wantTotal {
+				t.Errorf("%s: %s total_count = %d, want %d", tc.name, row.CveID, row.TotalCount, tc.wantTotal)
+				break
+			}
 		}
 	}
 }

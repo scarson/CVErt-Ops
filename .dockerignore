@@ -35,6 +35,10 @@ coverage.*
 *.coverprofile
 profile.cov
 
+# ── Frontend build inputs and outputs produced inside the image ───────────────
+web/node_modules/
+web/dist/
+
 # ── OS artifacts ──────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db

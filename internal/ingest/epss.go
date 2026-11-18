@@ -52,10 +52,14 @@ func epssHandlerWithStore(syncSt HandlerStore, mergeSt *store.Store, applyFn App
 
 		now := time.Now()
 
+		// The job context may have expired, and the outcome must still be recorded.
+		outcomeCtx, cancelOutcome := worker.OutcomeContext(ctx)
+		defer cancelOutcome()
+
 		if applyErr != nil {
 			failures := prevFailures + 1
 			backoff := now.Add(backoffDuration(failures))
-			if syncErr := syncSt.UpsertFeedSyncState(ctx, store.FeedSyncState{
+			if syncErr := syncSt.UpsertFeedSyncState(outcomeCtx, store.FeedSyncState{
 				FeedName:            "epss",
 				CursorJSON:          cursor,
 				LastSuccessAt:       prevLastSuccess,
@@ -66,7 +70,7 @@ func epssHandlerWithStore(syncSt HandlerStore, mergeSt *store.Store, applyFn App
 			}); syncErr != nil {
 				slog.Error("epss sync state write failed on error path", "error", syncErr)
 			}
-			if _, logErr := syncSt.InsertFeedFetchLog(ctx, store.FeedFetchLog{
+			if _, logErr := syncSt.InsertFeedFetchLog(outcomeCtx, store.FeedFetchLog{
 				FeedName:     "epss",
 				StartedAt:    start,
 				EndedAt:      &now,
@@ -82,7 +86,7 @@ func epssHandlerWithStore(syncSt HandlerStore, mergeSt *store.Store, applyFn App
 		}
 
 		// Success: persist new cursor and reset failure counters.
-		if syncErr := syncSt.UpsertFeedSyncState(ctx, store.FeedSyncState{
+		if syncErr := syncSt.UpsertFeedSyncState(outcomeCtx, store.FeedSyncState{
 			FeedName:            "epss",
 			CursorJSON:          newCursor,
 			LastSuccessAt:       &now,
@@ -93,7 +97,7 @@ func epssHandlerWithStore(syncSt HandlerStore, mergeSt *store.Store, applyFn App
 			slog.Error("epss sync state write failed on success path", "error", syncErr)
 			return fmt.Errorf("persist sync state for epss: %w", syncErr)
 		}
-		if _, logErr := syncSt.InsertFeedFetchLog(ctx, store.FeedFetchLog{
+		if _, logErr := syncSt.InsertFeedFetchLog(outcomeCtx, store.FeedFetchLog{
 			FeedName:     "epss",
 			StartedAt:    start,
 			EndedAt:      &now,

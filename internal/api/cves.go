@@ -4,8 +4,10 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"github.com/scarson/cvert-ops/internal/ecosystem"
 	"github.com/scarson/cvert-ops/internal/store"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
@@ -63,12 +66,12 @@ func registerCVERoutes(api huma.API, srv *Server) {
 // CVEItem is the list-view representation of a CVE (no child tables).
 type CVEItem struct {
 	CVEID              string   `json:"cve_id"`
-	Status             *string  `json:"status,omitempty"`
-	DatePublished      *string  `json:"date_published,omitempty"` // RFC3339
-	DateModified       string   `json:"date_modified"`            // RFC3339
-	DateFirstSeen      string   `json:"date_first_seen"`          // RFC3339
-	DescriptionPrimary *string  `json:"description_primary,omitempty"`
-	Severity           *string  `json:"severity,omitempty"`
+	Status             *string  `json:"status,omitzero" nullable:"false"`
+	DatePublished      *string  `json:"date_published,omitzero" nullable:"false"` // RFC3339
+	DateModified       string   `json:"date_modified"`                            // RFC3339
+	DateFirstSeen      string   `json:"date_first_seen"`                          // RFC3339
+	DescriptionPrimary *string  `json:"description_primary,omitzero" nullable:"false"`
+	Severity           *string  `json:"severity,omitzero" nullable:"false"`
 	CVSSv3Score        *float64 `json:"cvss_v3_score,omitempty"`
 	CVSSv4Score        *float64 `json:"cvss_v4_score,omitempty"`
 	CVSSScoreDiverges  bool     `json:"cvss_score_diverges"`
@@ -81,27 +84,66 @@ type CVEItem struct {
 // CVEDetail extends CVEItem with child-table data.
 type CVEDetail struct {
 	CVEItem
-	CVSSv3Vector     *string                   `json:"cvss_v3_vector,omitempty"`
-	CVSSv4Vector     *string                   `json:"cvss_v4_vector,omitempty"`
-	AffectedPackages []AffectedPackageResponse `json:"affected_packages"`
-	AffectedCPEs     []AffectedCPEResponse     `json:"affected_cpes"`
-	References       []ReferenceResponse       `json:"references"`
+	CVSSv3Vector       *string                   `json:"cvss_v3_vector,omitzero" nullable:"false"`
+	CVSSv4Vector       *string                   `json:"cvss_v4_vector,omitzero" nullable:"false"`
+	AffectedPackages   []AffectedPackageResponse `json:"affected_packages"`
+	AffectedCPEs       []AffectedCPEResponse     `json:"affected_cpes" doc:"Every CPE the sources name for this CVE, once each. Includes platforms NVD marks not vulnerable, such as the operating system an affected application runs on. For what is affected, read affected_cpe_matches."`
+	AffectedCPEMatches []CPEMatchResponse        `json:"affected_cpe_matches" doc:"NVD's affected CPEs with their version ranges, one entry per range: NVD repeats a CPE with a different range per release branch. Empty until CVErt Ops ingests an NVD record with configurations for the CVE. A CPE that carries its version in the string has no range fields."`
+	CNAAffected        []CNAAffectedResponse     `json:"cna_affected" doc:"Products and versions as the CVE Numbering Authority published them, which can be present before NVD analyses the CVE. Holds the distinct entries of both the CVE record and NVD's copy of it, so a product can appear twice when one copy lags the other. Empty until CVErt Ops ingests a record carrying this data, so an empty list does not mean the CNA published none."`
+	References         []ReferenceResponse       `json:"references"`
 }
 
 // AffectedPackageResponse is the API representation of a cve_affected_packages row.
 type AffectedPackageResponse struct {
 	Ecosystem   string  `json:"ecosystem"`
 	PackageName string  `json:"package_name"`
-	Namespace   *string `json:"namespace,omitempty"`
-	RangeType   *string `json:"range_type,omitempty"`
-	Introduced  *string `json:"introduced,omitempty"`
-	Fixed       *string `json:"fixed,omitempty"`
+	Namespace   *string `json:"namespace,omitzero" nullable:"false"`
+	RangeType   *string `json:"range_type,omitzero" nullable:"false"`
+	Introduced  *string `json:"introduced,omitzero" nullable:"false"`
+	Fixed       *string `json:"fixed,omitzero" nullable:"false"`
 }
 
 // AffectedCPEResponse is the API representation of a cve_affected_cpes row.
 type AffectedCPEResponse struct {
 	CPE           string `json:"cpe"`
 	CPENormalized string `json:"cpe_normalized"`
+}
+
+// CPEMatchResponse is the API representation of a vulnerable cve_cpe_matches row.
+type CPEMatchResponse struct {
+	CPE                   string  `json:"cpe"`
+	CPENormalized         string  `json:"cpe_normalized"`
+	VersionStartIncluding *string `json:"version_start_including,omitzero" nullable:"false"`
+	VersionStartExcluding *string `json:"version_start_excluding,omitzero" nullable:"false"`
+	VersionEndIncluding   *string `json:"version_end_including,omitzero" nullable:"false"`
+	VersionEndExcluding   *string `json:"version_end_excluding,omitzero" nullable:"false"`
+}
+
+// CNAAffectedResponse is the API representation of a cve_cna_affected row.
+type CNAAffectedResponse struct {
+	Vendor        *string              `json:"vendor,omitzero" nullable:"false"`
+	Product       *string              `json:"product,omitzero" nullable:"false"`
+	PackageName   *string              `json:"package_name,omitzero" nullable:"false"`
+	CollectionURL *string              `json:"collection_url,omitzero" nullable:"false"`
+	DefaultStatus *string              `json:"default_status,omitzero" nullable:"false" doc:"Status of versions the versions list does not mention: affected, unaffected or unknown."`
+	Versions      []CNAVersionResponse `json:"versions"`
+}
+
+// CNAVersionResponse is one element of a CNA's versions list. Its JSON field names
+// match feed.CNAVersion, the form stored in cve_cna_affected.versions.
+type CNAVersionResponse struct {
+	Version         string                     `json:"version,omitempty" doc:"Start of the range when less_than or less_than_or_equal is set, otherwise a single version. Free text unless version_type names a scheme."`
+	LessThan        string                     `json:"less_than,omitempty"`
+	LessThanOrEqual string                     `json:"less_than_or_equal,omitempty"`
+	Status          string                     `json:"status,omitempty" doc:"affected, unaffected or unknown."`
+	VersionType     string                     `json:"version_type,omitempty"`
+	Changes         []CNAVersionChangeResponse `json:"changes,omitempty" doc:"Versions inside the range where status stops applying, such as a backported fix."`
+}
+
+// CNAVersionChangeResponse is one element of a CNA version's changes list.
+type CNAVersionChangeResponse struct {
+	At     string `json:"at,omitempty"`
+	Status string `json:"status,omitempty"`
 }
 
 // ReferenceResponse is the API representation of a cve_references row.
@@ -113,10 +155,10 @@ type ReferenceResponse struct {
 // CVESourceResponse is the API representation of a cve_sources row.
 type CVESourceResponse struct {
 	SourceName         string          `json:"source_name"`
-	SourceID           *string         `json:"source_id,omitempty"`
+	SourceID           *string         `json:"source_id,omitzero" nullable:"false"`
 	NormalizedJSON     json.RawMessage `json:"normalized_json"`
-	SourceDateModified *string         `json:"source_date_modified,omitempty"` // RFC3339
-	SourceURL          *string         `json:"source_url,omitempty"`
+	SourceDateModified *string         `json:"source_date_modified,omitzero" nullable:"false"` // RFC3339
+	SourceURL          *string         `json:"source_url,omitzero" nullable:"false"`
 	IngestedAt         string          `json:"ingested_at"` // RFC3339
 }
 
@@ -139,6 +181,8 @@ func encodeCursor(last generated.CVE) string {
 }
 
 // decodeCursor base64-decodes the opaque cursor, returning a parsed cursor or nil.
+// The JSON is decoded strictly (see decodePageCursor): an edited cursor with an
+// unknown, case-variant or duplicate member is invalid.
 func decodeCursor(s string) (*cveListCursor, error) {
 	if s == "" {
 		return nil, nil
@@ -148,7 +192,7 @@ func decodeCursor(s string) (*cveListCursor, error) {
 		return nil, fmt.Errorf("invalid cursor (base64): %w", err)
 	}
 	var c cveListCursor
-	if err := json.Unmarshal(b, &c); err != nil {
+	if err := jsonv2.Unmarshal(b, &c, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return nil, fmt.Errorf("invalid cursor (json): %w", err)
 	}
 	if c.CVEID == "" {
@@ -211,7 +255,7 @@ type ListCVEsInput struct {
 	DateFrom    string   `query:"date_from" doc:"Filter CVEs modified on or after this date (ISO 8601); empty = no filter"`
 	DateTo      string   `query:"date_to" doc:"Filter CVEs modified on or before this date (ISO 8601); empty = no filter"`
 	CWEID       string   `query:"cwe_id" doc:"Filter by CWE ID (e.g. CWE-79); empty = no filter"`
-	Ecosystem   string   `query:"ecosystem" doc:"Filter by affected package ecosystem; empty = no filter"`
+	Ecosystem   string   `query:"ecosystem" doc:"Filter by affected package ecosystem, using OSV's names; a name without a release matches every release; empty = no filter"`
 	PackageName string   `query:"package_name" doc:"Filter by affected package name (requires ecosystem); empty = no filter"`
 	// Boolean filters: "true", "false", or "" (no filter).
 	InCISAKEV    string `query:"in_cisa_kev" doc:"Filter by CISA KEV status: 'true', 'false', or empty for no filter"`
@@ -318,9 +362,15 @@ func listCVEsHandler(s *store.Store) func(context.Context, *ListCVEsInput) (*Lis
 			return nil, huma.Error503ServiceUnavailable("database unavailable")
 		}
 		// Parse optional cursor.
+		// A bad cursor gets the fixed problem every list endpoint gives, with
+		// no errors entries: the decode error would echo caller input.
 		cur, err := decodeCursor(input.Cursor)
 		if err != nil {
-			return nil, huma.Error400BadRequest("invalid cursor", err)
+			return nil, huma.Error400BadRequest("invalid cursor")
+		}
+
+		if input.Ecosystem != "" && !ecosystem.Valid(input.Ecosystem) {
+			return nil, huma.Error422UnprocessableEntity("unknown ecosystem; valid names: " + strings.Join(ecosystem.Names(), ", "))
 		}
 
 		// Build store search params.
@@ -361,7 +411,7 @@ func listCVEsHandler(s *store.Store) func(context.Context, *ListCVEsInput) (*Lis
 			if err != nil {
 				cursorDate, err = time.Parse(time.RFC3339, cur.SortDate)
 				if err != nil {
-					return nil, huma.Error400BadRequest("invalid cursor (bad date)", nil)
+					return nil, huma.Error400BadRequest("invalid cursor")
 				}
 			}
 			p.CursorDate = &cursorDate
@@ -420,12 +470,22 @@ func getCVEHandler(s *store.Store) func(context.Context, *GetCVEInput) (*GetCVEO
 		if cve == nil {
 			return nil, huma.Error404NotFound("CVE not found", nil)
 		}
+		matches, cnaRows, err := s.GetCVEVersionRanges(ctx, input.CVEID)
+		if err != nil {
+			return nil, fmt.Errorf("get cve version ranges: %w", err)
+		}
+		cnaAffected, err := cnaAffectedResponses(cnaRows)
+		if err != nil {
+			return nil, err
+		}
 
 		detail := &CVEDetail{
-			CVEItem:          cveToItem(*cve),
-			AffectedPackages: make([]AffectedPackageResponse, 0, len(pkgs)),
-			AffectedCPEs:     make([]AffectedCPEResponse, 0, len(cpes)),
-			References:       make([]ReferenceResponse, 0, len(refs)),
+			CVEItem:            cveToItem(*cve),
+			AffectedPackages:   make([]AffectedPackageResponse, 0, len(pkgs)),
+			AffectedCPEs:       make([]AffectedCPEResponse, 0, len(cpes)),
+			AffectedCPEMatches: cpeMatchResponses(matches),
+			CNAAffected:        cnaAffected,
+			References:         make([]ReferenceResponse, 0, len(refs)),
 		}
 
 		if cve.CvssV3Vector.Valid {
@@ -477,6 +537,52 @@ func getCVEHandler(s *store.Store) func(context.Context, *GetCVEInput) (*GetCVEO
 	}
 }
 
+// cpeMatchResponses converts cve_cpe_matches rows. The result is never nil, so the
+// field serializes as [] rather than null.
+func cpeMatchResponses(rows []generated.CveCpeMatch) []CPEMatchResponse {
+	out := make([]CPEMatchResponse, 0, len(rows))
+	for _, m := range rows {
+		out = append(out, CPEMatchResponse{
+			CPE:                   m.Cpe,
+			CPENormalized:         m.CpeNormalized,
+			VersionStartIncluding: nullableString(m.VersionStartIncluding),
+			VersionStartExcluding: nullableString(m.VersionStartExcluding),
+			VersionEndIncluding:   nullableString(m.VersionEndIncluding),
+			VersionEndExcluding:   nullableString(m.VersionEndExcluding),
+		})
+	}
+	return out
+}
+
+// cnaAffectedResponses converts cve_cna_affected rows. The result is never nil,
+// so the field serializes as [] rather than null.
+func cnaAffectedResponses(rows []generated.CveCnaAffected) ([]CNAAffectedResponse, error) {
+	out := make([]CNAAffectedResponse, 0, len(rows))
+	for _, a := range rows {
+		versions := []CNAVersionResponse{}
+		if err := json.Unmarshal(a.Versions, &versions); err != nil {
+			return nil, fmt.Errorf("decode CNA versions for %s: %w", a.CveID, err)
+		}
+		out = append(out, CNAAffectedResponse{
+			Vendor:        nullableString(a.Vendor),
+			Product:       nullableString(a.Product),
+			PackageName:   nullableString(a.PackageName),
+			CollectionURL: nullableString(a.CollectionUrl),
+			DefaultStatus: nullableString(a.DefaultStatus),
+			Versions:      versions,
+		})
+	}
+	return out, nil
+}
+
+// nullableString maps SQL NULL to an omitted JSON field.
+func nullableString(s sql.NullString) *string {
+	if !s.Valid {
+		return nil
+	}
+	return &s.String
+}
+
 // ── GET /cves/{cve_id}/sources ────────────────────────────────────────────────
 
 // GetCVESourcesInput defines path parameters for the sources endpoint.
@@ -517,11 +623,9 @@ func getCVESourcesHandler(s *store.Store) func(context.Context, *GetCVESourcesIn
 		for _, src := range srcs {
 			r := CVESourceResponse{
 				SourceName:     src.SourceName,
+				SourceID:       &src.SourceID,
 				NormalizedJSON: src.NormalizedJson,
 				IngestedAt:     src.IngestedAt.UTC().Format(time.RFC3339),
-			}
-			if src.SourceID.Valid {
-				r.SourceID = &src.SourceID.String
 			}
 			if src.SourceDateModified.Valid {
 				s := src.SourceDateModified.Time.UTC().Format(time.RFC3339)

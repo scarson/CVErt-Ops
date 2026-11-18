@@ -4,17 +4,11 @@ package api
 
 import (
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
-
-	"github.com/scarson/cvert-ops/internal/config"
 )
 
 // TestSpecOnlyHumaDeclarations_Groups is the OpenAPI evaluation gate test for
@@ -185,114 +179,45 @@ func TestSpecOnlyHumaDeclarations_Groups(t *testing.T) {
 	}
 }
 
-// TestSpecMerge_CombinesHumaAndSpecOnly verifies that paths from the spec-only
-// Huma API can be merged with the production Huma API spec without conflicts.
+// TestSpecMerge_CombinesHumaAndSpecOnly verifies that the served spec holds the
+// production Huma paths and the spec-only paths, with their component schemas.
 func TestSpecMerge_CombinesHumaAndSpecOnly(t *testing.T) {
-	// 1. Get the production spec (auth + CVE routes).
-	cfg := &config.Config{
-		JWTSecret:   "test-secret-for-openapi-generation",
-		ExternalURL: "http://localhost:8080",
-		FrontendURL: "/",
-	}
-	srv, err := NewServer(nil, cfg, ServerDeps{})
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	defer srv.Close()
+	spec := buildOpenAPISpec(t)
+	paths := spec["paths"].(map[string]any)
 
-	handler := srv.Handler()
-	_ = handler // force handler initialization
-
-	// Get production spec via the API.
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil)
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/v1/openapi.json: status %d", rec.Code)
-	}
-
-	var prodSpec map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &prodSpec); err != nil {
-		t.Fatalf("unmarshal prod spec: %v", err)
-	}
-
-	prodPaths := prodSpec["paths"].(map[string]any)
-
-	// 2. Get the spec-only spec (groups).
-	specRouter := chi.NewRouter()
-	specConfig := huma.DefaultConfig("CVErt Ops API", "0.1.0")
-	specAPI := humachi.New(specRouter, specConfig)
-	registerGroupsSpecOps(specAPI)
-
-	specOnlyBytes, _ := json.Marshal(specAPI.OpenAPI())
-	var specOnly map[string]any
-	_ = json.Unmarshal(specOnlyBytes, &specOnly)
-	specOnlyPaths := specOnly["paths"].(map[string]any)
-
-	// 3. Verify no path collisions.
-	for path := range specOnlyPaths {
-		if _, exists := prodPaths[path]; exists {
-			t.Errorf("path collision between prod and spec-only: %s", path)
-		}
-	}
-
-	// 4. Merge paths.
-	for path, ops := range specOnlyPaths {
-		prodPaths[path] = ops
-	}
-
-	// 5. Verify merged spec has both sets of paths.
 	expectedProd := []string{"/auth/register", "/auth/login", "/cves", "/cves/{cve_id}"}
 	expectedSpec := []string{"/orgs/{org_id}/groups", "/orgs/{org_id}/groups/{group_id}"}
-
 	for _, p := range expectedProd {
-		if _, ok := prodPaths[p]; !ok {
+		if _, ok := paths[p]; !ok {
 			t.Errorf("merged spec missing prod path: %s", p)
 		}
 	}
 	for _, p := range expectedSpec {
-		if _, ok := prodPaths[p]; !ok {
+		if _, ok := paths[p]; !ok {
 			t.Errorf("merged spec missing spec-only path: %s", p)
 		}
 	}
 
-	// 6. Merge component schemas.
-	prodComponents, _ := prodSpec["components"].(map[string]any)
-	if prodComponents == nil {
-		prodComponents = map[string]any{}
-		prodSpec["components"] = prodComponents
-	}
-	prodSchemas, _ := prodComponents["schemas"].(map[string]any)
-	if prodSchemas == nil {
-		prodSchemas = map[string]any{}
-		prodComponents["schemas"] = prodSchemas
-	}
-
-	specOnlyComponents, _ := specOnly["components"].(map[string]any)
-	if specOnlyComponents != nil {
-		specOnlySchemas, _ := specOnlyComponents["schemas"].(map[string]any)
-		for name, schema := range specOnlySchemas {
-			if _, exists := prodSchemas[name]; exists {
-				// Shared types (ErrorModel, ErrorDetail) already exist — skip.
-				t.Logf("schema %q already exists in prod spec, skipping", name)
-				continue
-			}
-			prodSchemas[name] = schema
+	schemas := spec["components"].(map[string]any)["schemas"].(map[string]any)
+	for _, name := range []string{"ErrorModel", "CreateGroupBody", "GroupEntry"} {
+		if _, ok := schemas[name]; !ok {
+			t.Errorf("merged spec missing schema: %s", name)
 		}
 	}
+}
 
-	t.Logf("Merged spec has %d paths total", len(prodPaths))
+// TestMergeSpecPaths_PanicsOnPathCollision covers the check that stops a route
+// family being declared twice, once as a huma route and once as spec-only.
+func TestMergeSpecPaths_PanicsOnPathCollision(t *testing.T) {
+	prod := newSpecOnlyAPI()
+	registerGroupsSpecOps(prod)
+	specOnly := newSpecOnlyAPI()
+	registerGroupsSpecOps(specOnly)
 
-	// 7. Write merged spec when GENERATE_MERGED_SPEC is set.
-	if os.Getenv("GENERATE_MERGED_SPEC") != "" {
-		pretty, err := json.MarshalIndent(prodSpec, "", "  ")
-		if err != nil {
-			t.Fatalf("marshal indent: %v", err)
+	defer func() {
+		if recover() == nil {
+			t.Error("merging a path already in the production API did not panic")
 		}
-		outPath := filepath.Join("..", "..", "openapi-merged.json")
-		if err := os.WriteFile(outPath, append(pretty, '\n'), 0644); err != nil { //nolint:gosec // G306: OpenAPI spec is a repo artifact
-			t.Fatalf("write %s: %v", outPath, err)
-		}
-		t.Logf("wrote merged spec to %s (%d bytes)", outPath, len(pretty))
-	}
+	}()
+	mergeSpecPaths(prod, specOnly)
 }

@@ -4,14 +4,16 @@ INSERT INTO cves (
     date_modified_canonical, date_first_seen, description_primary,
     severity, cvss_v3_score, cvss_v3_vector, cvss_v3_source,
     cvss_v4_score, cvss_v4_vector, cvss_v4_source, cvss_score_diverges,
-    cwe_ids, exploit_available, in_cisa_kev, material_hash
+    cwe_ids, exploit_available, in_cisa_kev, material_hash,
+    match_inputs_hash, date_match_inputs_changed
 )
 VALUES (
     $1, $2, $3, $4,
     $5, now(), $6,
     $7, $8, $9, $10,
     $11, $12, $13, $14,
-    $15, $16, $17, $18
+    $15, $16, $17, $18,
+    $19, $5
 )
 ON CONFLICT (cve_id) DO UPDATE
     SET status                   = EXCLUDED.status,
@@ -35,7 +37,15 @@ ON CONFLICT (cve_id) DO UPDATE
         cwe_ids                  = EXCLUDED.cwe_ids,
         exploit_available        = EXCLUDED.exploit_available,
         in_cisa_kev              = EXCLUDED.in_cisa_kev,
-        material_hash            = EXCLUDED.material_hash;
+        material_hash            = EXCLUDED.material_hash,
+        -- Stamp a change to the rule match inputs outside material_hash (re-checks
+        -- the CVE without firing unrelated rules). A stored NULL counts as changed.
+        date_match_inputs_changed = CASE
+            WHEN cves.match_inputs_hash IS DISTINCT FROM EXCLUDED.match_inputs_hash
+            THEN EXCLUDED.date_modified_canonical
+            ELSE cves.date_match_inputs_changed
+        END,
+        match_inputs_hash        = EXCLUDED.match_inputs_hash;
 
 -- name: GetCVE :one
 SELECT * FROM cves WHERE cve_id = $1;
@@ -58,21 +68,28 @@ WHERE cve_id = $1;
 -- name: UpsertCVESource :exec
 INSERT INTO cve_sources (cve_id, source_name, source_id, normalized_json, source_date_modified, source_url)
 VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (cve_id, source_name) DO UPDATE
-    SET source_id            = EXCLUDED.source_id,
-        normalized_json      = EXCLUDED.normalized_json,
+ON CONFLICT (cve_id, source_name, source_id) DO UPDATE
+    SET normalized_json      = EXCLUDED.normalized_json,
         source_date_modified = EXCLUDED.source_date_modified,
         source_url           = EXCLUDED.source_url,
         ingested_at          = now()
     WHERE cve_sources.normalized_json IS DISTINCT FROM EXCLUDED.normalized_json;
 
 -- name: GetAllCVESources :many
-SELECT * FROM cve_sources WHERE cve_id = $1 ORDER BY source_name;
+SELECT * FROM cve_sources WHERE cve_id = $1 ORDER BY source_name, source_id;
 
 -- name: FindCVEBySourceID :one
--- Used for late-binding PK migration: find a CVE row stored under its native
--- GHSA/OSV ID when a CVE alias has since been added (§3.2).
-SELECT cve_id FROM cve_sources WHERE source_name = $1 AND source_id = $2 LIMIT 1;
+-- Finds where an advisory is stored other than under the CVE it now names, for
+-- late-binding migration (§3.2).
+SELECT cve_id FROM cve_sources
+WHERE source_name = $1 AND source_id = $2 AND cve_id <> $3
+ORDER BY cve_id LIMIT 1;
+
+-- name: DeleteCVESource :exec
+DELETE FROM cve_sources WHERE cve_id = $1 AND source_name = $2 AND source_id = $3;
+
+-- name: CountCVESources :one
+SELECT count(*) FROM cve_sources WHERE cve_id = $1;
 
 -- name: DeleteCVEReferences :exec
 -- Delete all reference rows before re-inserting in merge pipeline (§5.1).
@@ -86,6 +103,14 @@ DELETE FROM cve_affected_packages WHERE cve_id = $1;
 -- Delete all CPE rows before re-inserting in merge pipeline (§5.1).
 DELETE FROM cve_affected_cpes WHERE cve_id = $1;
 
+-- name: DeleteCVECPEMatches :exec
+-- Delete all CPE match rows before re-inserting in merge pipeline (§5.1).
+DELETE FROM cve_cpe_matches WHERE cve_id = $1;
+
+-- name: DeleteCVECNAAffected :exec
+-- Delete all CNA affected rows before re-inserting in merge pipeline (§5.1).
+DELETE FROM cve_cna_affected WHERE cve_id = $1;
+
 -- name: InsertCVERawPayload :exec
 INSERT INTO cve_raw_payloads (cve_id, source_name, payload)
 VALUES ($1, $2, $3);
@@ -93,7 +118,7 @@ VALUES ($1, $2, $3);
 -- name: InsertCVEReference :exec
 INSERT INTO cve_references (cve_id, url, url_canonical, tags)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT (cve_id, url_canonical) DO NOTHING;
+ON CONFLICT (cve_id, text_key_digest(url_canonical)) DO NOTHING;
 
 -- name: InsertAffectedPackage :exec
 INSERT INTO cve_affected_packages (
@@ -105,7 +130,22 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 -- name: InsertAffectedCPE :exec
 INSERT INTO cve_affected_cpes (cve_id, cpe, cpe_normalized)
 VALUES ($1, $2, $3)
-ON CONFLICT (cve_id, cpe_normalized) DO NOTHING;
+ON CONFLICT (cve_id, text_key_digest(cpe_normalized)) DO NOTHING;
+
+-- name: InsertCPEMatch :exec
+INSERT INTO cve_cpe_matches (
+    cve_id, cpe, cpe_normalized,
+    version_start_including, version_start_excluding,
+    version_end_including, version_end_excluding,
+    vulnerable
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+
+-- name: InsertCNAAffected :exec
+INSERT INTO cve_cna_affected (
+    cve_id, vendor, product, package_name, collection_url, default_status, versions, package_key
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: UpsertCVESearchIndex :exec
 -- Weights: A=description (highest), B=CWE names, C=package names, D=CVE ID.
@@ -120,6 +160,37 @@ VALUES (
 ON CONFLICT (cve_id) DO UPDATE
     SET fts_document = EXCLUDED.fts_document
     WHERE cve_search_index.fts_document IS DISTINCT FROM EXCLUDED.fts_document;
+
+-- name: ListCVEIDsAfter :many
+-- Keyset page of CVE IDs for full-corpus walks (search index rebuild).
+SELECT cve_id FROM cves
+WHERE cve_id > @after_cve_id::text
+ORDER BY cve_id
+LIMIT @batch_size;
+
+-- name: LockCVEAdvisoryKeys :exec
+-- Takes the per-CVE merge advisory lock (merge.CVEAdvisoryKey) for every key,
+-- in ascending key order, until the transaction ends.
+SELECT pg_advisory_xact_lock(k)
+FROM (SELECT unnest(@keys::bigint[]) AS k ORDER BY k) AS ordered;
+
+-- name: ListSearchIndexInputs :many
+-- The fields UpsertCVESearchIndex builds the tsvector from, for a batch of
+-- CVEs. Package names come back unordered and may repeat; the caller
+-- de-duplicates and sorts them bytewise, as the merge pipeline does, because
+-- an ORDER BY here would follow the database collation.
+SELECT c.cve_id,
+       c.description_primary,
+       c.cwe_ids,
+       COALESCE(
+           array_agg(p.package_name) FILTER (WHERE p.package_name IS NOT NULL),
+           '{}'
+       )::text[] AS package_names
+FROM cves c
+LEFT JOIN cve_affected_packages p ON p.cve_id = c.cve_id
+WHERE c.cve_id = ANY(@cve_ids::text[])
+GROUP BY c.cve_id
+ORDER BY c.cve_id;
 
 -- name: UpsertEPSSStaging :exec
 -- Two-statement EPSS pattern step 2 (pitfall §2.5/§2.6): insert staging row ONLY
@@ -148,6 +219,34 @@ UPDATE cves
 SET epss_score = $2, date_epss_updated = now()
 WHERE cve_id = $1 AND epss_score IS DISTINCT FROM $2;
 
+-- name: UpdateCVEEPSSBatch :exec
+-- Two-statement EPSS pattern step 1 for a batch: update each live CVE row whose
+-- score changed. cve_ids[i] pairs with epss_scores[i]; cve_ids must not repeat.
+UPDATE cves AS c
+SET epss_score = s.epss_score, date_epss_updated = now()
+FROM (
+    SELECT unnest(@cve_ids::text[]) AS cve_id,
+           unnest(@epss_scores::double precision[]) AS epss_score
+) AS s
+WHERE c.cve_id = s.cve_id AND c.epss_score IS DISTINCT FROM s.epss_score;
+
+-- name: UpsertEPSSStagingBatch :exec
+-- Two-statement EPSS pattern step 2 for a batch: stage each score whose CVE does
+-- not yet exist in cves. Same guards as UpsertEPSSStaging; cve_ids must not
+-- repeat, because ON CONFLICT DO UPDATE cannot change one row twice.
+INSERT INTO epss_staging (cve_id, epss_score, as_of_date)
+SELECT s.cve_id, s.epss_score, @as_of_date::date
+FROM (
+    SELECT unnest(@cve_ids::text[]) AS cve_id,
+           unnest(@epss_scores::double precision[]) AS epss_score
+) AS s
+WHERE NOT EXISTS (SELECT 1 FROM cves WHERE cves.cve_id = s.cve_id)
+ON CONFLICT (cve_id) DO UPDATE
+    SET epss_score  = EXCLUDED.epss_score,
+        as_of_date  = EXCLUDED.as_of_date,
+        ingested_at = now()
+    WHERE epss_staging.epss_score IS DISTINCT FROM EXCLUDED.epss_score;
+
 -- name: GetCVEReferences :many
 SELECT * FROM cve_references WHERE cve_id = $1 ORDER BY url_canonical;
 
@@ -157,23 +256,48 @@ SELECT * FROM cve_affected_packages WHERE cve_id = $1 ORDER BY ecosystem, packag
 -- name: GetCVEAffectedCPEs :many
 SELECT * FROM cve_affected_cpes WHERE cve_id = $1 ORDER BY cpe_normalized;
 
+-- name: GetCVEVulnerableCPEMatches :many
+-- CPE matches for what a CVE affects: skips "running on" platform CPEs.
+SELECT * FROM cve_cpe_matches
+WHERE cve_id = $1 AND vulnerable
+ORDER BY cpe_normalized, version_start_including, version_start_excluding,
+         version_end_including, version_end_excluding;
+
+-- name: GetCVECNAAffected :many
+SELECT * FROM cve_cna_affected
+WHERE cve_id = $1
+ORDER BY vendor, product, package_name, collection_url, default_status, versions::text;
+
 -- name: GetCVESnapshot :one
 -- Returns the fields needed for alert delivery payloads.
 SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
-       description_primary, exploit_available, in_cisa_kev
+       description_primary, exploit_available, in_cisa_kev, status
 FROM cves WHERE cve_id = $1;
 
 -- name: DigestCVEs :many
--- Fetch CVEs modified since $1, optionally filtered by severity.
+-- Fetch CVEs modified since $1, optionally filtered by severity, leaving out the
+-- CVE versions in $3: a JSON array of {"cve_id", "date_modified_canonical"}
+-- objects a previous digest of the report already sent.
 -- Sort: severity desc (critical > high > medium > low), CVSS v3 tiebreaker.
+-- total_count is the number of matching CVEs before LIMIT, so callers can tell
+-- when the limit cut the result short. A window function keeps that count on the
+-- same predicate and snapshot as the rows, at the cost of buffering every
+-- matching row before the sort.
 SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
-       description_primary, exploit_available, in_cisa_kev
+       description_primary, exploit_available, in_cisa_kev, date_modified_canonical,
+       count(*) OVER () AS total_count
 FROM cves
 WHERE date_modified_canonical > $1
-  AND status NOT IN ('rejected', 'withdrawn')
-  AND ($2::text[] IS NULL OR severity = ANY($2::text[]))
+  AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
+  AND ($2::text[] IS NULL OR lower(severity) = ANY($2::text[]))
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_to_recordset($3::jsonb) AS sent(cve_id text, date_modified_canonical timestamptz)
+      WHERE sent.cve_id = cves.cve_id
+        AND sent.date_modified_canonical = cves.date_modified_canonical
+  )
 ORDER BY
-    CASE severity
+    CASE lower(severity)
         WHEN 'critical' THEN 1
         WHEN 'high'     THEN 2
         WHEN 'medium'   THEN 3

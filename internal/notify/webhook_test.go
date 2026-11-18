@@ -5,7 +5,13 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/scarson/cvert-ops/internal/notify"
+	"github.com/scarson/cvert-ops/internal/store"
 )
 
 func buildTestClient() *http.Client {
@@ -192,6 +199,24 @@ func TestSend_NetworkError(t *testing.T) {
 	assert.Contains(t, err.Error(), "webhook POST")
 }
 
+func TestErrorForOrg(t *testing.T) {
+	assert.NoError(t, notify.ErrorForOrg(nil))
+
+	// A receiver's answer is the org's own endpoint talking, so it is shown.
+	status := &notify.StatusError{StatusCode: http.StatusInternalServerError}
+	assert.Equal(t, status, notify.ErrorForOrg(status))
+	wrapped := fmt.Errorf("deliver: %w", status)
+	assert.Equal(t, wrapped, notify.ErrorForOrg(wrapped))
+
+	// A failure before any answer can name the address a host name resolved to.
+	dialErr := notify.Send(context.Background(), buildTestClient(), notify.WebhookConfig{
+		URL: "http://127.0.0.1:1", SigningSecret: "x",
+	}, []byte(`[]`))
+	require.Error(t, dialErr)
+	assert.Equal(t, notify.ErrCauseWithheld, notify.ErrorForOrg(dialErr))
+	assert.NotContains(t, notify.ErrCauseWithheld.Error(), "127.0.0.1")
+}
+
 func TestSend_ContextCancellation(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Slow server — hangs long enough for context to be cancelled.
@@ -256,7 +281,7 @@ func TestBuildSafeClient_BlocksPrivateIPs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := notify.BuildSafeClient()
+	client, err := notify.BuildSafeClient(notify.PrivateDestinations{})
 	require.NoError(t, err)
 	require.NotNil(t, client)
 
@@ -268,7 +293,7 @@ func TestBuildSafeClient_BlocksPrivateIPs(t *testing.T) {
 }
 
 func TestBuildSafeClient_ReturnsValidClient(t *testing.T) {
-	client, err := notify.BuildSafeClient()
+	client, err := notify.BuildSafeClient(notify.PrivateDestinations{})
 	require.NoError(t, err)
 	require.NotNil(t, client)
 	assert.Equal(t, 10*time.Second, client.Timeout)
@@ -309,4 +334,56 @@ func TestSend_RedirectRejected(t *testing.T) {
 	// Non-2xx (302) → error
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "302")
+}
+
+func TestChannelWebhookConfig_CustomHeadersReachReceiver(t *testing.T) {
+	// Receiver behaves like ntfy with token auth: 401 without the bearer token.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer tk_test" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	channel := func(config string) *store.NotificationChannelForDeliveryRow {
+		return &store.NotificationChannelForDeliveryRow{
+			Type:          "webhook",
+			Config:        json.RawMessage(config),
+			SigningSecret: sql.NullString{String: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Valid: true},
+		}
+	}
+
+	withCustomHeaders := channel(`{"url":"` + srv.URL + `","custom_headers":{"Authorization":"Bearer tk_test"}}`)
+	cfg, err := notify.ChannelWebhookConfig(withCustomHeaders)
+	require.NoError(t, err)
+	err = notify.Send(context.Background(), buildTestClient(), cfg, []byte(`[]`))
+	require.NoError(t, err, "header set in custom_headers must reach the receiver")
+
+	// Only custom_headers is applied to deliveries; a config with any other key is refused.
+	withOtherKey := channel(`{"url":"` + srv.URL + `","headers":{"Authorization":"Bearer tk_test"}}`)
+	_, err = notify.ChannelWebhookConfig(withOtherKey)
+	require.Error(t, err)
+	semErr, ok := errors.AsType[*jsonv2.SemanticError](err)
+	require.True(t, ok, "error %v must wrap *jsonv2.SemanticError", err)
+	assert.ErrorIs(t, semErr.Err, jsonv2.ErrUnknownName)
+	assert.Equal(t, jsontext.Pointer("/headers"), semErr.JSONPointer)
+}
+
+// TestChannelWebhookConfig_RefusesWhatDeliveryCannotSend checks that delivery
+// reads stored webhook config through CheckWebhookSettings.
+func TestChannelWebhookConfig_RefusesWhatDeliveryCannotSend(t *testing.T) {
+	t.Parallel()
+	channel := func(config string) *store.NotificationChannelForDeliveryRow {
+		return &store.NotificationChannelForDeliveryRow{Type: "webhook", Config: json.RawMessage(config)}
+	}
+
+	_, err := notify.ChannelWebhookConfig(channel(`{"url":"  "}`))
+	assert.ErrorIs(t, err, notify.ErrWebhookNoURL)
+
+	_, err = notify.ChannelWebhookConfig(channel(`{"url":"https://h.example/x","custom_headers":{"Host":"evil.example"}}`))
+	headerErr, ok := errors.AsType[*notify.HeaderError](err)
+	require.True(t, ok, "error %v must be a *notify.HeaderError", err)
+	assert.Equal(t, "Host", headerErr.Name)
 }

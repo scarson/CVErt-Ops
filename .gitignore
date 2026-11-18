@@ -56,3 +56,4 @@ chats/
 
 # Serena MCP — local project state, cache, and personal memories
 .serena/
+perf-audit-cycle-session-artifacts-*.zip

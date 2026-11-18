@@ -195,7 +195,7 @@ func (srv *Server) githubCallbackHandler(w http.ResponseWriter, r *http.Request)
 	_ = srv.store.UpdateLastLogin(ctx, user.ID)
 
 	// 9. Set auth cookies and redirect to frontend.
-	for _, cookieStr := range authCookies(accessToken, refreshTokenStr, srv.cfg.CookieSecure) {
+	for _, cookieStr := range append(authCookies(accessToken, refreshTokenStr, srv.cfg.CookieSecure), clearSignInCookies(srv.cfg.CookieSecure)...) {
 		w.Header().Add("Set-Cookie", cookieStr)
 	}
 	http.Redirect(w, r, srv.cfg.FrontendURL, http.StatusFound)

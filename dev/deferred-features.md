@@ -336,3 +336,18 @@ All config secrets (`JWT_SECRET`, `SMTP_PASSWORD`, `GEMINI_API_KEY`, `SSO_ENCRYP
 4. Update all tests that construct these structs
 
 **Risk:** Need to understand how the Gemini SDK represents "no token count available" vs "0 tokens" to avoid incorrect mappings. 3-4 file cascade with test updates.
+
+---
+
+## 12. Product Rules (MATCH-2): Items Deferred by the Design
+
+> **Added:** 2026-11-13 (MATCH-2 design review)
+> **Design:** `dev/plans/2026-11-13-product-match-rules-design.md` (section 15.2 records each decision and its rejected alternatives)
+
+Each item says what must be true before it is worth picking up, and where that will show.
+
+- **Re-check after a product-name table edit.** When code edits the CPE-to-CNA spelling table in `internal/check/names.go`, stored CVEs can start or stop matching product rules, and nothing re-checks them. The design's digest test fails CI on any edit to that table. The edit that first changes a match must build the worker-start re-check that design section 3.4 specifies: per-entry stored records, evaluation over CVEs under changed vendors and CPE spellings, and notification only for CVEs published in the last 30 days. *Pickable when:* a pull request edits the table and the digest test fails.
+- **Watchlist "product" item type.** A watchlist item holding `vendor:product`, matched by the same SQL as the `affected.cpe_product` rule field, so several rules and digests can share one product list (PLAN.md §9.1 lists vendors and products as an optional watchlist item). It needs a migration, API and SPA watchlist changes, and an addition to the alert-event watchlist-match listing (`alertEventWatchlistMatchesSQL` in `internal/store/alert_rule.go`). *Pickable when:* a user needs one product list shared by several rules or by a digest.
+- **`neq` / `not_in` on `affected.cpe_product`.** "No source names this product", for filtering noise. With name aliasing across NVD and CNA data, its meaning needs its own design (design section 3.2). *Pickable when:* a rule needs to exclude a product.
+- **CNA package keys for package rules.** `cve_cna_affected.package_key` holds a CNA's `packageURL` mapped to `<ecosystem>/<name>`. On the kept full ingest 3,905 CVEs have one with no package row under that CVE, 573 of them with no GHSA or OSV source. Reading them would let `affected.package eq` match on the CNA record's day, but it changes what "package" means for a rule (design section 14). *Pickable when:* day-one package alerts for advisories that GHSA and OSV lack are wanted.
+- **CNA-supplied CPEs.** 5,162 CVEs have a CPE 2.3 row in `cve_affected_cpes` that is not one of NVD's and no NVD match. Most come from a CNA's own `affected[].cpes`, a day-one source the product field does not read, because the table records no source and would add NVD's platform CPEs. *Pickable when:* a source column on `cve_affected_cpes` exists, or a product the name table cannot reach is missed.

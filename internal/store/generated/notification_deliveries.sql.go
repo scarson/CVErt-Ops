@@ -37,7 +37,7 @@ type ClaimPendingDeliveriesRow struct {
 }
 
 // ABOUTME: sqlc queries for the notification_deliveries delivery job queue.
-// ABOUTME: Claim uses FOR UPDATE SKIP LOCKED; debounce uses ON CONFLICT partial index.
+// ABOUTME: Claim uses FOR UPDATE SKIP LOCKED and closes the alert batch; debounce uses ON CONFLICT partial index.
 func (q *Queries) ClaimPendingDeliveries(ctx context.Context, limit int32) ([]ClaimPendingDeliveriesRow, error) {
 	rows, err := q.db.QueryContext(ctx, claimPendingDeliveries, limit)
 	if err != nil {
@@ -86,24 +86,26 @@ UPDATE notification_deliveries
 SET status        = 'failed',
     attempt_count = attempt_count + 1,
     last_error    = $2,
+    last_error_for_org = $3,
     updated_at    = now()
 WHERE id = $1
 `
 
 type ExhaustDeliveryParams struct {
-	ID        uuid.UUID
-	LastError sql.NullString
+	ID              uuid.UUID
+	LastError       sql.NullString
+	LastErrorForOrg sql.NullString
 }
 
 // Max attempts reached — move to permanent failure.
 func (q *Queries) ExhaustDelivery(ctx context.Context, arg ExhaustDeliveryParams) error {
-	_, err := q.db.ExecContext(ctx, exhaustDelivery, arg.ID, arg.LastError)
+	_, err := q.db.ExecContext(ctx, exhaustDelivery, arg.ID, arg.LastError, arg.LastErrorForOrg)
 	return err
 }
 
 const getDelivery = `-- name: GetDelivery :one
 SELECT id, org_id, rule_id, channel_id, kind, report_id, status, attempt_count, payload,
-       send_after, last_attempted_at, delivered_at, last_error, created_at, updated_at
+       send_after, last_attempted_at, delivered_at, last_error_for_org, created_at, updated_at
 FROM notification_deliveries
 WHERE id = $1 AND org_id = $2
 LIMIT 1
@@ -127,7 +129,7 @@ type GetDeliveryRow struct {
 	SendAfter       time.Time
 	LastAttemptedAt sql.NullTime
 	DeliveredAt     sql.NullTime
-	LastError       sql.NullString
+	LastErrorForOrg sql.NullString
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -148,7 +150,7 @@ func (q *Queries) GetDelivery(ctx context.Context, arg GetDeliveryParams) (GetDe
 		&i.SendAfter,
 		&i.LastAttemptedAt,
 		&i.DeliveredAt,
-		&i.LastError,
+		&i.LastErrorForOrg,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -158,8 +160,6 @@ func (q *Queries) GetDelivery(ctx context.Context, arg GetDeliveryParams) (GetDe
 const insertDigestDelivery = `-- name: InsertDigestDelivery :exec
 INSERT INTO notification_deliveries (org_id, report_id, channel_id, kind, payload, send_after)
 VALUES ($1, $2, $3, 'digest', $4, now())
-ON CONFLICT (report_id, channel_id) WHERE status = 'pending' AND kind = 'digest'
-DO NOTHING
 `
 
 type InsertDigestDeliveryParams struct {
@@ -170,7 +170,8 @@ type InsertDigestDeliveryParams struct {
 }
 
 // Digest runner: insert a digest delivery for a report+channel.
-// ON CONFLICT targets uq_deliveries_pending_digest partial index.
+// Each digest run gets its own row, even while an earlier digest for the same
+// report and channel is still pending.
 func (q *Queries) InsertDigestDelivery(ctx context.Context, arg InsertDigestDeliveryParams) error {
 	_, err := q.db.ExecContext(ctx, insertDigestDelivery,
 		arg.OrgID,
@@ -183,7 +184,7 @@ func (q *Queries) InsertDigestDelivery(ctx context.Context, arg InsertDigestDeli
 
 const listDeliveries = `-- name: ListDeliveries :many
 SELECT id, org_id, rule_id, channel_id, kind, report_id, status, attempt_count,
-       send_after, last_attempted_at, delivered_at, last_error, created_at, updated_at
+       send_after, last_attempted_at, delivered_at, last_error_for_org, created_at, updated_at
 FROM notification_deliveries
 WHERE org_id = $1
   AND ($2 = '00000000-0000-0000-0000-000000000000'::uuid OR rule_id    = $2)
@@ -216,7 +217,7 @@ type ListDeliveriesRow struct {
 	SendAfter       time.Time
 	LastAttemptedAt sql.NullTime
 	DeliveredAt     sql.NullTime
-	LastError       sql.NullString
+	LastErrorForOrg sql.NullString
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -250,7 +251,7 @@ func (q *Queries) ListDeliveries(ctx context.Context, arg ListDeliveriesParams) 
 			&i.SendAfter,
 			&i.LastAttemptedAt,
 			&i.DeliveredAt,
-			&i.LastError,
+			&i.LastErrorForOrg,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -269,7 +270,7 @@ func (q *Queries) ListDeliveries(ctx context.Context, arg ListDeliveriesParams) 
 
 const markDeliveriesProcessing = `-- name: MarkDeliveriesProcessing :exec
 UPDATE notification_deliveries
-SET status = 'processing', last_attempted_at = now(), updated_at = now()
+SET status = 'processing', batch_open = false, last_attempted_at = now(), updated_at = now()
 WHERE id = ANY($1::uuid[])
 `
 
@@ -283,14 +284,15 @@ SELECT ae.org_id, ae.rule_id, ae.cve_id
 FROM alert_events ae
 WHERE ae.suppress_delivery = false
   AND ae.last_match_state  = true
-  AND ae.first_fired_at < now() - interval '5 minutes'
+  AND ae.last_fired_at < now() - interval '5 minutes'
   AND NOT EXISTS (
       SELECT 1
       FROM notification_deliveries nd
       WHERE nd.rule_id  = ae.rule_id
         AND nd.org_id   = ae.org_id
+        AND nd.kind     = 'alert'
         AND nd.status   IN ('pending', 'processing', 'succeeded')
-        AND nd.created_at >= ae.first_fired_at - interval '1 minute'
+        AND nd.created_at >= ae.last_fired_at - interval '1 minute'
   )
 LIMIT $1
 `
@@ -328,9 +330,11 @@ func (q *Queries) OrphanedAlertEvents(ctx context.Context, limit int32) ([]Orpha
 const replayDelivery = `-- name: ReplayDelivery :exec
 UPDATE notification_deliveries
 SET status        = 'pending',
+    batch_open    = false,
     attempt_count = 0,
     send_after    = now(),
     last_error    = NULL,
+    last_error_for_org = NULL,
     updated_at    = now()
 WHERE id = $1 AND org_id = $2
   AND status IN ('failed', 'cancelled')
@@ -348,7 +352,7 @@ func (q *Queries) ReplayDelivery(ctx context.Context, arg ReplayDeliveryParams) 
 
 const resetStuckDeliveries = `-- name: ResetStuckDeliveries :exec
 UPDATE notification_deliveries
-SET status = 'pending', send_after = now(), updated_at = now()
+SET status = 'pending', batch_open = false, send_after = now(), updated_at = now()
 WHERE status = 'processing'
   AND updated_at < now() - ($1 * interval '1 second')
 `
@@ -362,21 +366,30 @@ func (q *Queries) ResetStuckDeliveries(ctx context.Context, dollar_1 interface{}
 const retryDelivery = `-- name: RetryDelivery :exec
 UPDATE notification_deliveries
 SET status        = 'pending',
+    batch_open    = false,
     attempt_count = attempt_count + 1,
     send_after    = now() + ($2 * interval '1 second'),
     last_error    = $3,
+    last_error_for_org = $4,
     updated_at    = now()
 WHERE id = $1
 `
 
 type RetryDeliveryParams struct {
-	ID        uuid.UUID
-	Column2   interface{}
-	LastError sql.NullString
+	ID              uuid.UUID
+	Column2         interface{}
+	LastError       sql.NullString
+	LastErrorForOrg sql.NullString
 }
 
 // Sets status back to pending with incremented attempt_count and backoff send_after.
+// The row stays a closed batch: newly matched CVEs go to the open batch instead.
 func (q *Queries) RetryDelivery(ctx context.Context, arg RetryDeliveryParams) error {
-	_, err := q.db.ExecContext(ctx, retryDelivery, arg.ID, arg.Column2, arg.LastError)
+	_, err := q.db.ExecContext(ctx, retryDelivery,
+		arg.ID,
+		arg.Column2,
+		arg.LastError,
+		arg.LastErrorForOrg,
+	)
 	return err
 }

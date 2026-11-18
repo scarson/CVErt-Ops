@@ -43,7 +43,7 @@ func TestMetricsMiddleware_UsesRoutePattern(t *testing.T) {
 		})
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/orgs/550e8400-e29b-41d4-a716-446655440000/cves/CVE-2024-1234", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/orgs/550e8400-e29b-41d4-a716-446655440000/cves/CVE-2024-1234", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -103,7 +103,7 @@ func TestMetricsMiddleware_404Route(t *testing.T) {
 	})
 
 	// Hit a route that doesn't exist
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/nonexistent", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/nonexistent", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 

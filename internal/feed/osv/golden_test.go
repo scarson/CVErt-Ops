@@ -22,7 +22,12 @@ func TestFetch_GoldenFiles(t *testing.T) {
 		t.Fatalf("golden fixture missing: %v", err)
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	// A backfill reads the newest time in modified_id.csv, then all.zip.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/modified_id.csv" {
+			_, _ = w.Write([]byte("2026-01-01T00:00:00Z,Alpine/ALPINE-CVE-2021-42771\n"))
+			return
+		}
 		w.Header().Set("Content-Type", "application/zip")
 		_, _ = w.Write(zipData)
 	}))

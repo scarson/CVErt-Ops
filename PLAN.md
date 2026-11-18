@@ -1,32 +1,42 @@
-# Product Requirements Document: **CVErt Ops**
+# CVErt Ops — Product and Architecture Reference
 
-> **Version:** 6.0.0
+> **Version:** 7.0.0
 > **Author:** Sam (Enterprise Solutions Architect)
-> **Date:** 2026-02-19
-> **Status:** All research decisions resolved. Ready for implementation. See `research.md` for detailed findings.
-> **Language:** Go 1.26
+> **Date:** 2026-11-14
+> **Status:** Product and architecture reference for CVErt Ops as built. Phases 0–11 are complete; §18 lists what is done and what is open.
+> **Language:** Go 1.27
 
 ---
 
-## How to Use This Document (AI Agent Workflow)
+## How to Use This Document
 
-**Guiding workflow:** https://boristane.com/blog/how-i-use-claude-code/ 
+This file began on 2026-02-19 as the product requirements document that the build followed. It is now the reference for what CVErt Ops does and why it is built the way it is. Active plans do not live here:
 
-1. This file is `plan.md`. All research decisions have been resolved; see `research.md` for detailed findings.
-2. Annotate in this document after each planning/research pass before allowing implementation.
-3. Do not implement until explicitly told. Planning ends in written artifacts, not code.
-4. Prescriptive snippets are decisions, not suggestions.
-5. Security is first-class. Treat CVErt Ops as a security product; shortcuts that weaken security are not allowed.
+- **Designs and implementation plans:** `dev/plans/` (one dated file per design or plan; each records its own status).
+- **Specs:** `dev/specs/` (for example the accessibility spec and the SSO secret storage spec).
+- **Decision rationale for the original research choices:** `dev/research.md`.
+- **Mistakes to avoid when writing code:** `dev/implementation-pitfalls.md` (Go and PostgreSQL) and `dev/testing-pitfalls.md` (tests).
+- **What was built, commit by commit:** `dev/implementation-log/` (one file per entry).
+- **Ideas researched but not scheduled:** `dev/deferred-features.md`.
+
+Rules for this document:
+
+1. When a change alters behaviour described here, update the section in the same pull request. Where a section and the code disagree, the code is right and the section is a bug.
+2. Prescriptive snippets record decisions. Change them only with the decision they record.
+3. Security is first-class. Treat CVErt Ops as a security product; shortcuts that weaken security are not allowed.
+4. Detail that belongs to one feature (contracts, measurements, review ledgers) stays in that feature's design under `dev/plans/`; this document summarizes it and names the design.
+
+Labels used below: **MATCH-1** is the version check endpoint (§16, design `dev/plans/2026-11-08-version-check-endpoint-design.md`) and **MATCH-2** is product and package conditions in alert rules (§10, design `dev/plans/2026-11-13-product-match-rules-design.md`). Codes such as NOTIFY-20 or DB-17 name entries in `dev/implementation-pitfalls.md`. Sections marked **Open** describe behaviour that is designed or required but not built, or a gap found between the design and the code.
 
 ---
 
 ## 1. Executive Summary
 
-**CVErt Ops** is an open-source vulnerability intelligence and alerting application that aggregates multiple public vulnerability feeds (NVD, MITRE, CISA KEV, GHSA, OSV, EPSS) into a unified, searchable corpus. Users define watchlists and alert rules to receive notifications (email, Slack, webhooks) and scheduled digests. Optional AI features provide natural-language search (LLM → structured query), CVE summaries, and digest summarization.
+**CVErt Ops** is an open-source vulnerability intelligence and alerting application that aggregates public vulnerability feeds (NVD, MITRE, CISA KEV, GHSA, OSV, EPSS, Microsoft MSRC, Red Hat, and operator-defined generic feeds) into a unified, searchable corpus. Users define watchlists and alert rules to receive notifications (email and signed webhooks) and scheduled digests, and can ask which held advisories affect an exact component version (§16, version check endpoint). Optional AI features provide natural-language search (LLM → structured query) and CVE summaries.
 
 The product ships as:
-- **Open-source core** for self-hosted deployment (Docker Compose). The MVP is **API-first**; the web frontend is planned but out-of-scope for this plan (see section 20). The backend compiles to a single static binary for minimal container footprint.
-- **Optional hosted SaaS** with tiered plans (Free / Pro / Enterprise) enforced via feature flags, and multi-tenant orgs with RBAC.
+- **Open-source core** for self-hosted deployment (Docker Compose). The API is the primary interface and is described by the OpenAPI spec at the repository root (`openapi.json`). A Vue 3 single-page app is embedded in the same binary (§20). The backend compiles to a single static binary for minimal container footprint.
+- **Optional hosted SaaS** (not yet operated) with tiered plans (Free / Pro / Enterprise) enforced via feature flags, and multi-tenant orgs with RBAC, SSO, SCIM provisioning and MFA (§7).
 
 ---
 
@@ -34,24 +44,32 @@ The product ships as:
 
 | Layer | Choice | Notes |
 |---|---|---|
-| **Language** | Go 1.26 | Single binary; goroutine concurrency; stdlib `regexp` (RE2-equivalent); Green Tea GC |
+| **Language** | Go 1.27 | Single binary; goroutine concurrency; stdlib `regexp` (RE2-equivalent); Green Tea GC |
 | **HTTP framework** | `huma` + `chi` | Code-first OpenAPI 3.1; automatic struct-tag validation; RFC 9457 errors. See section 18.2 |
-| **Database** | Postgres 15+ | `pgx` (driver) + `sqlc` (type-safe SQL codegen) + `squirrel` (dynamic DSL queries) |
+| **Database** | PostgreSQL 18+ | `pgx` (driver) + `sqlc` (type-safe SQL codegen) + `squirrel` (dynamic DSL queries) |
 | **Migrations** | `golang-migrate` | SQL migration files; one per change; embedded via `embed.FS` |
-| **Validation** | `go-playground/validator` + huma struct tags | Struct tag validation (huma auto-validates requests) + handwritten rules for security-critical inputs |
+| **Validation** | huma struct tags + handwritten checks | huma validates request bodies against the generated schema and refuses unknown fields; security-critical inputs (webhook URLs, regex patterns, DSL values) have handwritten checks |
 | **Auth / JWT** | `golang-jwt/jwt/v5` | Access + refresh tokens |
-| **OAuth / OIDC** | `coreos/go-oidc/v3` + `golang.org/x/oauth2` | GitHub + Google OAuth (MVP); generic OIDC deferred to Enterprise |
-| **Password hashing** | `argon2id` via `alexedwards/argon2id` | OWASP params: m=19456, t=2, p=1. See section 7.1 |
-| **Templates** | Go `html/template` / `text/template` | Notification rendering; sandboxed by design; embedded via `embed.FS` |
+| **OAuth / OIDC** | `coreos/go-oidc/v3` + `golang.org/x/oauth2` | GitHub, Google, and per-org generic OIDC SSO connections (§7.2) |
+| **MFA** | `pquerna/otp` | TOTP; email one-time codes and recovery codes are built in (§7.4) |
+| **SCIM** | No library | SCIM 2.0 Users and Groups endpoints are hand-written (§7.5) |
+| **Password hashing** | argon2id via `golang.org/x/crypto/argon2` | OWASP params: m=19456, t=2, p=1. See section 7.1 |
+| **Templates** | Go `html/template` / `text/template` | Notification rendering; sandboxed by design; embedded via `embed.FS` from `internal/notify/templates` |
+| **Email** | `wneessen/go-mail` | SMTP delivery |
 | **AI / LLM** | Google Gemini (`google.golang.org/genai`) | Official Go SDK; `LLMClient` interface for vendor abstraction. See section 13.4 |
+| **Version comparison** | `google/osv-scalibr/semantic` behind `internal/version` | Ecosystem-native comparison (§9.2); `package-url/packageurl-go` parses purls |
+| **Feed resilience** | `sony/gobreaker/v2`, `golang.org/x/time/rate` | Per-feed circuit breaker and per-adapter rate limiters |
+| **Generic feeds** | `tidwall/gjson`, `go.yaml.in/yaml/v4` | Operator-defined JSON feeds configured in YAML (§3.1) |
 | **Background jobs** | Goroutine worker pool + Postgres job queue | See section 18.1 |
-| **CLI** | `cobra` | Subcommands: `serve`, `worker`, `migrate`, `import-bulk` |
-| **Logging** | `slog` (stdlib) | Structured JSON logging; `NewMultiHandler` (Go 1.26) for multi-destination |
-| **Configuration** | `caarlos0/env/v11` + `go-playground/validator` | Env var parsing with startup validation |
-| **Metrics** | `prometheus/client_golang` | `/metrics` endpoint from Phase 0 |
+| **CLI** | `cobra` | Subcommands: `serve`, `worker`, `migrate`, `import-bulk` (stub), `quota`, `validate-feeds`, `doctor`, `rotate-encryption-key` (§18.1) |
+| **Logging** | `slog` (stdlib) | Structured JSON logging |
+| **Configuration** | `caarlos0/env/v11` | Env var parsing; startup checks are handwritten |
+| **Metrics** | `prometheus/client_golang` | `/metrics` endpoint |
 | **SSRF prevention** | `doyensec/safeurl` | Drop-in safe HTTP client for outbound webhooks |
-| **JSON canonicalization** | `cyberphone/json-canonicalization` | JCS/RFC 8785 for deterministic `material_hash` |
-| **Static analysis** | `go vet`, `staticcheck`, `gosec`, `govulncheck` | CI pipeline (GitHub Actions) |
+| **JSON canonicalization** | `jsontext.Value.Canonicalize` (stdlib) | JCS/RFC 8785 for deterministic `material_hash` |
+| **Container memory** | `KimMachineGun/automemlimit` | Sets `GOMEMLIMIT` from the cgroup limit (§18.3) |
+| **Static analysis** | `golangci-lint` (includes `govet`, `staticcheck`, `gosec`), `govulncheck` | CI pipeline (GitHub Actions) |
+| **Frontend** | Vue 3 + Vite + TypeScript + Tailwind 4 + shadcn-vue | Single-page app in `web/`, embedded in the binary (§20) |
 | **Container** | `distroless:static-debian12` (default) | Includes CA certs/timezone data; still minimal for a static Go binary. See Decision D1. |
 
 ---
@@ -70,7 +88,7 @@ The product ships as:
 - **Operational reliability:**  
   - distroless includes CA certs and sane defaults; fewer “works locally, fails in prod” issues.
 - **Supply chain:**  
-  - distroless images are maintained and frequently patched; pin by digest for reproducibility.
+  - distroless images are maintained and frequently patched; pin by digest for reproducibility. As built, `docker/Dockerfile` uses the `:nonroot` tag, not a digest.
 - **Self-host friendliness:**  
   - distroless avoids requiring users to understand cert bundling.
 
@@ -92,37 +110,43 @@ The product ships as:
 
 ## 3. Data Sources & Ingestion
 
-### 3.1 Core Feeds (MVP)
-| Source | Format | Update | Notes |
-|---|---|---|---|
-| NVD (NIST) | JSON (API 2.0) | every 2 hours | CVSS, CPE, references |
-| MITRE CVE | CVE 5.0 JSON | daily | authoritative CVE IDs/status |
-| CISA KEV | JSON | daily | high-signal "known exploited" |
-| GitHub Security Advisories (GHSA) | GraphQL | periodic poll (MVP) | maps packages/ecosystems + ranges |
-| OSV.dev | JSON | periodic poll (MVP) | strong package version range data |
-| FIRST.org EPSS | CSV/JSON | daily | exploit prediction scoring; enriches `epss_score` |
+### 3.1 Feeds
+The default schedule is in `internal/ingest/scheduler.go`; each feed runs on its own interval, and the scheduler enqueues every due feed on a 1-minute tick.
 
-**MVP note:** Webhooks (e.g., GHSA) are deferred; polling only.
+| Source | Package | Format and transport | Interval | Notes |
+|---|---|---|---|---|
+| NVD (NIST) | `internal/feed/nvd` | JSON, CVE API 2.0 | 2 hours | CVSS, CPE match ranges, references; relays the CNA's `affected[]` entries |
+| MITRE CVE | `internal/feed/mitre` | CVE 5 JSON, the cvelistV5 GitHub `main.zip` | 24 hours | Authoritative CVE IDs/status; CNA `affected[]` entries |
+| CISA KEV | `internal/feed/kev` | JSON | 24 hours | High-signal "known exploited" |
+| GitHub Security Advisories (GHSA) | `internal/feed/ghsa` | JSON, REST `GET /advisories` with Link-header paging | 6 hours | Packages, ecosystems and ranges |
+| OSV.dev | `internal/feed/osv` | JSON from the public GCS bucket over HTTPS: the first run pages `all.zip`, later runs read `modified_id.csv` and fetch the changed advisories | 24 hours | Package version range data, including distribution advisories (Debian, Ubuntu, Alpine and others) |
+| Microsoft MSRC | `internal/feed/msrc` | CSAF 2.0 documents listed in `changes.csv` | 24 hours | Vendor advisories |
+| Red Hat | `internal/feed/redhat` | Red Hat Security Data API | 12 hours | Vendor advisories; the payload also lists unfixed package states, which nothing reads yet |
+| EPSS | `internal/feed/epss` | gzip CSV from `epss.empiricalsecurity.com` | 24 hours | Exploit prediction score; enriches `epss_score` |
+| Generic feeds | `internal/feed/generic` | JSON or CSAF, mapped by a YAML file in `CVERTOPS_FEEDS_DIR` A cron expression in the YAML, read as a repeat interval: `*/N` minutes and `0 */N` hours are recognised, anything else runs every 24 hours, and the time of day is ignored | Operator-defined sources; check a file with `cvert-ops validate-feeds` |
 
-**EPSS note:** EPSS is an enrichment feed, not a CVE source. The adapter writes only to `cves.epss_score` (keyed by CVE ID) and does not participate in the merge pipeline described in section 5. If a CVE ID from EPSS does not yet exist in the corpus, the score is held in a staging table and applied on next CVE upsert.
+Each adapter has a circuit breaker (`internal/feed/breaker.go`), and a site admin can pause a feed (`feed_sync_state.paused_at`). There are no separate distribution adapters; distribution data arrives through OSV and Red Hat. Push delivery (for example GHSA webhooks) is not built; every feed polls. The one push path is the inbound ingest endpoint, `POST /api/v1/orgs/{org_id}/ingest` (member+, `internal/api/ingest.go`), which accepts canonical patches from an org's own tooling; it is specified in `dev/plans/2026-03-10-phase8-ops-extend-design.md` (generic feeds, inbound webhook, `validate-feeds`).
+
+**EPSS note:** EPSS is an enrichment feed, not a CVE source. It does not implement the adapter interface; its `Apply` step writes only `cves.epss_score` (keyed by CVE ID) and does not participate in the merge pipeline described in section 5. If a CVE ID from EPSS does not yet exist in the corpus, the score is held in `epss_staging` and applied on the next merge of that CVE.
 
 ### 3.2 Feed Adapter Contract (Deterministic)
-Each feed adapter must implement the `FeedAdapter` interface:
+Each feed adapter implements `feed.Adapter` (`internal/feed/interface.go`). The shape, abridged:
 ```go
-type FeedAdapter interface {
+type Adapter interface {
     // Fetch returns a batch of results starting from the given cursor.
     Fetch(ctx context.Context, cursor json.RawMessage) (*FetchResult, error)
 }
 
 type FetchResult struct {
-    Patches    []CanonicalPatch   // normalized partial documents
-    RawPayload json.RawMessage    // original response (stored for audit)
-    SourceMeta SourceMeta         // feed name, fetch timestamp, cursor metadata, request ID
-    NextCursor json.RawMessage    // nil if no more pages
+    Patches    []CanonicalPatch // normalized partial documents; each carries its own RawPayload
+    SourceMeta SourceMeta       // source name, fetch timestamp, request ID
+    NextCursor json.RawMessage  // cursor to persist after this page
+    LastPage   bool             // true when the walk has reached the present
 }
 ```
+An adapter that holds resources (a downloaded archive) also implements `io.Closer`.
 
-Adapters must be pure functions + minimal I/O wrappers (HTTP client injected), so they can be unit-tested with recorded responses.
+Adapters must be pure functions + minimal I/O wrappers (HTTP client injected), so they can be unit-tested with recorded responses. Each adapter also has golden tests that replay captured real responses (`internal/feed/<adapter>/golden_test.go`).
 
 **Feed payload data sanitization (required before any DB write):**
 
@@ -175,43 +199,37 @@ Never use string concatenation (`"?lastModStartDate=" + t.Format(time.RFC3339)`)
 
 **Why this is required:** The merge pipeline uses `cve_id` as the single canonical join key. If OSV ingests `GO-2024-1234` (aliases: `["CVE-2024-56789"]`) using `GO-2024-1234` as the primary key, and NVD ingests the same vulnerability as `CVE-2024-56789`, the database contains two completely separate rows — one from each feed — with different PKs. The merge pipeline never combines them. The canonical `cves` row from NVD misses the OSV-specific severity and package data; alert rules evaluating the CVE ID find only the NVD row and miss any OSV-sourced context.
 
-**Required alias resolution logic (per OSV/GHSA adapter):**
+**Alias resolution logic:** the GHSA and OSV adapters use the shared helper `feed.ResolveCanonicalID` (`internal/feed/util.go`):
 ```go
-// Extract canonical CVE ID from the aliases array, if present.
-// If found, use it as the primary cve_id; the native ID becomes source metadata.
-func resolveCanonicalID(nativeID string, aliases []string) string {
-    cvePattern := regexp.MustCompile(`^CVE-\d{4}-\d+$`)
-    for _, alias := range aliases {
-        if cvePattern.MatchString(alias) {
-            return alias // promote CVE ID to primary key
+// Sort aliases so the result is deterministic when multiple CVE IDs exist,
+// then promote the first CVE-shaped alias to the primary key.
+func ResolveCanonicalID(nativeID string, aliases []string) string {
+    sorted := slices.Clone(aliases)
+    sort.Strings(sorted)
+    for _, alias := range sorted {
+        if cveIDPattern.MatchString(alias) {
+            return alias
         }
     }
     return nativeID // no CVE alias; use native ID as-is
 }
 ```
-If multiple CVE IDs appear in the `aliases` array (rare but possible), use the first match. The native ID is stored in `cve_sources.source_id` for provenance. If no CVE alias is present (the vulnerability has no assigned CVE ID yet), use the native ID as-is — it remains a first-class record in the corpus under its own identifier.
+If several CVE IDs appear in the `aliases` array (rare but possible), the lowest in sort order wins, so the result does not depend on the order the feed lists them. The native ID is stored in `cve_sources.source_id` for provenance. If no CVE alias is present (the vulnerability has no assigned CVE ID yet), use the native ID as-is — it remains a first-class record in the corpus under its own identifier.
 
-**OSV/GHSA adapter: withdrawn vulnerability tombstoning (required):** OSV and GHSA use a different retraction mechanism than NVD. Instead of `vulnStatus == "Rejected"`, they mark invalidated advisories with a `withdrawn` (OSV) or `withdrawn_at` (GHSA) timestamp. If a feed adapter only checks NVD-style status flags, it will ingest retracted GHSA vulnerabilities as live threats. When an OSV or GHSA record has a non-null `withdrawn` / `withdrawn_at` field, the adapter MUST execute the same tombstone override that NVD rejected records receive: explicitly NULL out CVSS scores and CPE data, and set `status = 'withdrawn'`. The term `'withdrawn'` (not `'rejected'`) is used to distinguish the source. Both `'rejected'` and `'withdrawn'` statuses are excluded from all alert evaluation passes.
+**OSV/GHSA adapter: withdrawn vulnerability tombstoning (required):** OSV and GHSA use a different retraction mechanism than NVD. Instead of `vulnStatus == "Rejected"`, they mark invalidated advisories with a `withdrawn` (OSV) or `withdrawn_at` (GHSA) timestamp. If a feed adapter only checks NVD-style status flags, it will ingest retracted GHSA vulnerabilities as live threats. When an OSV or GHSA record has a non-null `withdrawn` / `withdrawn_at` field, the adapter marks the patch withdrawn (`IsWithdrawn`, `status = 'withdrawn'`); the term `'withdrawn'` (not `'rejected'`) distinguishes the source. The merge pipeline, not the adapter, applies the tombstone: a withdrawn advisory row contributes nothing to the canonical record, and the CVE itself is tombstoned (CVSS and CPE data nulled, `status = 'withdrawn'`) only when the highest-precedence status source says so or every source row is withdrawn (§5.2). So a withdrawn GHSA advisory does not tombstone a CVE that NVD still holds. Both `'rejected'` and `'withdrawn'` statuses are excluded from all alert evaluation passes.
 
-**OSV/GHSA adapter: late-binding alias migration (required):** The alias resolution rule (use CVE ID as `cve_id` PK when present in `aliases`) handles the case where an alias is known at ingest time. However, GHSA/OSV frequently publish advisories (`GHSA-1234`) days or weeks before MITRE mints the official CVE ID. On Day 1, the adapter saves `GHSA-1234` as the PK. On Day 10, the advisory is updated to include `CVE-2026-9999` in its `aliases`. The adapter must detect this case and perform a **primary key migration** before the normal upsert:
-```go
-// If incoming record has a CVE alias but the DB has it under the native ID,
-// migrate the PK before upserting.
-existing, _ := store.FindCVEBySourceID(ctx, "GHSA-1234")
-if existing != nil && existing.CVEID == "GHSA-1234" && canonicalID == "CVE-2026-9999" {
-    store.MigrateCVEPK(ctx, "GHSA-1234", "CVE-2026-9999")
-}
-```
-Without this migration, the database ends up with two separate rows (`GHSA-1234` and `CVE-2026-9999`) that the merge pipeline never reconciles, fragmenting alert history and tracking.
+**Late-binding alias migration (required, in the merge pipeline):** The alias resolution rule (use CVE ID as `cve_id` PK when present in `aliases`) handles the case where an alias is known at ingest time. However, GHSA/OSV frequently publish advisories (`GHSA-1234`) days or weeks before MITRE mints the official CVE ID. On Day 1, the advisory is stored under `GHSA-1234`. On Day 10, the advisory is updated to include `CVE-2026-9999` in its `aliases`. The merge pipeline (`bindAdvisoryToCVE` in `internal/merge/pipeline.go`) looks up the advisory by `(source_name, source_id)` and, when it is stored under its native ID, moves it to the CVE ID before the normal merge:
+- If the advisory is the native-ID record's only source, the record is renamed to the CVE ID, or merged into the CVE's existing record, with every child table and org-scoped reference (alert events, watchlist items) moved with it.
+- If other sources remain on the native-ID record, only this advisory's source row moves.
 
-**Exception:** The EPSS adapter returns `[]EnrichmentPatch` (just `{cve_id, epss_score}`) rather than `[]CanonicalPatch`, since it is not a CVE source.
+Without this migration, the database ends up with two separate rows (`GHSA-1234` and `CVE-2026-9999`) that the merge pipeline never reconciles, fragmenting alert history and tracking. A moved CVE is re-checked by the alert evaluators (§10.3).
 
-**NVD attribution requirement (required by NVD Terms of Use):** Any product using the NVD API must display the following notice in its user interface: _"This product uses the NVD API but is not endorsed or certified by the NVD."_ This is a **frontend item** (see §20 — Frontend). A `TODO(attribution): NVD notice required in UI per NVD ToU` comment must be present in `internal/feed/nvd/adapter.go` from Phase 1 onwards to ensure it is not forgotten.
+**NVD attribution requirement (required by NVD Terms of Use, open):** Any product using the NVD API must display the following notice in its user interface: _"This product uses the NVD API but is not endorsed or certified by the NVD."_ The SPA (§20) does not show it yet. A `TODO(attribution)` comment in `internal/feed/nvd/adapter.go` marks the requirement until it does.
 
 ### 3.3 Ingestion Scheduling, Cursoring, and Idempotency
 
 **State tables**
-- `feed_sync_state(feed_name PK, cursor_json, last_success_at, last_attempt_at, consecutive_failures, last_error, backoff_until)`
+- `feed_sync_state(feed_name PK, cursor_json, last_success_at, last_attempt_at, consecutive_failures, last_error, backoff_until, paused_at)`. The alert evaluators keep their cursors here too, under `alert:batch` and `alert:epss` (§10.3).
 - `feed_fetch_log(id, feed_name, started_at, ended_at, status, items_fetched, items_upserted, cursor_before, cursor_after, error_summary)`
 
 **Cursor policy**
@@ -225,7 +243,7 @@ Without this migration, the database ends up with two separate rows (`GHSA-1234`
 
 **NVD adapter: 120-day date-window hard limit (required):** The NVD API 2.0 rejects date-range queries spanning more than 120 days with `403 Forbidden`. If the gap between the stored cursor timestamp and `time.Now()` exceeds 120 days (e.g., after a long shutdown), the adapter MUST chunk the time range into sequential ≤120-day windows and iterate through them with separate API requests until reaching `time.Now()`.
 
-**NVD adapter: per-page cursor persistence (required):** If a paginated NVD fetch fails mid-window (e.g., on page 5 of 10), the adapter must save the exact page offset (`startIndex`) to `feed_sync_state`, not just the date-window cursor. On the next run, it resumes from the saved page offset. Do NOT advance the date-window cursor on partial failure (which silently skips pages 5-10), and do NOT reset to page 1 of the same window on every retry (which causes permanent looping on a flaky page). The `feed_sync_state.cursor_json` must carry both the date-window position AND the intra-window page offset.
+**NVD adapter: per-page cursor persistence (required):** If a paginated NVD fetch fails mid-window (e.g., on page 5 of 10), the adapter must save the exact page offset (`startIndex`) to `feed_sync_state`, not just the date-window cursor. On the next run, it resumes from the saved page offset. Do NOT advance the date-window cursor on partial failure (which silently skips pages 5-10), and do NOT reset to page 1 of the same window on every retry (which causes permanent looping on a flaky page). The `feed_sync_state.cursor_json` must carry both the date-window position AND the intra-window page offset. It also carries `caught_up`, set once a walk reaches the present and carried forward by every later cursor, so a reader can tell that the first full walk has finished. A cleared cursor starts without it.
 
 **Idempotency**
 - All writes are **upserts** keyed by `cve_id`.
@@ -235,24 +253,25 @@ Without this migration, the database ends up with two separate rows (`GHSA-1234`
 
 **Backfill — Initial Data Population**
 
-Initial population of a new instance MUST NOT rely solely on API polling for large feeds. The NVD API rate limit (5 req/30s with API key, ~2000 results/page) makes a from-scratch API sync slow and brittle — a single network error partway through a multi-hundred-page run requires retry logic, and any API downtime blocks the instance from becoming useful. Instead, each large feed has a preferred bulk source for initial load:
+A new instance populates itself from the feeds' normal sync: the first run of each feed walks its full history, and the walk continues across jobs from the persisted cursor until it reaches the present, so one network error or job time limit resumes where it stopped rather than starting over. The first walk of each feed:
 
-| Feed | Bulk source | Notes |
+| Feed | First walk | Later runs |
 |---|---|---|
-| NVD | Annual JSON feed archives from [nvd.nist.gov/vuln/data-feeds](https://nvd.nist.gov/vuln/data-feeds) | One `.json.gz` file per year; download all years for full history |
-| OSV | GCS bucket `gs://osv-vulnerabilities` (or equivalent HTTP mirror) | Per-ecosystem JSON archives; publicly accessible without auth |
-| MITRE CVE | GitHub: [CVEProject/cvelistV5](https://github.com/CVEProject/cvelistV5) | Bulk JSON export; also available as a `.zip` archive |
-| CISA KEV | Single JSON file via API — small enough to fetch directly | No bulk alternative needed |
-| GHSA | GraphQL pagination — acceptable at current volume | No bulk alternative needed |
-| EPSS | Daily CSV from first.org — small file | No bulk alternative needed |
+| NVD | CVE API 2.0 date windows (≤120 days each) from the start of the corpus, paged by `startIndex`; `caught_up` marks the end of the first walk | 2-hourly incremental windows with the 15-minute overlap |
+| OSV | Pages the bucket's `all.zip` by entry name across jobs | `modified_id.csv` lists changed advisories; only those are fetched |
+| MITRE CVE | The cvelistV5 `main.zip`, walked in resumable pages | The same archive, selecting records by `cveMetadata.dateUpdated` (every entry in the archive has the same file time) |
+| CISA KEV | The single catalog file | The same file |
+| GHSA | REST paging over every advisory | Advisories updated since the cursor |
+| MSRC, Red Hat | Paged walk of the vendor's listing | Changes since the cursor |
+| EPSS | The current daily CSV | The next day's CSV |
 
-The `cvert-ops import-bulk` CLI subcommand handles bulk file ingestion (see section 17). After bulk import completes, the feed's cursor is initialized to a timestamp just before the bulk file's "as-of" date, and normal incremental API polling takes over from there.
+A bulk-file loader (`cvert-ops import-bulk`) was planned for airgapped installs and development seeding. It is a stub that logs "not yet implemented" (§17.1). Development and test databases are seeded with `testutil.SeedCorpus`, which runs 65 real CVEs from eight feeds' golden fixtures through the real merge pipeline.
 
-- **Streaming parse (required):** Bulk files and large API responses must be parsed as streams using `json.Decoder`. Never buffer the full body in memory. NVD annual files and OSV ecosystem archives can be hundreds of MB. **Critical Go implementation notes:**
+- **Streaming parse (required):** Bulk files and large API responses must be parsed as streams using `json.Decoder`. Never buffer the full body in memory. The OSV `all.zip` and cvelistV5 archives are hundreds of MB, and NVD API pages are large. **Critical Go implementation notes:**
   - `json.NewDecoder(r).Decode(&bigSlice)` still reads the entire stream into memory before returning, even though it uses a Decoder — there is no streaming benefit when decoding into a slice. **`Decode(&slice)` is forbidden for large feeds.**
   - **Feed-specific wire format (required knowledge):** Real vulnerability feeds are rarely top-level JSON arrays. Each adapter must handle its feed's actual structure:
     - **NVD API 2.0** returns a top-level JSON object: `{"resultsPerPage":2000,"vulnerabilities":[{...}]}`. The adapter uses `Token()` to navigate the object and locate the `"vulnerabilities"` key, then enters the `More()` loop on the nested array.
-    - **MITRE bulk (cvelistV5)** and **OSV ecosystem bulk** are ZIP archives containing one JSON file per CVE or advisory. **Critical Go constraint:** `archive/zip.NewReader` requires `io.ReaderAt` (seekable) plus the total byte count — an HTTP response body (`io.ReadCloser`) satisfies neither interface. **DO NOT** use `io.ReadAll()` to buffer a multi-GB archive into a `*bytes.Reader`; this is the OOM crash the streaming requirement exists to prevent. The required bridging pattern is to stream the HTTP body to a temporary disk file first:
+    - **MITRE (cvelistV5)** and **OSV (`all.zip`)** are ZIP archives containing one JSON file per CVE or advisory. **Critical Go constraint:** `archive/zip.NewReader` requires `io.ReaderAt` (seekable) plus the total byte count — an HTTP response body (`io.ReadCloser`) satisfies neither interface. **DO NOT** use `io.ReadAll()` to buffer a multi-GB archive into a `*bytes.Reader`; this is the OOM crash the streaming requirement exists to prevent. The required bridging pattern is to stream the HTTP body to a temporary disk file first:
       ```go
       f, err := os.CreateTemp("", "cvert-bulk-*.zip")
       if err != nil { return err }
@@ -264,15 +283,6 @@ The `cvert-ops import-bulk` CLI subcommand handles bulk file ingestion (see sect
       zr, err := zip.NewReader(f, info.Size()) // os.File implements io.ReaderAt
       if err != nil { return err }
       for _, entry := range zr.File {
-          // FileHeader timestamp pre-filter (required for incremental syncs):
-          // entry.FileHeader.Modified is available without opening the file.
-          // For an incremental sync (lastCursor != zero), skip entries not modified
-          // since the last successful cursor. This avoids opening and parsing
-          // 100,000+ JSON files when only 50 changed — a 2000× I/O reduction.
-          // For a full import-bulk run, lastCursor is zero so this is a no-op.
-          if !lastCursor.IsZero() && !entry.FileHeader.Modified.After(lastCursor) {
-              continue
-          }
           rc, err := entry.Open()
           if err != nil { return err }
           var record AdvisoryRecord
@@ -283,7 +293,7 @@ The `cvert-ops import-bulk` CLI subcommand handles bulk file ingestion (see sect
       ```
       **`defer` is FORBIDDEN inside the ZIP iteration loop (required):** `defer rc.Close()` is the natural Go idiom for resource cleanup, but `defer` statements are only executed when the **surrounding function returns** — not when the loop iteration ends. The OSV `all.zip` archive contains 100,000+ individual files. If the loop body uses `defer rc.Close()`, all 100,000 file descriptors remain open simultaneously. Within seconds the Go runtime hits the OS-level `ulimit -n` (typically 1024 or 65535 open files), crashing the worker process with `too many open files`. Use explicit `rc.Close()` calls at every exit path from the loop body (both error and success paths), as shown in the pattern above. Never use `defer` for resources that must be released per-iteration inside a long loop.
 
-      For the `import-bulk` CLI path with a local file, skip the temp file step and pass the local `os.File` directly to `zip.NewReader`.
+      The ZIP entries' `FileHeader.Modified` times cannot select changed records: every entry in the cvelistV5 archive carries the same time. Incremental runs select changes from the data instead (MITRE's `cveMetadata.dateUpdated`, OSV's `modified_id.csv`). Long walks page through an archive by entry name across jobs (`internal/feed/archive.go`).
     - **CISA KEV** is a JSON object `{"vulnerabilities":[{...}]}` — same object-navigation pattern as NVD.
   - The correct streaming pattern for a **nested** array within a top-level JSON object (NVD, KEV):
   ```go
@@ -312,9 +322,8 @@ The `cvert-ops import-bulk` CLI subcommand handles bulk file ingestion (see sect
 - **String field extraction from large JSON payloads (required):** When the adapter extracts individual string fields (CVE ID, description, vendor names, URLs) from a large JSON byte slice (50MB+ NVD API pages or OSV bulk files), Go's `string` type holds a reference to the underlying byte slice backing array. If any extracted string persists in a struct that outlives the JSON buffer (e.g., in a job payload or alert event), the Go GC cannot free the original multi-megabyte buffer. During heavy syncs this causes invisible RAM retention accumulating hundreds of megabytes. **Required:** use `strings.Clone(field)` for all string fields extracted from bulk JSON payloads before the source buffer is no longer needed. `strings.Clone` allocates a fresh, minimal backing array and severs the reference to the large buffer.
 
 **Backfill ordering and serialization**
-- Feeds are backfilled sequentially in precedence order: MITRE → NVD → CISA KEV → OSV → GHSA → EPSS. This ensures higher-precedence sources establish the baseline before lower-precedence sources merge in.
-- Within a single feed's backfill, pages are processed serially.
-- After all feeds complete initial backfill, the system switches to normal concurrent polling.
+- Feeds are not backfilled in a fixed order. Every feed is enqueued on the scheduler's first tick and walks independently; the `feed:<name>` lock key allows one running job per feed. Order does not matter for correctness, because each merge recomputes the canonical record from all current source rows (§5.2).
+- Within a single feed's walk, pages are processed serially.
 
 ### Decision D4 — Per-CVE merge serialization (MVP)
 
@@ -351,7 +360,7 @@ Within the same DB transaction:
 1) `SELECT pg_advisory_xact_lock($1)` where `$1 = cveAdvisoryKey(cve_id)` (int64)
 2) Upsert/replace the per-source normalized row in `cve_sources` (and store raw payload separately).
 3) Recompute the canonical CVE row **from the current set of `cve_sources`** for that CVE (read-your-writes).
-4) Upsert the canonical `cves` row and dependent rows (`cve_references`, `cve_affected_*`) and compute `material_hash`. **Child table rows MUST be sorted by their natural key before upsert** (e.g., `cve_references` by `url_canonical` ASC, `cve_affected_packages` by `(ecosystem, package_name, introduced)` ASC, `cve_affected_cpes` by `cpe_normalized` ASC). The advisory lock in step 1 guarantees that no two workers are inside the same CVE's merge transaction simultaneously, preventing deadlocks at the CVE level. Consistent child row ordering prevents deadlocks within the child table upserts themselves (e.g., if the merge pipeline is extended or if Postgres's internal row ordering differs across code paths). Sorting is cheap; debugging a deadlock in production is not.
+4) Upsert the canonical `cves` row and dependent rows (`cve_references`, `cve_affected_*`) and compute `material_hash`. **Child table rows MUST be sorted by their natural key before upsert** (e.g., `cve_references` by `url_canonical` ASC, `cve_affected_packages` by the whole range ASC, `cve_affected_cpes` by `cpe_normalized` ASC). The advisory lock in step 1 guarantees that no two workers are inside the same CVE's merge transaction simultaneously, preventing deadlocks at the CVE level. Consistent child row ordering prevents deadlocks within the child table upserts themselves (e.g., if the merge pipeline is extended or if Postgres's internal row ordering differs across code paths). Sorting is cheap; debugging a deadlock in production is not.
 4a) Apply staged EPSS score (required): `SELECT epss_score, as_of_date FROM epss_staging WHERE cve_id = $1`. If a row is found, apply via `UPDATE cves SET epss_score = staged, date_epss_updated = now() WHERE cve_id = $1 AND epss_score IS DISTINCT FROM staged`.
 4b) Delete the staging row (required): `DELETE FROM epss_staging WHERE cve_id = $1`. This must execute regardless of whether 4a found a row — prevents stale rows from accumulating. Both 4a and 4b are inside the same transaction; if the merge rolls back, the staging row is preserved for retry.
 5) Commit.
@@ -382,17 +391,24 @@ Within the same DB transaction:
 - `cve_references`
 - `cve_affected_packages` (ecosystem + package + version range)
 - `cve_affected_cpes` (CPE URIs)
-- `cwe_dictionary` (optional; see 8.2)
+- `cve_cpe_matches` (NVD CPE match entries with version ranges and the `vulnerable` flag)
+- `cve_cna_affected` (CNA product and version data, available before NVD analysis)
+- `cwe_dictionary` (exists, not populated; see 8.2)
 - `cve_raw_payloads` (audit/debug)
+- `epss_staging`, `feed_sync_state`, `feed_fetch_log`, `job_queue`, `system_settings`, `security_events`
 
-**Org/Tenant scoped**
-- `organizations`, `users`, `user_identities` (federated login links), `org_members`, `groups`, `group_members`
+**Org/Tenant scoped** (Appendix A.3 has the full list)
+- `organizations`, `users`, `user_identities` (federated login links), `org_members`, `org_invitations`, `groups`, `group_members`, `api_keys`
 - `watchlists`, `watchlist_items`
-- `alert_rules`, `alert_rule_runs`, `alert_events`
+- `alert_rules`, `alert_rule_runs`, `alert_rule_channels`, `alert_events`
 - `notification_channels`, `notification_deliveries`
-- `scheduled_reports`, `report_runs`
-- `cve_annotations` (org tags/notes/snoozes)
-- `ai_usage_counters` (per-org AI quota tracking)
+- `scheduled_reports`, `report_channels`
+- `saved_searches`
+- `sso_connections`, `sso_email_domains`, `scim_configs`, `scim_groups`, `scim_group_members`, `mfa_requirements`
+- `audit_log`
+- `ai_usage_counters`, `ai_quota_overrides`, `ai_cache`, `ai_request_log`
+
+Org-level annotations on CVEs (tags, notes, snoozes, assignee) were planned as `cve_annotations` and are not built (§19.5).
 
 ### 4.3 Canonical CVE Record (`cves`)
 Fields (illustrative):
@@ -421,7 +437,7 @@ Note: `fts_document` is **not** on `cves`. It lives in `cve_search_index` (see s
 
 ### 4.4 Per-Source Storage (`cve_sources`)
 Store normalized per-feed JSON (not raw) to preserve provenance and enable "show source differences."
-- PK: `(cve_id, source_name)`
+- PK: `(cve_id, source_name, source_id)`. `source_id` is the feed's native advisory ID, or the CVE ID for a feed with none, so several advisories from one feed can describe one CVE.
 - fields: `normalized_json`, `source_date_modified`, `source_url`, `ingested_at`
 
 ### 4.5 Raw Payload Storage
@@ -432,28 +448,33 @@ Raw payloads are kept separately in `cve_raw_payloads` keyed by `(cve_id, source
 ## 5. Merge Rules & Conflict Resolution (Deterministic)
 
 ### 5.1 Source Precedence by Field
-Define precedence **per field**, not globally:
+Define precedence **per field**, not globally. The orders are in `internal/merge/resolve.go`; a source not named in an order (a generic feed, the inbound ingest endpoint) ranks after the named ones.
 
 | Field group | Preferred sources (highest → lowest) |
 |---|---|
-| `cve_id`, status | MITRE → NVD → OSV/GHSA |
-| CVSS v3/v4 scores/vectors | NVD → vendor advisories (future) → OSV/GHSA |
-| "Known exploited" | CISA KEV (authoritative for that flag) |
-| Package ecosystems + version ranges | OSV → GHSA → NVD (if present) |
-| Description | MITRE → NVD → OSV/GHSA (fallback) |
+| Status (and withdrawn), description | MITRE → NVD → OSV → GHSA → MSRC → Red Hat |
+| CVSS v3/v4 scores/vectors, severity | NVD → OSV → GHSA → MITRE (CNA scores) → MSRC → Red Hat; severity with no CVSS source falls back to the status order |
+| `in_cisa_kev`, `exploit_available` | True if any source asserts it (CISA KEV is the source that normally does) |
+| Package ecosystems + version ranges | Union of distinct ranges from every source (§5.2); the order OSV → GHSA → NVD → MITRE → Red Hat → MSRC only picks which copy of an identical range is kept |
+| CWE IDs | Sorted union |
+| `date_published` | Earliest across sources |
 | References | Union (dedupe by URL canonicalization), keep tags per-source |
-| `epss_score` | FIRST.org EPSS (sole source; not merged) |
+| `epss_score` | EPSS (sole source; not merged) |
 
 **NVD enrichment backlog (known limitation):** NVD has a documented history of enrichment backlogs where recently-published CVEs sit without CVSS scores or CWE assignments for weeks to months. The GHSA/OSV fallback in the precedence table handles the common case (NVD has no score → use GHSA/OSV). However, when NVD *has* scored a CVE with a stale or generic assessment and GHSA/OSV has a more accurate ecosystem-specific score, NVD still wins. For package-ecosystem CVEs (npm, Go, PyPI, RubyGems, Maven, etc.), GHSA and OSV maintainers often have deeper context than NVD's generalist analysts.
 
 **Consequence and mitigation:**
 - `cvss_v3_source` / `cvss_v4_source` columns on `cves` record which source provided the winning score, giving analysts full transparency.
 - `cvss_score_diverges` is set when available sources differ by ≥2.0 points on v3 score, prompting analysts to check `cve_sources` for the full picture.
-- **P1 improvement:** implement ecosystem-aware CVSS precedence — for CVEs with `cve_affected_packages` entries in npm/Go/PyPI/etc. ecosystems, elevate GHSA/OSV score precedence above NVD when both are present. MVP uses static precedence; P1 adds the ecosystem-aware branch.
+- **Open (not built):** ecosystem-aware CVSS precedence — for CVEs with `cve_affected_packages` entries in npm/Go/PyPI/etc. ecosystems, elevate GHSA/OSV score precedence above NVD when both are present. The CVSS order is static today.
 
 ### 5.2 Merge Strategy
 - Build a canonical record by selecting highest-precedence non-null value per field.
 - For list-like fields (CWEs, references, affected products): **union + normalize + dedupe**.
+- A source can hold several rows for one CVE, one per advisory. They are collapsed in `source_id` order before per-field precedence applies.
+- Affected package ranges union on the whole range: ecosystem, folded package name, `introduced`, `fixed`, `last_affected` and range class. Source precedence (§5.1) chooses only which duplicate's `range_type` and `events` are stored. The stored name stays as the kept row spelled it.
+- A withdrawn advisory contributes nothing. A CVE is tombstoned only when the highest-precedence status source says so or every source row is withdrawn.
+- Ecosystem names are OSV's (`internal/ecosystem`); GHSA's spellings are mapped at parse time.
 - Preserve all per-source normalized documents in `cve_sources`.
 - On each adapter write, the merge function re-reads all `cve_sources` rows for the given `cve_id` and recomputes the canonical record from scratch. This ensures consistency regardless of ingestion order and makes the merge purely a function of current source state. The write amplification (~5 source rows read per CVE upsert) is acceptable at MVP scale; an incremental merge approach would be more complex and prone to drift.
 - **FTS lives in a separate `cve_search_index` table.** Postgres MVCC means that any UPDATE to an indexed column on `cves` (including the frequently-updated `date_modified_canonical`, `epss_score`) writes a new physical row tuple and forces all index entries — including GIN — to be updated, even if `fts_document` is unchanged. Application-level conditional regeneration of the column value does not avoid this. The correct solution is to put `fts_document tsvector` and its GIN index in a dedicated 1:1 table `cve_search_index(cve_id text PRIMARY KEY REFERENCES cves, fts_document tsvector NOT NULL)`. The merge function only writes to `cve_search_index` when text-contributing fields (description, CWE titles) actually change. Routine timestamp/score updates to `cves` never touch `cve_search_index` and therefore never trigger a GIN index write. Search queries use a JOIN: `SELECT c.* FROM cves c JOIN cve_search_index si ON c.cve_id = si.cve_id WHERE si.fts_document @@ query`.
@@ -465,18 +486,24 @@ A "material change" is any change to one of these, after normalization:
 - `cvss_v4_score`, `cvss_v4_vector`
 - `exploit_available`
 - `in_cisa_kev`
-- affected packages (ecosystem/package/version range set)
+- affected packages (ecosystem/package/version range set, including `last_affected` and whether a range is a commit-hash or SemVer range)
 - affected CPE set
 - `status` transition to `rejected` or from `rejected` to active
 - description changes are **non-material by default** (stored but do not re-fire alerts)
 
 **`epss_score` is NOT in `material_hash`** (see below).
 
-Implementation: `material_hash = sha256(json_canonical(material_fields))`. If hash changes, alerts may re-fire depending on rule settings. JSON canonicalization uses deterministic key ordering and encoding (e.g., `github.com/cyberphone/json-canonicalization` or equivalent).
+Implementation: `material_hash = sha256(json_canonical(material_fields))`. If hash changes, alerts may re-fire depending on rule settings. JSON canonicalization uses deterministic key ordering and encoding (RFC 8785, via the standard library's `jsontext.Value.Canonicalize`).
 
-**CVSS vector normalization (required before hashing):** Different sources may represent the same CVSS vector with components in different order (e.g., `AV:N/AC:L` vs `AC:L/AV:N`) or with minor formatting differences. Including a raw CVSS vector string in `material_hash` would cause cosmetic source differences to trigger false material changes and spurious alerts. Before computing `material_hash`, CVSS vector strings must be normalized: parse the vector into its structured metric components per the CVSS specification, then re-serialize in canonical CVSS spec metric order (the order defined in the spec, not alphabetical). This ensures the hash is stable regardless of which source provided the vector.
+**CVSS vector normalization (required before hashing):** Different sources may represent the same CVSS vector with components in different order (e.g., `AV:N/AC:L` vs `AC:L/AV:N`) or with minor formatting differences. Including a raw CVSS vector string in `material_hash` would cause cosmetic source differences to trigger false material changes and spurious alerts. Before computing `material_hash`, CVSS vector strings must be normalized: split the vector into its metric components after the version prefix (`CVSS:3.1`) and sort them lexicographically. This ensures the hash is stable regardless of which source provided the vector or in which order it listed the metrics. Any fixed order would do; the sort is not the spec's metric order, and changing the order would change every stored `material_hash` once. The normalized form is hash input only: the stored vector keeps the source's order.
 
 **Array fields must be sorted before hashing (required):** JSON canonicalization libraries sort object keys deterministically but leave JSON arrays in their original order by specification. Feed sources routinely reorder reference URLs, CWE tags, and CPE strings between updates with no semantic change to the vulnerability. If these arrays are included in `material_hash` without sorting, a cosmetic reordering (e.g., NVD swaps `[Link B, Link A]` to `[Link A, Link B]`) changes the hash, bypasses the dedup engine, and fires a "Vulnerability Updated" alert for a CVE where nothing of substance changed. Before marshaling material fields for hashing, all string-typed arrays MUST be sorted lexicographically: reference URLs sorted by canonical URL, CWE IDs sorted alphabetically, CPE strings sorted by normalized CPE string. This applies to both array fields in `material_hash` and any array used in the `cve_search_index` FTS document to ensure stability.
+
+**Match inputs outside `material_hash` (required, MATCH-2):** alert rules also match on two inputs that are deliberately not material: the vendor and product names of CNA `affected[]` entries (`cve_cna_affected`), and NVD's `vulnerable` flag on CPE match rows (`cve_cpe_matches`), which `affected.cpe_product` reads (§10.1). Putting them in `material_hash` would re-fire every rule that matches the CVE, including rules that do not look at products, on each such change, and MITRE and NVD each carry a copy of a CNA record. So a change to them re-checks the CVE without moving `material_hash`:
+- The merge computes `match_inputs_hash = sha256(json_canonical(match_inputs))`, in the same transaction and under the same per-CVE lock as `material_hash`. The inputs are two sorted, distinct lists: the CNA vendor and product pairs, lower-cased in ASCII only (PostgreSQL's `lower()` folds ASCII case alike under every database character type, and non-ASCII letters differently between them), with a missing value as `""`; and the `part:vendor:product` keys of the CVE's `vulnerable = true` CPE match rows. Versions are not inputs.
+- When the hash differs from the stored value, the merge stores it and sets `date_match_inputs_changed` to the clock value it uses for `date_modified_canonical`. `material_hash` and `date_modified_canonical` do not move, so API polling and digests still see only material changes. A stored NULL counts as a change, so each CVE is re-checked once on its first merge after the columns were added.
+- §10.3 uses the signal as a realtime trigger and a second batch cursor condition. `alert_events` dedup is unchanged: a rule whose match did not change sees no new event and does not fire again.
+- Neither column is exposed by the API. Design: `dev/plans/2026-11-13-product-match-rules-design.md` section 7 (changes that do not move the material hash).
 
 **EPSS is handled outside material_hash (required design decision):**
 
@@ -538,7 +565,7 @@ Both statements run for every row in the EPSS CSV. The database handles all case
 
 Go code never inspects `RowsAffected`. Staging logic is entirely DB-side and unambiguous.
 - Alert rules containing `epss_score` conditions are evaluated by a **dedicated daily EPSS rule evaluator** that uses `date_epss_updated > last_cursor` to find CVEs with new EPSS data (see section 10.3). This cursor is separate from `date_modified_canonical` so that the general-purpose batch evaluator remains efficient.
-- `alert_events` dedup (keyed by `material_hash`) still applies: after an EPSS rule fires for a (rule, CVE) pair, it suppresses re-fires while non-EPSS fields stay unchanged. First match always fires (no prior `alert_events` row). Re-crossing alerts (score drops below then crosses threshold again) are a **P1 improvement** requiring per-(rule, CVE) EPSS state tracking in `alert_events`.
+- `alert_events` dedup (keyed by `material_hash`) still applies: after an EPSS rule fires for a (rule, CVE) pair, it suppresses re-fires while the event stays open and non-EPSS fields stay unchanged. First match always fires (no prior `alert_events` row). A score that drops below the threshold resolves the event, and crossing the threshold again reopens it and fires (section 10.4).
 - The `epss_score_baseline` column is **not present** in `cves`. It was added to support a flawed hash-based EPSS dedup mechanism that has been replaced by this design.
 
 ---
@@ -564,7 +591,7 @@ Tenant isolation is enforced at **two layers simultaneously** from the first org
 
 **Layer 2 — Postgres RLS (MVP, implemented in Phase 2):**
 
-RLS is implemented alongside org table migrations in Phase 2, not deferred. See `research.md` section 7 for full rationale.
+RLS is implemented alongside org table migrations in Phase 2, not deferred. See `dev/research.md` section 7 (row-level security for hosted mode) for full rationale.
 
 **Why MVP, not later:**
 - All org-scoped tables already need `org_id NOT NULL` + `BTREE(org_id)` index — the schema is identical with or without RLS. Adding the policies is a few lines per migration file.
@@ -581,14 +608,14 @@ RLS is implemented alongside org table migrations in Phase 2, not deferred. See 
   CREATE POLICY org_isolation ON watchlists
       USING (
           current_setting('app.bypass_rls', TRUE) = 'on'
-          OR org_id = current_setting('app.org_id', TRUE)::uuid
+          OR org_id = NULLIF(current_setting('app.org_id', TRUE), '')::uuid
       )
       WITH CHECK (
           current_setting('app.bypass_rls', TRUE) = 'on'
-          OR org_id = current_setting('app.org_id', TRUE)::uuid
+          OR org_id = NULLIF(current_setting('app.org_id', TRUE), '')::uuid
       );
   ```
-  Both `app.org_id` and `app.bypass_rls` use `missing_ok=TRUE`. When `app.org_id` is unset, `current_setting` returns NULL and `NULL::uuid = org_id` evaluates to NULL (FALSE in USING) — fail-closed. When `app.bypass_rls` is unset, `current_setting` returns NULL and `NULL = 'on'` is NULL (FALSE) — bypass is inactive by default. `FORCE ROW LEVEL SECURITY` prevents the table owner (superuser role) from bypassing the policy. Apply to all org-scoped tables.
+  Both `app.org_id` and `app.bypass_rls` use `missing_ok=TRUE`. When `app.org_id` is unset, `current_setting` returns NULL and `NULL::uuid = org_id` evaluates to NULL (FALSE in USING) — fail-closed. `NULLIF` is required: once a session has run `SET LOCAL app.org_id`, Postgres leaves the setting as an empty string rather than NULL after the transaction ends, and `''::uuid` raises an error even when `app.bypass_rls` is on. When `app.bypass_rls` is unset, `current_setting` returns NULL and `NULL = 'on'` is NULL (FALSE) — bypass is inactive by default. `FORCE ROW LEVEL SECURITY` prevents the table owner (superuser role) from bypassing the policy. Apply to all org-scoped tables.
 
 - **Background worker escape hatch (required):** Background workers (batch alert evaluator, EPSS evaluator, retention cleanup) operate outside any user HTTP session and have no `app.org_id` context. Without a bypass, the fail-closed RLS policy hides all rows from workers — they silently read 0 alert rules, evaluate 0 rules, and fire 0 alerts. Workers must set the bypass flag inside their transaction before querying org-scoped tables:
   ```go
@@ -602,29 +629,36 @@ RLS is implemented alongside org table migrations in Phase 2, not deferred. See 
       return tx.Commit(ctx)
   }
   ```
-  `SET LOCAL` is transaction-scoped and auto-resets on commit/rollback — the bypass cannot leak to subsequent transactions on the same connection. This helper must be the **only** code path that sets `app.bypass_rls`; it must never be called from API request handlers. The WITH CHECK bypass allows workers to write `alert_events`, `notification_deliveries`, etc. on behalf of any org without needing to switch `app.org_id` per-row.
+  `SET LOCAL` is transaction-scoped and auto-resets on commit/rollback — the bypass cannot leak to subsequent transactions on the same connection. The WITH CHECK bypass allows workers to write `alert_events`, `notification_deliveries`, etc. on behalf of any org without needing to switch `app.org_id` per-row.
 
+- **Transaction helpers as built** (`internal/store/store.go`; when to use each: `dev/implementation-pitfalls.md` DB-17, transaction helper selection):
+  - `withOrgTx`, `withOrgRawTx`, `withOrgRawTxOptions`, `withOrgSnapshotTx`, `OrgTx` — set `app.org_id`; API handler queries on org-scoped tables.
+  - `withBypassTx`, `withBypassRawTx` — set `app.bypass_rls`; operations that run before an org context exists (auth, MFA, SCIM token lookup, org creation, first-user bootstrap).
+  - `WorkerTx` — sets `app.bypass_rls`; background workers only, never API handlers.
+  - Store methods never query the pool directly outside these helpers.
 - **Performance:** <5% overhead with simple equality comparison policies and `BTREE(org_id)` index.
-- **Bypass prevention:** App DB role is created with `NOBYPASSRLS`. All queries go through sqlc/squirrel (no raw SQL escape hatches). The `app.bypass_rls` session variable is the only sanctioned bypass and is transaction-scoped.
-- **Self-hosted vs SaaS:** RLS is always enabled. Self-hosted deployments use a fixed `org_id` set at first startup (auto-generated or from env); the middleware always sets it. Same codebase, same migrations, same policies.
+- **Bypass prevention:** The application connects as `cvert_ops_app`, created `NOBYPASSRLS` (`docker/init-app-role.sh`). Queries go through sqlc, squirrel, or parameterized SQL inside the transaction helpers. `app.bypass_rls` is the only sanctioned bypass and is transaction-scoped. Migration 000051 rewrote every policy to the `NULLIF` form above.
+- **Self-hosted vs SaaS:** RLS is always enabled. There is no fixed self-hosted org: the first user to register creates the first org (§7.3), and further orgs can be created. Same codebase, same migrations, same policies.
 - **Migration strategy:** RLS `ENABLE` + `CREATE POLICY` statements are part of each table's migration file (up). The down migration drops policies and disables RLS before altering the table.
 
 **Child table `org_id` denormalization (required for all tenant-owned tables):**
 
 RLS policies on parent tables do not automatically protect child/join tables. An RLS policy using `EXISTS (SELECT 1 FROM parent WHERE parent.id = child.parent_id AND org_id = ...)` executes a nested loop join on every row scanned — destroying read performance for large orgs. Omitting RLS on child tables entirely lets any authenticated user access rows by guessing a parent ID (e.g., guess a `watchlist_id` to read/delete `watchlist_items` for another org).
 
-**Required:** Every tenant-owned table — including all child and join tables — MUST contain an `org_id UUID NOT NULL` column with a `BTREE(org_id)` index, and an RLS policy using the same `org_id = current_setting('app.org_id', TRUE)::uuid` pattern. The `org_id` is redundant with the parent's `org_id` (denormalized) — this is intentional and correct. Do NOT normalize it out.
+**Required:** Every tenant-owned table — including all child and join tables — MUST contain an `org_id UUID NOT NULL` column with a `BTREE(org_id)` index, and an RLS policy using the same `org_id = NULLIF(current_setting('app.org_id', TRUE), '')::uuid` pattern. The `org_id` is redundant with the parent's `org_id` (denormalized) — this is intentional and correct. Do NOT normalize it out.
 
-Tables requiring `org_id` denormalization (non-exhaustive): `watchlist_items`, `alert_events`, `notification_deliveries`, `group_members`, `cve_annotations`, `report_runs`, `alert_rule_runs`. Any future child table added to the schema must also include `org_id` in the migration.
+Tables with denormalized `org_id` include `watchlist_items`, `alert_events`, `alert_rule_runs`, `alert_rule_channels`, `report_channels`, `notification_deliveries`, `group_members`, `scim_groups` and `scim_group_members`. Any future child table added to the schema must also include `org_id` in the migration.
 
 ---
 
 ## 7. Authentication, Authorization, Sessions, and Identity
 
-### 7.1 Session Strategy (MVP)
-- JWT access tokens (short-lived, ≤15 min) + refresh tokens (rotating, 7-day max), using `golang-jwt/jwt/v5`
-- **Transport:** HttpOnly secure cookies (SameSite=Lax) for the web app
+### 7.1 Session Strategy
+- JWT access tokens (15 min) + refresh tokens (rotating, 7 days), using `golang-jwt/jwt/v5`. Each token carries a `token_type` claim (`access`, `refresh`, `pending` for a sign-in waiting on MFA or a password reset, `enrollment` for MFA enrolment). JWTs carry no org or role claims; the role is read from `org_members` on every request (§7.3).
+- **Transport:** HttpOnly cookies with SameSite=Lax for the web app: `access_token` (path `/`), `refresh_token` (path `/api/v1/auth`), and short-lived `mfa_pending_token`, `mfa_enroll_token`, `mfa_device_token` (remember this device), `oauth_state` and `oidc_nonce` cookies on narrower paths.
 - API keys for automation — opaque high-entropy strings (NOT JWTs), stored as `sha256(raw_key)` in the `api_keys` table, scoped to org + role (see "API key implementation" note below)
+- **Account lockout:** `LOCKOUT_THRESHOLD` (default 5) failed attempts lock the account for `LOCKOUT_DURATION` (default 15 minutes). Password and MFA failures share one counter. A site admin can unlock a user.
+- **Logout** marks the refresh token used, so it cannot be refreshed again.
 
 **JWT algorithm and parser security (required):**
 
@@ -638,7 +672,8 @@ token, err := jwt.ParseWithClaims(tokenString, &Claims{}, keyFunc,
 )
 ```
 
-- **Algorithm:** `HS256` (HMAC-SHA256, symmetric) for MVP. Single binary with a shared signing secret; no key distribution needed. Configurable via `JWT_ALGORITHM` env var for future flexibility.
+- **Algorithm:** `HS256` (HMAC-SHA256, symmetric), hard-coded. Single binary with a shared signing secret; no key distribution needed. A `JWT_ALGORITHM` config variable exists; it is shown by `GET /api/v1/admin/config` but does not affect signing.
+- **Secret rotation:** `JWT_SECRET_PREVIOUS` holds the previous secret during a rotation. A token whose signature fails under `JWT_SECRET` is tried under the previous secret. Both can be reloaded without a restart (`POST /api/v1/admin/reload-config` or SIGHUP).
 - **Secret:** `JWT_SECRET` env var; minimum 32 cryptographically random bytes; validated at startup (reject startup if too short or not set). The server MUST `log.Fatalf` and exit immediately if `JWT_SECRET` is missing or too short — **never auto-generate an ephemeral key**. An auto-generated ephemeral secret invalidates all existing sessions on every restart, creating a confusing and undiscoverable bug: self-hosted operators find users constantly logged out with no error logged, no session, and no explanation. Missing `JWT_SECRET` is a misconfiguration that must be surfaced loudly at startup.
 - **`WithValidMethods` is mandatory** on every parse call — including refresh token validation. Add a linting check or code review gate to prevent unguarded `jwt.Parse`/`jwt.ParseWithClaims` calls.
 - **`WithExpirationRequired`** rejects tokens without an `exp` claim, preventing accidentally-issued non-expiring tokens from being permanently valid.
@@ -652,16 +687,17 @@ The `users` table includes `token_version INT NOT NULL DEFAULT 1`. This value is
 - If claim version < DB version → revoked; return 401 and force re-login
 
 **Revocation actions that increment `token_version`:**
-- User removed from an org (owner/admin action)
-- Admin-forced logout / account lock
-- User changes their own password
-- Detected credential compromise
+- User changes or resets their password
+- An org admin or a site admin forces a password reset, or an org admin resets the member's MFA
+- Refresh-token theft detection (below)
+
+Removing a member and a site admin disabling a user do not increment it. Removal takes effect at once because every org-scoped request reads `org_members`; a disabled user is refused by the auth middleware, which checks `disabled_at` and `force_password_reset` on every cookie request.
 
 Incrementing `token_version` immediately invalidates all active refresh tokens for that user. Because access tokens are short-lived (≤15 min), the maximum window of unauthorized access after revocation is the remaining lifetime of any already-issued access token.
 
-**UX implication — global logout:** Incrementing `token_version` invalidates all sessions across all devices simultaneously. This is appropriate for the security-critical revocation events listed above (org member removal, password change, account lock, credential compromise). Granular single-session revocation (e.g., "sign out of my phone, keep my desktop session active") remains a P1 UX enhancement, but the `refresh_tokens` table described below is required in MVP for theft detection.
+**UX implication — global logout:** Incrementing `token_version` invalidates all sessions across all devices simultaneously. This is appropriate for the security-critical revocation events listed above. Granular single-session revocation (e.g., "sign out of my phone, keep my desktop session active") and a session list are not built; the `refresh_tokens` table described below makes them possible.
 
-**Refresh token JTI tracking (required, MVP — stateless cloning prevention):**
+**Refresh token JTI tracking (required — stateless cloning prevention):**
 
 Purely stateless refresh tokens cannot detect theft. If an attacker steals a user's refresh token and exchanges it first, the server issues a new token pair to the attacker. The legitimate user's next refresh also succeeds (valid `token_version`), issuing a parallel family. Both parties hold valid, independent refresh token streams — indefinitely. The `token_version` family-revocation mechanism cannot help: the attacker's family is valid.
 
@@ -684,20 +720,21 @@ CREATE INDEX refresh_tokens_user_idx ON refresh_tokens (user_id, expires_at);
 - **Refresh:** look up `refresh_tokens` by `jti`. Three cases:
   1. Row not found or `token_version` mismatch → return 401 (revoked family)
   2. Row found, `used_at IS NOT NULL` → **multi-tab race / theft check (required):**
-     - If `now() - used_at ≤ 60 seconds` AND `replaced_by_jti IS NOT NULL` → **multi-tab concurrent refresh** (grace window). Issue a fresh access token (new JWT, same user/org claims). Return `replaced_by_jti` as the refresh token to use. Do NOT create another new refresh token row. This is idempotent: all tabs racing for the same consumed token within the grace window receive the same replacement refresh token, preventing Tab B from triggering a false theft alarm 5ms after Tab A.
-     - Otherwise (`now() - used_at > 60 seconds`, or `replaced_by_jti IS NULL`) → **theft detected** → `UPDATE users SET token_version = token_version + 1` → return 401. 60 seconds is well beyond any concurrent tab scenario; a reuse after this window is genuine theft or a severe replay.
+     - If `now() - used_at ≤ 60 seconds` AND `replaced_by_jti IS NOT NULL` and the replacement is unused → **multi-tab concurrent refresh** (grace window). The handler consumes the replacement and issues a new access token and a new refresh token (a new row), so the chain advances and Tab B does not trigger a false theft alarm 5ms after Tab A.
+     - If `now() - used_at > 60 seconds` → **theft detected** → `UPDATE users SET token_version = token_version + 1` → return 401. 60 seconds is well beyond any concurrent tab scenario; a reuse after this window is genuine theft or a severe replay.
+     - Inside the 60 seconds with no usable replacement (`replaced_by_jti IS NULL`, or a replacement already used, as after logout, which records the token as its own replacement) → 401 without incrementing `token_version`. **Open:** the original design treated this case as theft too.
   3. Row found, `used_at IS NULL`, `token_version` matches → `UPDATE refresh_tokens SET used_at = now(), replaced_by_jti = <new_jti> WHERE jti = $1`. Insert new `refresh_tokens` row for `<new_jti>`. Issue new access + refresh pair and return.
 - **Cleanup:** retention job deletes rows where `expires_at < now() - interval '60 seconds'` (retain for the grace window beyond expiry)
 
 **Grace period rationale:** Without this, any user with two browser tabs silently triggers the theft protocol on every 15-minute access token expiry: both tabs detect expiration simultaneously and fire concurrent refresh requests. Tab A's request arrives first (wins), Tab B presents the now-consumed token, and the server increments `token_version`, globally logging out the user from all devices. This produces constant spurious logouts for a perfectly normal usage pattern. The 60-second grace window handles network jitter, tab scheduling variance, and concurrent SPA requests without weakening security meaningfully (the attacker's window narrows to 60 seconds, during which they can only get an access token that expires in ≤15 minutes).
 
-This makes refresh tokens stateful (one DB lookup per refresh) while keeping access tokens fully stateless. Granular per-device revocation (marking one `refresh_tokens` row as used without incrementing `token_version`) is now architecturally possible as a P1 UX feature.
+This makes refresh tokens stateful (one DB lookup per refresh) while keeping access tokens fully stateless. Granular per-device revocation (marking one `refresh_tokens` row as used without incrementing `token_version`) is architecturally possible; it is not built.
 
 **Password hashing (native auth):**
-- Algorithm: argon2id via `alexedwards/argon2id` wrapper (uses `golang.org/x/crypto/argon2`)
+- Algorithm: argon2id, with a small PHC-format encoder over `golang.org/x/crypto/argon2` (`internal/auth/hash.go`)
 - Parameters per OWASP Password Storage Cheat Sheet: memory=19456 KiB (19 MiB), iterations=2, parallelism=1, salt=16 bytes, key=32 bytes
 - Storage format: `$argon2id$v=19$m=19456,t=2,p=1$[base64(salt)]$[base64(hash)]`
-- `users` table includes `password_hash_version INT DEFAULT 2` column (1=bcrypt legacy, 2=argon2id) for future algorithm migration via lazy upgrade on login
+- `users.password_hash_version` is reserved for a future algorithm migration by lazy upgrade on login. Nothing reads it. The code writes 1 for an argon2id hash and 0 for a passwordless user (OAuth, OIDC or SCIM); the column default is 2. There is no other algorithm.
 
 **Argon2id concurrency limiter (required, anti-DOS):**
 
@@ -738,19 +775,20 @@ defer releaseArgon2Slot()
 - **Why not just rate-limit:** Rate limiting operates at request ingress; a burst that slips past the rate limiter can still exhaust memory. Defense-in-depth requires both layers.
 
 **CSRF**
-- Use SameSite cookies + CSRF token for state-changing requests (double-submit token or header token).
+- SameSite=Lax cookies plus a required header: an unsafe-method request (POST, PUT, PATCH, DELETE) that authenticates with the `access_token` cookie must carry `X-Requested-By: CVErt-Ops` (`internal/api/middleware_csrf.go`). A cross-site form cannot set a custom header. Requests that authenticate with a bearer API key are exempt.
 
-**Environment-aware `Secure` cookie flag (required):** Authentication cookies (`HttpOnly`, session, auth state) MUST set `Secure: true` only when TLS is in use. Setting `Secure: true` unconditionally breaks the local development workflow entirely with no browser error message — the browser silently refuses to send the cookie to `http://localhost:*`, making all auth flows fail. The server must derive the Secure flag from configuration: `COOKIE_SECURE=true` in production, `false` in local development (or derive it from `APP_ENV != "production"`). Never hardcode `Secure: true`. This applies to session cookies, OAuth state cookies, and OIDC nonce cookies.
+**Environment-aware `Secure` cookie flag (required):** Authentication cookies (`HttpOnly`, session, auth state) MUST set `Secure: true` only when TLS is in use. Setting `Secure: true` unconditionally breaks the local development workflow entirely with no browser error message — the browser silently refuses to send the cookie to `http://localhost:*`, making all auth flows fail. The Secure flag comes from `COOKIE_SECURE` (default `false`). Outside `APP_ENV=development`, startup fails if `EXTERNAL_URL` is not HTTPS, or if it is HTTPS and `COOKIE_SECURE` is false. Never hardcode `Secure: true`. This applies to session cookies, OAuth state cookies, and OIDC nonce cookies.
 
 **API key implementation (required — opaque strings, NOT JWTs):**
 
 Implementing API keys as long-lived JWTs is a critical mistake: (a) they cannot be individually revoked without a stateful blocklist, and (b) rotating `JWT_SECRET` (due to compliance or suspected compromise) invalidates every API key across every org simultaneously, instantly breaking all user CI/CD pipelines. API keys must be independent of JWT infrastructure.
 
 Required pattern:
-- Generate: 32 cryptographically random bytes, base58/hex-encoded, prefixed: `cvo_` + random bytes
+- Generate: 32 cryptographically random bytes, hex-encoded, prefixed: `cvo_` + 64 hex characters
 - Store: only `sha256(raw_key)` in the `api_keys` table — never the raw key
 - Display: show the raw key to the user exactly once (in the create response), then discard
-- Authenticate: compute `sha256(presented_key)`, look up candidate hash rows in `api_keys` (e.g., by key prefix/hint for index efficiency), then compare hashes using **`crypto/subtle.ConstantTimeCompare`** — never `==` or `bytes.Equal`. Standard equality operators short-circuit on the first mismatching byte, creating a timing oracle: an attacker who can measure API response latency to nanosecond precision can determine how many bytes of the stored hash matched, eventually forging a valid key. `subtle.ConstantTimeCompare` always processes all bytes in constant time regardless of where the mismatch occurs, eliminating the timing signal entirely. This is a one-line change that costs nothing and is mandatory for any system that stores and compares secrets.
+- Role: a key holds `viewer`, `member` or `admin`, no higher than its creator's role. A request acts with the lower of the key's role and the creator's current org role. Keys cannot call site-admin routes. `GET /api/v1/whoami` tells a key what it is.
+- Authenticate: compute `sha256(presented_key)`, look the row up by the unique index on the hash, then compare hashes using **`crypto/subtle.ConstantTimeCompare`** — never `==` or `bytes.Equal`. Standard equality operators short-circuit on the first mismatching byte, creating a timing oracle: an attacker who can measure API response latency to nanosecond precision can determine how many bytes of the stored hash matched, eventually forging a valid key. `subtle.ConstantTimeCompare` always processes all bytes in constant time regardless of where the mismatch occurs, eliminating the timing signal entirely. This is a one-line change that costs nothing and is mandatory for any system that stores and compares secrets.
   ```go
   incomingHash := sha256.Sum256([]byte(presentedKey))
   if subtle.ConstantTimeCompare(incomingHash[:], storedHash[:]) == 1 {
@@ -759,14 +797,15 @@ Required pattern:
   ```
 - Scope: API keys have their own `expires_at` and `last_used_at` columns; they are not linked to any specific user session or `token_version`
 
-### 7.2 Federation Strategy (RESOLVED)
-**Decision:** `coreos/go-oidc/v3` for OIDC discovery/verification + `golang.org/x/oauth2` for OAuth2 flows. This is the standard pairing in the Go ecosystem (v3.17.0, actively maintained as of Nov 2025).
+### 7.2 Federation Strategy
+**Decision:** `coreos/go-oidc/v3` for OIDC discovery/verification + `golang.org/x/oauth2` for OAuth2 flows. This is the standard pairing in the Go ecosystem.
 
-**MVP auth scope:**
-- Native email/password (argon2id hashing, see 7.1)
-- GitHub OAuth
-- Google OAuth
-- Generic OIDC and SAML deferred to Enterprise milestones (`crewjam/saml` if needed)
+**Sign-in methods as built:**
+- Native email/password (argon2id hashing, see 7.1), with MFA (§7.4)
+- GitHub OAuth and Google OIDC, enabled when their client credentials are configured. They create a new user only when `REGISTRATION_MODE=open`, and they cannot be linked to an existing account: an email that already belongs to a user gets 409.
+- **Per-org generic OIDC SSO** (Enterprise tier): one SSO connection per org (`sso_connections`), for an identity provider such as Microsoft Entra ID, Okta or Keycloak. The client secret is encrypted at rest with AES-256-GCM (`internal/crypto`; key storage: `dev/specs/sso-secret-storage.md`). The org lists its email domains (`sso_email_domains`), and `POST /api/v1/auth/discover` maps a sign-in email to its org's connection. There is no just-in-time user creation: a signed-in member (member+) links their identity through `GET /api/v1/orgs/{org_id}/sso/link`, and an unlinked OIDC subject gets 403. Users can also be provisioned by SCIM (§7.5). The identity provider key is `oidc:<connection_id>`.
+- SAML is not built.
+- **Open:** the GitHub, Google and OIDC callbacks issue full tokens without an MFA challenge or a check of the user's MFA mandate (§7.4).
 
 **Critical implementation split — GitHub is OAuth 2.0 only, NOT OIDC (required):**
 
@@ -778,7 +817,7 @@ The implementation must branch on provider:
 |---|---|---|
 | **Google** | `coreos/go-oidc/v3` (OIDC) | ID token claims: `sub`, `email`, `email_verified` |
 | **GitHub** | `golang.org/x/oauth2` only (raw OAuth 2.0) | Manual REST call: `GET https://api.github.com/user` + `GET https://api.github.com/user/emails` (to get primary verified email, which is not guaranteed in the `/user` response) |
-| **Future enterprise OIDC** | `coreos/go-oidc/v3` | OIDC discovery URL from config |
+| **Per-org OIDC SSO** | `coreos/go-oidc/v3` | OIDC discovery URL from the org's SSO connection |
 
 GitHub-specific flow:
 1. Redirect user to GitHub OAuth authorize URL (standard `oauth2.Config`) — **MUST include `user:email` scope** (see critical note below)
@@ -804,7 +843,7 @@ githubOAuthConfig := &oauth2.Config{
 
 Note: `read:user` scope alone is NOT sufficient. `user:email` is the specific scope that grants `/user/emails` access.
 
-**`user_identities` table:** Each row links a `user_id` to a federated identity provider (e.g., `provider=github, provider_user_id=12345, email=...`). A user may have multiple identities (e.g., email/password + GitHub). This table is the reason `user_identities` appears in org/tenant tables (see 4.2) and is required for MVP to support the native + GitHub auth paths.
+**`user_identities` table:** Each row links a `user_id` to a federated identity provider (e.g., `provider=github, provider_user_id=12345, email=...`; SCIM-provisioned users carry `scim:<config_id>`, OIDC users `oidc:<connection_id>`). The schema allows several identities per user, but only OIDC has a link flow today; GitHub and Google identities belong to the user they created.
 
 **Identity matching MUST use `provider_user_id` / OIDC `sub` — never email (required):**
 
@@ -832,73 +871,97 @@ cfg.ExternalURL + "/api/v1/auth/oauth/" + provider + "/callback"
 
 **OIDC nonce verification required (Google, required):** The OpenID Connect nonce is a random value embedded in the authorization request that the provider includes in the ID token's `nonce` claim. Without nonce verification, a replay attack succeeds: an attacker who captures a valid ID token (e.g., via a referrer header or a victim's browser history) can replay it to authenticate as the victim. The `coreos/go-oidc/v3` library does **not** automatically verify the nonce — the application must: (1) generate a random nonce and store it as a `HttpOnly, Secure, SameSite=Lax` cookie before redirecting; (2) pass the nonce to `oauth2.Config.AuthCodeURL(state, oauth2.SetAuthURLParam("nonce", nonce))`; (3) after receiving the ID token in the callback, call `oidcVerifier.Verify()` to validate the signature, expiry, and audience; then extract the `nonce` claim from the verified token and compare it to the cookie value. Nonce verification applies to the Google OIDC flow only — the GitHub OAuth2 flow does not use ID tokens and has no nonce concept.
 
-### 7.3 RBAC Model (MVP)
+### 7.3 RBAC Model
 
 **Roles**
 
 | Role | Scope | Description |
 |---|---|---|
-| `owner` | org | Full control including org deletion, billing, and ownership transfer. Exactly one owner per org (transferable). |
-| `admin` | org | Manage members, groups, watchlists, alert rules, channels, reports, and org settings. Cannot delete org or transfer ownership. |
-| `member` | org | Create/edit own watchlists and alert rules. View all org watchlists, alerts, and reports. Cannot manage members or channels. |
-| `viewer` | org | Read-only access to CVE data, watchlists, alerts, and reports within the org. Cannot create or modify any org resources. |
+| `owner` | org | Full control, including SSO, SCIM and the org's MFA policy. Exactly one owner per org: the user who created it. Ownership transfer and org deletion are not built. |
+| `admin` | org | Manage members, invitations, groups, channels, org settings, member MFA and password resets, and the org audit log (Enterprise). |
+| `member` | org | Create and edit watchlists, alert rules, reports and saved searches. Create API keys. |
+| `viewer` | org | Read-only access to CVE data, watchlists, alerts and reports within the org; version checks, rule validation and dry-run, AI features. |
+| site admin | instance | `users.is_site_admin`, at most one per instance: the first user to register with a password. Manages feeds, all orgs and users, deliveries, reindexing, config reload and the security event log under `/api/v1/admin` (Appendix B). There is no endpoint to grant or move it. |
 
-Roles are stored on `org_members(org_id, user_id, role)`. A user's effective role in an org is determined solely by their `org_members` row; group membership does not escalate role.
+Roles are stored on `org_members(org_id, user_id, role)`. A user's effective role in an org is determined solely by their `org_members` row; group membership does not escalate role, except through a SCIM group mapping, which sets the `org_members` role (§7.5). A deactivated membership (`org_members.deactivated_at`, set by SCIM) gets 403.
 
 **Groups**
 
-Groups (`groups`, `group_members`) are org-scoped collections of users used for:
-- **Notification routing:** a notification channel can target a group (e.g., "send digest to the AppSec team group").
-- **Watchlist ownership:** a watchlist can be owned by a group, making it visible/editable by all group members (subject to their role permissions).
-- **Future: fine-grained permissions.** Groups provide the structural foundation for per-resource ACLs if needed post-MVP (e.g., "only the Platform team group can edit this watchlist"). MVP does not implement per-resource ACLs.
+Groups (`groups`, `group_members`) are org-scoped collections of users. A watchlist may name a group (`watchlists.group_id`), and a SCIM group may be mapped to a group, whose members SCIM then keeps in sync. Nothing else reads groups today: they do not route notifications and grant no edit rights. Per-resource access control built on groups is not planned in detail.
 
-Groups do **not** define roles. Every user's permissions come from their org-level role; groups are purely an organizational/routing construct.
+Groups do **not** define roles. Every user's permissions come from their org-level role.
 
-**Permission Matrix (MVP)**
+**Permission Matrix (as built)**
 
 | Action | owner | admin | member | viewer |
 |---|---|---|---|---|
-| Manage org settings / billing | Y | — | — | — |
-| Delete org / transfer ownership | Y | — | — | — |
-| Invite / remove members | Y | Y | — | — |
-| Assign roles (up to admin) | Y | Y | — | — |
+| SSO connection, SCIM configuration, org MFA policy | Y | — | — | — |
+| Org settings (name and others) | Y | Y | — | — |
+| Invite / remove members, assign roles (up to admin) | Y | Y | — | — |
+| Reset a member's MFA, force a password reset, require MFA for a member | Y | Y | — | — |
 | Manage groups | Y | Y | — | — |
-| CRUD notification channels | Y | Y | — | — |
-| CRUD watchlists (any) | Y | Y | — | — |
-| CRUD own watchlists | Y | Y | Y | — |
-| CRUD alert rules (any) | Y | Y | — | — |
-| CRUD own alert rules | Y | Y | Y | — |
-| CRUD scheduled reports | Y | Y | Y | — |
-| View all org data (CVEs, alerts, reports) | Y | Y | Y | Y |
-| Use AI features (within quota) | Y | Y | Y | Y |
-| Manage API keys (own) | Y | Y | Y | — |
-| View audit log (Enterprise) | Y | Y | — | — |
+| CRUD notification channels, rotate secrets, test, replay deliveries | Y | Y | — | — |
+| CRUD watchlists, alert rules, scheduled reports; bind channels | Y | Y | Y | — |
+| CRUD own saved searches (admin+ also edits shared ones) | Y | Y | Y | — |
+| Create API keys | Y | Y | Y | — |
+| Revoke API keys | Y (any) | Y (any) | own only | own only |
+| Push data to the inbound ingest endpoint | Y | Y | Y | — |
+| View all org data (CVEs, alerts, deliveries, reports, API key list) | Y | Y | Y | Y |
+| Version check, rule validate and dry-run, AI features (within quota) | Y | Y | Y | Y |
+| View org audit log (Enterprise) | Y | Y | — | — |
+
+The design split watchlists and alert rules into "own" (member+) and "any" (admin+). That split is not enforced: any member can edit or delete any watchlist, alert rule or report. Only saved searches check the owner. **Open:** decide whether to enforce ownership.
 
 **Enforcement:**
-- Every org-scoped endpoint checks `(org_id, user_id) → role` before processing.
-- Permission checks are implemented as reusable middleware (chi middleware chain or echo middleware), not inline per-handler. The middleware extracts the authenticated user's role from the JWT claims + `org_members` lookup (cached per-request) and injects it into the request context.
-- Integration tests must cover: each role × each endpoint = expected allow/deny.
-- The `owner` role cannot be assigned via the normal role-assignment endpoint; ownership transfer is a separate, confirmation-gated action.
+- Every org-scoped endpoint checks `(org_id, user_id) → role` before processing, through the `RequireOrgRole` chi middleware, which reads `org_members` on each request.
+- Integration tests cover each role × each endpoint = expected allow/deny.
+- The `owner` role cannot be assigned through the role-assignment endpoint or an invitation.
 
-**Self-hosted single-user mode:** For homelab/self-hosted deployments with a single user, the first user to register is automatically assigned `owner` of a default org. This avoids requiring org setup ceremony for simple deployments.
+**Self-hosted first user:** the first user is assigned `owner` of a default org, and becomes site admin if they registered with a password (a first user who signs in through GitHub or Google does not). This avoids requiring org setup ceremony for simple deployments. Any signed-in user can create further orgs (`POST /api/v1/orgs`).
+
+### 7.4 Multi-Factor Authentication
+
+Built in Phase 11. Design: `dev/plans/2026-03-16-phase11-mfa-totp-email-otp-design.md` (TOTP, email one-time codes, recovery codes, org policy); SPA sign-in steps: `dev/plans/2026-11-03-spa-mfa-sign-in-design.md`.
+
+- **Methods:** TOTP (SHA-1, 6 digits, 30-second step, ±1 step; a code's step is recorded so it cannot be replayed) and email one-time codes (6 digits, stored as SHA-256, valid `MFA_EMAIL_OTP_TTL` = 10 minutes, at most `MFA_EMAIL_OTP_MAX_PER_HOUR` = 5 per hour, `MFA_CHALLENGE_MAX_ATTEMPTS` = 3 tries). Enrolling generates 10 one-time recovery codes, stored as SHA-256. WebAuthn is not built.
+- **Secrets:** the TOTP secret is encrypted with AES-256-GCM under `SSO_ENCRYPTION_KEY`, with the user ID as associated data. **Open:** `cvert-ops rotate-encryption-key` re-encrypts only SSO client secrets, so TOTP secrets still need `SSO_ENCRYPTION_KEY_PREVIOUS` after a rotation.
+- **Tables:** `mfa_credentials`, `mfa_recovery_codes`, `mfa_challenges` (email codes and remembered devices), and org-scoped `mfa_requirements`. `organizations` holds `mfa_required_all`, `mfa_remember_device_allowed` and `mfa_remember_device_days` (7–90).
+- **Sign-in flow:** a correct password returns, in place of full tokens, a list of pending steps (`mfa_challenge`, `mfa_enrollment_required`, `password_reset`) and a pending token valid `MFA_PENDING_TOKEN_TTL` = 5 minutes. The client completes each step through `/api/v1/auth/mfa/*` (Appendix B).
+- **Mandates:** a user must use MFA if any of these holds: `MFA_REQUIRED_SITE_ADMINS` and they are site admin; `MFA_REQUIRED_ORG_OWNERS` and they own an org; an org they belong to sets `mfa_required_all` (owner, `PATCH /orgs/{org_id}/mfa-settings`); or an admin requires it for them (`POST`/`DELETE /orgs/{org_id}/members/{user_id}/require-mfa`). Removing a method needs the password and is refused while MFA is mandated for the user.
+- **Remember this device:** allowed only if every org the user belongs to allows it, for the smallest number of days among them.
+- **Admin actions:** admin+ can reset a member's MFA and force a password reset, for members below their own role (a site admin can act on anyone); both increment `token_version`. Wrong-length codes count as failed attempts and share the lockout counter (§7.1).
+- **Open:** federated sign-in (GitHub, Google, OIDC) does not apply MFA (§7.2).
+
+### 7.5 SCIM Provisioning
+
+Built in Phase 7. Design: `dev/plans/2026-03-19-phase7-scim-provisioning-design-v2.md` (SCIM 2.0 server, token auth, role mapping from groups).
+
+- **Endpoints:** SCIM 2.0 under `/api/v1/orgs/{org_id}/scim/v2/`: `ServiceProviderConfig`, `Schemas`, `ResourceTypes`, and create, list, get, replace, patch and delete for `Users` and `Groups`. It advertises PATCH and filtering (at most 200 results); bulk, sort and ETags are not supported. These routes are not in the OpenAPI spec.
+- **Authentication:** a per-org bearer token, `cvert_scim_` + 64 hex characters, stored as SHA-256 with an 8-character display prefix and compared in constant time. The org in the path must match the token's org and the configuration must be enabled. Rate limit: `SCIM_RATE_LIMIT` = 50 requests per second per org.
+- **Configuration:** one `scim_configs` row per org, tied to the org's SSO connection (§7.2), with a `default_role` of viewer or member. Enterprise tier. Owner creates, changes, deletes and rotates the token; admin+ reads it and maps groups (`/api/v1/orgs/{org_id}/sso/scim`, Appendix B).
+- **Users:** a create matches an existing identity by `externalId`, then an existing user by email (and links them), and otherwise creates a passwordless user with a membership at the default role. Delete, or `active=false`, deactivates the membership (`org_members.deactivated_at`), not the user; the sole owner cannot be deactivated. Members marked `scim_exempt` are left alone.
+- **Groups:** a `scim_groups` row maps to a role (viewer, member or admin) and optionally to a CVErt Ops group. When membership changes, the user's role becomes the highest mapped role among their groups, or the default role; owners and exempt members are skipped. Membership of a mapped CVErt Ops group is kept in `group_members` with `scim_managed = true`.
+- **Proxies:** `X-Forwarded-Proto` is honoured only from `TRUSTED_PROXIES` (§16.1).
 
 ---
 
 ## 8. Search & Indexing
 
-### 8.1 Search Requirements (MVP)
-- Full text search across: description + vendor/product tokens + package names + CWE titles (if dictionary present)
-- Facets: severity, CVSS range, date range, CWE, ecosystem/package, exploit status, CISA KEV, EPSS range
+### 8.1 Search
+- Full text search over `cve_search_index.fts_document`, which weights the description (A), CWE IDs (B), affected package names (C) and the CVE ID (D). Search code is in `internal/store/cve.go` (`SearchCVEs`); the planned `internal/search` package is empty.
+- Filters on `GET /api/v1/cves`: severity, modified-date range, CWE ID, ecosystem and package, exploit status, CISA KEV. CVSS and EPSS range filters and facet counts are not built. The endpoint requires authentication.
+- Saved searches (§19.5) and AI natural-language search (§13.2) run the same query path, under the alert evaluator's query settings.
 
-### 8.2 CWE Titles (RESOLVED)
+### 8.2 CWE Titles (decided, not built)
 **Decision: Full dictionary ingestion.**
 
-Ingest MITRE CWE list into `cwe_dictionary(cwe_id TEXT PK, name TEXT, description TEXT)` and include `name` in FTS `tsvector` document for search enrichment. Users can search "buffer overflow" and find CVEs with CWE-120.
+Ingest MITRE CWE list into `cwe_dictionary(cwe_id TEXT PK, name TEXT, description TEXT)` and include `name` in FTS `tsvector` document for search enrichment, so that a search for "buffer overflow" finds CVEs with CWE-120.
 
+**Status:** the `cwe_dictionary` table exists (migration 000003) but nothing populates or reads it, and there is no `import-cwe` command. The FTS slot meant for CWE names holds CWE IDs. Remaining work:
 - **Data source:** https://cwe.mitre.org/data/downloads.html (XML or JSON, freely available)
 - **Update cadence:** Low (CWE list changes infrequently); periodic refresh via CLI command or scheduled job
 - **Ingestion:** `cvert-ops import-cwe` CLI command or auto-ingest on first run
-- **FTS integration:** Join CWE names into the `fts_document` tsvector in `cve_search_index` during merge (not in `cves` directly — see section 5.2 for why)
+- **FTS integration:** Join CWE names into the `fts_document` tsvector in `cve_search_index` during merge (not in `cves` directly — see section 5.2 for why), then reindex (`POST /api/v1/admin/reindex`)
 
 ---
 
@@ -908,13 +971,32 @@ Ingest MITRE CWE list into `cwe_dictionary(cwe_id TEXT PK, name TEXT, descriptio
 A watchlist is an org-defined set of things the org cares about:
 - Packages: `(ecosystem, name, optional namespace)`
 - CPE patterns / exact CPEs
-- Vendors/products (optional convenience)
+- CVE IDs (`cve_id`), for CVEs the org already knows it has, such as the findings of a host scanner that keeps its own per-host inventory
+- Vendors/products: not built as an item type. Alert rules match products with `affected.cpe_product` (§10.1); a shared product-list item is deferred (`dev/deferred-features.md` §12, MATCH-2 deferred items)
 
 ### 9.2 Matching Semantics
 - For packages: match if CVE has affected package entry with same ecosystem + normalized package name.
 - For CPE: match exact or prefix-pattern match (define pattern rule: "startsWith on normalized CPE string").
+- For CVE IDs: match if the CVE's ID equals the item's `cve_id`, which is stored in upper case. An item can name a CVE that is not in the corpus; it starts matching when a feed delivers that CVE.
 
-**Version range matching (future, required pattern):** The current watchlist item model (`ecosystem + name + optional namespace`) does not include a version constraint at MVP. If version range matching is added to watchlist items (e.g., "alert only for versions ≤ 2.3.4") or if an `affected.version` field is added to the alert DSL (§10.1), the matching logic MUST use a proper semver constraint library — `github.com/Masterminds/semver/v3` — rather than string comparison or lexicographic ordering. String comparison silently produces wrong results: `"2.10.0" < "2.9.0"` lexicographically, but `v2.10.0 > v2.9.0` per semver spec. This would cause silent false negatives (a watchlist match that should trigger simply doesn't), with no error surfaced. Do not implement any version range field without first integrating a proper semver library.
+**Replacing a whole list:** `PUT /orgs/{org_id}/watchlists/{id}/items` (member+) makes the watchlist hold exactly the items in the request, in one transaction, and returns counts of `added`, `removed` and `unchanged` items.
+- A request takes at most 10,000 items, about 500 KB of CVE items inside the 1 MiB request limit. A list of long package or CPE items can reach the request limit first.
+- Items already on the list keep their rows, so repeating a request changes nothing. Dropped items are soft-deleted.
+- An empty `items` array clears the list. A missing `items` key is rejected, so that a client bug cannot read as a request to clear it.
+- One invalid item rejects the whole request, and nothing changes.
+
+**When a listed CVE alerts:** changing a watchlist never changes the status of a rule bound to it and never runs an activation scan. Instead, the batch and EPSS evaluation paths add to their candidates the CVE items added to or removed from each rule's bound watchlists since their cursor (§10).
+- A CVE that already matches a bound rule when it is listed, such as one already in CISA KEV, alerts on the next run: the next batch run (every 2 minutes), or the next EPSS run (daily) for an EPSS-only rule.
+- A removed CVE stops matching, and the next run marks its open event `last_match_state = false`.
+- Each rule alerts once per CVE and `material_hash`. Listing a CVE again with no material change does not alert again, and its event keeps `last_match_state = false` until the CVE next changes materially.
+- A rule's activation scan records its matches with delivery suppressed, including CVEs already on the list. To be alerted about CVEs that already match, create the rule first and then push the list.
+- This applies to CVE items only. A package or CPE item added to a list matches a CVE when that CVE next changes, because adding a package could otherwise alert on its whole history.
+
+**Version comparison (required pattern):** The watchlist item model (`ecosystem + name + optional namespace`) has no version constraint. Any version comparison — the version check endpoint (§16), a future version range on watchlist items (e.g., "alert only for versions ≤ 2.3.4"), or a future `affected.version` field in the alert DSL (§10.1) — MUST use the comparison rules native to the advisory's ecosystem, never string comparison or semver applied across ecosystems. Both produce silent wrong answers: `"2.10.0" < "2.9.0"` as strings, and semver orders Maven's `1.0-sp` below `1.0`, cannot read PEP 440's `1.0.post1`, and ignores dpkg epochs and `~`.
+
+A version, range or ecosystem that cannot be evaluated MUST produce "cannot evaluate", never "not affected". A false "not affected" tells a user to stop looking at a real vulnerability, so an unrecognised ecosystem name, a malformed version and a range with no introduced bound all report "cannot evaluate". A range with no upper bound is affected from its introduced version onwards, as the OSV schema defines.
+
+The rules live in `internal/version`, which holds the three-way result (affected, not affected, cannot evaluate). It wraps `github.com/google/osv-scalibr/semantic` behind an internal interface, and a linter rule stops anything else importing that package. `semantic.Parse` accepts malformed strings and sorts them as real versions, so `internal/version` checks each ecosystem's syntax first. Products with no ecosystem, such as CPE products like nginx, use a numeric-only rule: dotted numeric versions compare numerically and anything else is "cannot evaluate".
 
 ### 9.3 Watchlist–Alert Rule Binding
 
@@ -922,7 +1004,7 @@ Alert rules and watchlists are **independent but composable.** An alert rule opt
 
 - `alert_rules.watchlist_ids` (nullable array of UUIDs): if present, the rule evaluates **only** against CVEs that match at least one of the referenced watchlists. If null/empty, the rule evaluates against the entire CVE corpus.
 - This binding is a filter, not a join condition in the DSL. Conceptually: `matched_cves = (watchlist_matches ∩ dsl_filter_results)` when watchlists are bound, or `matched_cves = dsl_filter_results` when unbound.
-- Scheduled digests (section 12) can also be scoped to a watchlist independently of alert rules.
+- Scheduled digests (section 12) store `watchlist_ids` too, but the digest query does not apply them yet (§12).
 
 This design means:
 - Simple use case (homelab): create a watchlist of your packages, create a rule "severity ≥ high", bind the rule to the watchlist → you get alerts only for high-severity CVEs affecting your packages.
@@ -933,12 +1015,12 @@ This design means:
 
 ## 10. Alert Rules (DSL + Execution)
 
-### 10.1 DSL: Allowed Fields and Types (MVP)
+### 10.1 DSL: Allowed Fields and Types
 Only these fields can be referenced in rules:
 
 | Field | Type | Notes |
 |---|---|---|
-| `cve_id` | string | |
+| `cve_id` | string | `eq`, `neq`, `in` and `not_in` compare a value shaped like a CVE ID in upper case, as CVE IDs are stored; other IDs (GHSA, which is mixed case) compare as written |
 | `severity` | enum | |
 | `cvss_v3_score` | float | |
 | `cvss_v4_score` | float | |
@@ -948,17 +1030,44 @@ Only these fields can be referenced in rules:
 | `cwe_ids` | string[] | membership checks |
 | `in_cisa_kev` | bool | |
 | `exploit_available` | bool | |
-| `affected.ecosystem` | string | via join to affected packages |
-| `affected.package` | string | via join |
+| `affected.ecosystem` | string | via join to affected packages; under `and`, matched on the same row as each `affected.package` condition |
+| `affected.package` | string | via join; under `and`, matched on one row with the rule's `eq`/`in` ecosystem conditions |
+| `affected.cpe_product` | CPE `vendor:product` | NVD vulnerable CPE match rows and CNA vendor and product names (below) |
 | `description_primary` | text | `contains`, `regex` |
 
-### 10.2 Operators (MVP)
+**`affected.cpe_product` (MATCH-2):** the value is the vendor and product of a CPE 2.3 name, `vendor:product` (for example `nodejs:node.js`), written with the backslash escapes NVD uses in CPE names (`notepad\+\+`) and compared in lower case. A CVE matches when either source names the product, so a rule can match a CVE on the day its CNA record lands, before NVD has analysed it:
+- NVD: a `cve_cpe_matches` row with `vulnerable = true` whose CPE starts with the product, under any CPE part (`a`, `o`, `h`).
+- CNA: a `cve_cna_affected` row whose lower-cased vendor and product equal one of the product's CNA spellings. The spellings come from the version check endpoint's name table (`internal/check/names.go`; for example `nodejs:node.js` also reads CNA rows named `nodejs` / `node`), so a rule and a version check of one product read the same CNA rows. The product's own vendor and product are always spellings. A CNA entry matches whatever its version statuses say; status belongs to version conditions, which are not built.
+
+The field is not the CPE watchlist item (§9.2): that item matches every CPE string in `cve_affected_cpes` by prefix, including NVD platform CPEs (`vulnerable = false`), and reads no CNA names. A rule bound to a CPE-item watchlist that also uses the field matches CVEs both select. Operators, value rules and limits are in §10.2; the design, including why only these two sources are read, is `dev/plans/2026-11-13-product-match-rules-design.md` (section 3).
+
+**Package conditions are correlated under `and` (MATCH-2):** in an `and` rule, each `affected.package` condition must hold on one `cve_affected_packages` row together with every `affected.ecosystem` condition that uses `eq` or `in`. `{affected.ecosystem eq Debian, affected.package eq openssl}` means a Debian row (any release) for openssl, not a Debian row and an openssl row in any ecosystem.
+- Two package conditions may match different rows, so a rule can still ask for a CVE that affects package `a` and package `b`.
+- `affected.ecosystem` with `neq` or `not_in` stays a condition on the whole CVE ("no row in this ecosystem").
+- In a rule with no package condition, each ecosystem condition matches on its own. Under `or`, every condition matches on its own.
+- `affected.cpe_product` is not correlated with package conditions; it reads other tables.
+- An `and` rule whose `eq`/`in` ecosystem conditions beside a package condition share no ecosystem can never match, and is refused at save (§10.2).
+
+Design: `dev/plans/2026-11-13-product-match-rules-design.md` (section 4, package conditions: exact match and correlation).
+
+### 10.2 Operators
 - Numeric: `gt|gte|lt|lte|eq|neq`
 - Enum/bool: `eq|neq|in|not_in`
 - Arrays: `contains_any|contains_all`
 - Text: `contains` (case-insensitive), `starts_with`, `ends_with`, `regex`
 
-**Regex support (MVP, RE2-equivalent via Go stdlib):**  
+**Product and package operators (MATCH-2):**
+- `affected.package` takes `eq` and `in` besides `contains`, `starts_with` and `ends_with`. `eq` and `in` compare a whole name after the folding of the row's ecosystem (`ecosystem.FoldPackageName`, which merge and watchlist package items also use: lower case everywhere, and `-`, `_` and `.` read as one character for PyPI). So `Foo_Bar` matches PyPI `foo-bar` and npm `foo_bar`, not npm `foo-bar`. An empty or whitespace-only value is refused. With no `eq`/`in` ecosystem condition to narrow it (any `or` rule, or an `and` rule without one), the validate endpoint warns that the match cannot narrow by ecosystem first; PostgreSQL 18 still reads `cve_affected_packages_check_idx` for it by skip scan.
+- `affected.cpe_product` takes `eq` and `in` only. `neq`, `not_in`, the text operators and `regex` are refused. A value must be `vendor:product` with exactly one unescaped colon; each part must be a literal name (not empty, `*` or `-`, with no unescaped `*` or `?`, not ending in an unescaped backslash), and a character CPE 2.3 requires escaped must carry its backslash. The value is printable ASCII and at most 255 characters. A product with no row in the name table (§10.1) gets a validate-endpoint warning: before NVD analyses a CVE, it matches only a CNA record that names the product's own vendor and product.
+- `in` with an empty list on `affected.cpe_product` or `affected.package` is an error (`value must list at least one item`). Other fields keep their behaviour.
+
+**Values and operators (required):** a JSON `null` value is refused for every operator that takes one value, on every field; `json.Unmarshal` would otherwise read it as the zero value (`cvss_v3_score gt null` as `gt 0`). `in` and `not_in` keep reading a `null` list as an empty list. `Compile` refuses an operator the field does not take and a `null` single value, as `Validate` does, so a stored rule holding either fails closed (§10.5) rather than compiling to another operator's SQL.
+
+**Rule limits (required):** a rule may name at most **50 `affected.cpe_product` values** in total, across its product conditions, and may hold at most **100 conditions** of any field. Both are errors at save (rule-level, index -1), and `Compile` applies them again to every stored rule, so a rule over a limit fails closed (§10.5). Each product value adds its own SQL terms and bind parameters; without a bound on conditions, a rule inside the 1 MiB request limit could pass PostgreSQL's 65,535-parameter limit, fail on every evaluation and hold the batch cursor for all rules (`dev/implementation-pitfalls.md` DB-12, a dynamic `IN` list overflowing the 65,535-parameter limit). 100 conditions is a judgment, not a measurement. An `and` rule may also hold at most **10 set conditions**: its `affected.cpe_product` and `affected.package` conditions, and its `affected.ecosystem` `eq`/`in` conditions when it has no package condition (beside one they join its set). Each is its own CVE-ID set under `and`, and planning time grows with them: realtime evaluation of one CVE took 4.3 ms with 10 sets and 15.9 ms with 20 on the full ingest, and realtime evaluates every organisation's active rules on each changed CVE. `or` rules compile all their sets into one, so this limit does not apply to them (`dev/plans/2026-11-13-product-match-rules-design.md` section 17; `dev/plans/2026-11-13-product-match-rules-measurements.md`).
+
+**List binding (required):** every `in` and `not_in` list, on every field, is bound as one array parameter (`= ANY($n)` or `<> ALL($n)`), never one placeholder per value, so a list's length does not count against the parameter limit.
+
+**Regex support (RE2-equivalent via Go stdlib):**
 Regex is enabled using Go's `regexp` package (RE2-equivalent semantics: linear time, no catastrophic backtracking). This avoids ReDoS while still allowing powerful matching.
 
 **Decision (MVP):** Regex is allowed, but **only as a post-filter** after a selective SQL prefilter, with strict guardrails to prevent accidental “scan the world in Go.”
@@ -974,11 +1083,16 @@ Regex is enabled using Go's `regexp` package (RE2-equivalent semantics: linear t
   - `severity >= X`, **or**
   - `in_cisa_kev = true`, **or**
   - `date_published` / `date_modified_*` bounded window (e.g., last N days), **or**
-  - `affected.ecosystem/package` filter
+  - `affected.ecosystem/package` filter, **or**
+  - `affected.cpe_product` filter
+
+  A condition counts only if it narrows the candidates: `severity`, `affected.ecosystem` or `affected.cpe_product` with `eq` or `in`, `in_cisa_kev eq true`, a date with `gt`, `gte` or `eq`, any `affected.package` condition, or `fts_query`. Negative operators (`neq`, `not_in`), `in_cisa_kev eq false` and an upper bound on a date keep nearly every CVE and do not count (`internal/alert/dsl/validator.go` `narrowingOps`).
+- An `or` rule may not combine a regex condition with conditions of other operators. The regex is checked only on the CVEs the SQL conditions select, so under `or` a CVE that only the regex matches would never be checked, and a CVE that only a SQL condition matches would be dropped by the regex. Such a rule is refused at save, and `Compile` refuses a stored one (§10.5). An `or` rule of regex conditions alone is valid with a watchlist, which selects its candidates.
 - Candidate cap: the SQL prefilter may return at most **N candidates** (default `N=5,000`). If the cap is exceeded:
   - the run is marked `status=partial` with a warning
   - **no alerts are fired** for that rule/run (fail-closed to avoid incomplete evaluation)
   - operator-facing metric + log entry emitted
+- The cap bounds a single prefilter query. The batch and EPSS evaluators advance their cursor past every CVE in the run, so they must not let the cap drop CVEs from evaluation: they evaluate each rule over the run's changed CVEs in chunks of at most N CVE IDs, and the prefilter returns at most one row per CVE, so no chunk can exceed the cap. The activation scan pages the corpus the same way. A full-corpus query in a single statement (dry-run) remains subject to the fail-closed cap.
 - Compiled `*regexp.Regexp` objects are cached per rule (safe for concurrent use).
 
 **Why these guardrails (multiple angles):**
@@ -995,7 +1109,9 @@ Regex is enabled using Go's `regexp` package (RE2-equivalent semantics: linear t
 
 **Text operator case-insensitivity (required):**
 
-Vulnerability feeds exhibit massive casing volatility across sources and historical records (`Microsoft`, `microsoft`, `SQL Injection`, `sql injection`). All DSL text operator evaluations (`contains`, `starts_with`, `ends_with`, `eq`, `neq`) MUST normalize both the rule literal and the CVE field value to lowercase via `strings.ToLower` before comparison. A rule `vendor == “microsoft”` that silently misses CVEs recorded as `”Microsoft”` is a correctness failure. Regex operators must apply the `(?i)` case-insensitive flag by default unless the user explicitly supplies flags.
+Vulnerability feeds exhibit massive casing volatility across sources and historical records (`Microsoft`, `microsoft`, `SQL Injection`, `sql injection`). All DSL text operator evaluations (`contains`, `starts_with`, `ends_with`, `eq`, `neq`) MUST normalize both the rule literal and the CVE field value to lowercase via `strings.ToLower` before comparison. A rule `vendor == “microsoft”` that silently misses CVEs recorded as `”Microsoft”` is a correctness failure. Regex operators must apply the `(?i)` case-insensitive flag by default unless the user explicitly supplies flags: the compiler prepends `(?i)`, so a flag the pattern sets itself, such as `(?-i)`, overrides it, and the CVE field is matched as stored, not lower-cased.
+
+Ecosystem names are compared exactly, not in lower case. The validator accepts only canonical OSV ecosystem names (`npm`, `PyPI`, `Debian:13`), and ingest stores the same canonical names, so the case of both sides is already fixed and lower-casing would change no result; the exact comparison lets `cve_affected_packages_check_idx` serve `ecosystem = ANY(...)`. Package names in `eq`/`in` are compared after folding (above), which lower-cases them.
 
 **Nil-safe field accessors in the evaluation engine (required):**
 
@@ -1011,11 +1127,14 @@ A nil dereference panics the worker goroutine, drops the entire pending alert ba
 ### 10.3 Execution Model (Deterministic)
 - Rules compile to SQL queries over canonical tables (no "scan in Go"), with the exception of regex post-filtering described in 10.2.
 - **Query builder:** Dynamic DSL queries use `squirrel` (safe query builder with parameterized output). All static CRUD queries use `sqlc`. This split exists because `sqlc` requires all queries written upfront in `.sql` files, but DSL rules produce dynamic WHERE clauses at runtime. `squirrel` generates parameterized SQL (never string concatenation).
+- **Set conditions (MATCH-2):** a product condition, a package condition with its correlated ecosystem conditions (§10.1), and an `eq`/`in` ecosystem condition in a rule with no package condition each compile to membership in a set of CVE IDs (`cves.cve_id IN (...)`), with the caller's candidate IDs inside each branch of the set. Under `and`, each such condition is its own set. Under `or`, all of a rule's set conditions form one CVE set, with its scalar conditions OR-ed beside it, and all its `affected.package` `eq`/`in` conditions form one branch. When the evaluator has candidate IDs (realtime, batch, EPSS, activation), a product set matches its CPE prefixes and CNA names against bound arrays, so planning does not grow with the number of products; with none (dry-run, saved searches) it uses OR-ed range predicates that `cve_cpe_matches_check_idx` and `cve_cna_affected_check_idx` serve. The evaluator's candidate statements run with JIT and parallel query off (`SET LOCAL jit = off`, `SET LOCAL max_parallel_workers_per_gather = 0`); saved searches keep the server defaults. The built shape and its reasons: `dev/plans/2026-11-13-product-match-rules-design.md` section 17 (query shape after the implementation measurements, which amends its section 5); results on a full ingest: `dev/plans/2026-11-13-product-match-rules-measurements.md`.
 - Alerts run:
-  - **Realtime**: on CVE upsert that results in changed `material_hash`
-  - **Batched**: periodic job evaluates "changed CVEs since last run" (uses `date_modified_canonical` as cursor). Evaluates all rules EXCEPT those whose only conditions reference `epss_score`.
-  - **EPSS-specific**: dedicated daily job uses `date_epss_updated > last_cursor` to find CVEs with new EPSS data. Evaluates only rules that contain an `epss_score` condition. Fires on first match; `alert_events` material_hash dedup suppresses repeat fires while non-EPSS fields stay unchanged.
-  - **Digest-only**: no immediate alerts; included in scheduled reports
+  - **Realtime**: on CVE upsert that results in changed `material_hash`, or changed `match_inputs_hash` (the re-check signal for match inputs outside `material_hash`, §5.3). The ingest handler reads both before and after the merge.
+  - **Batched**: periodic job evaluates "changed CVEs since last run": CVEs whose `date_modified_canonical` **or** `date_match_inputs_changed` is after the cursor. The two conditions are a `UNION` of two keyset scans, one per column, so each uses its own index; the second catches a CVE whose match inputs changed and whose realtime evaluation failed. Evaluates all rules EXCEPT those whose only conditions reference `epss_score`.
+  - **EPSS-specific**: dedicated daily job uses `date_epss_updated > last_cursor` to find CVEs with new EPSS data. Evaluates only rules that contain an `epss_score` condition. Fires on first match; `alert_events` material_hash dedup suppresses repeat fires while the event stays open and non-EPSS fields stay unchanged.
+  - **Cursor advancement (batched and EPSS-specific):** a run advances its cursor only if every rule evaluated. If any rule's evaluation fails (a database error, or a partial candidate set), the run keeps the previous cursor and the next run re-evaluates the same CVEs for every rule; re-evaluation is idempotent through `alert_events` dedup. The cursor is held for at most a fixed number of consecutive runs (batch: 30, about an hour; EPSS: 3 days), after which it advances and an error is logged naming the rules whose CVEs were not evaluated. A held run still updates `last_success_at`, which the scheduler uses to space runs. A rule whose conditions no longer compile is not retried: it is set to `status=error` (§10.5).
+  - **Digest-only** (not built): a rule mode with no immediate alerts, included in scheduled reports. Digests select CVEs by their own filters (§12), not by alert rules.
+  - **Batched and EPSS cursor re-scan window (required):** both jobs select candidates from `last_cursor - 2 minutes`, not `last_cursor` (the batched job applies the window to both of its columns; `date_match_inputs_changed` is stamped from the same merge clock as `date_modified_canonical`). The cursor is the evaluator's clock at the start of the previous run, while the compared timestamps come from Postgres `now()` or the merge worker's clock and are taken before their writer commits; without the overlap, clock skew or a transaction that commits after the scan loses the alert. Re-evaluation inside the window is idempotent through the `alert_events` unique key. See `dev/implementation-pitfalls.md` NOTIFY-20 (evaluator cursor skips rows stamped before it).
 - **New rule activation scan (required, silent mode, async):** When an alert rule is first saved and enabled, a one-time full-corpus scan runs as an **asynchronous background job**. The HTTP handler must:
   1. Insert the rule with `status = 'activating'`
   2. Enqueue the activation scan job to the worker pool
@@ -1027,7 +1146,7 @@ A nil dereference panics the worker goroutine, drops the entire pending alert ba
 
   **`alert_rules.status` field values:** `draft` (saved but disabled) | `activating` (activation scan in progress) | `active` (scan complete, normal evaluation running) | `error` (scan or compiler failure — rule is disabled until fixed) | `disabled` (manually disabled by user).
 
-  The activation scan is subject to the same candidate cap as regular evaluation. The scan job uses `lock_key = 'alert_activation:<rule_id>'` in `job_queue` to prevent duplicate activation jobs if the rule is saved twice rapidly.
+  The activation scan is subject to the same candidate cap as regular evaluation. The scan job uses `lock_key = 'activation:<rule_id>'` on the `alert_activation` queue in `job_queue` to prevent duplicate activation jobs if the rule is saved twice rapidly.
 
   **Activation scan keyset pagination (required):** The activation scan must NOT execute `SELECT * FROM cves` or collect results into a slice. At 250,000+ CVEs this OOM-kills the worker container. Use keyset pagination in 1,000-row batches:
   ```go
@@ -1035,7 +1154,7 @@ A nil dereference panics the worker goroutine, drops the entire pending alert ba
   for {
       rows, _ := tx.Query(ctx, `
           SELECT cve_id, ... FROM cves
-          WHERE cve_id > $1 AND status != 'rejected'
+          WHERE cve_id > $1 AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
           ORDER BY cve_id ASC LIMIT 1000
       `, lastCVEID)
       batch := scanRows(rows)
@@ -1045,21 +1164,25 @@ A nil dereference panics the worker goroutine, drops the entire pending alert ba
   }
   ```
 
-  **Zombie activating rule recovery (required):** If the worker processing an activation scan crashes mid-run (OOM-kill, deployment restart), the rule remains permanently in `status = 'activating'`. A periodic sweeper goroutine (runs every 5 minutes) must identify `job_queue` rows where `queue = 'alert_activation'`, `status = 'running'`, and `locked_at < now() - interval '15 minutes'`. For each such zombie job, the sweeper transitions the associated alert rule to `status = 'error'`, logs the failure, and re-enqueues the activation scan job. Users can retry by PATCH-ing the rule (which sets `status = 'activating'` and enqueues a new scan).
+  **Zombie activating rule recovery (required):** If the worker processing an activation scan crashes mid-run (OOM-kill, deployment restart), the rule remains permanently in `status = 'activating'`. Two mechanisms prevent this. The worker pool's stale lock recovery re-enqueues a job whose worker stopped responding until the job has used its `max_attempts`, then marks it `dead`. A periodic sweeper (runs every 5 minutes) finds rules in `status = 'activating'`, not deleted, with `updated_at` more than 15 minutes ago and no `pending` or `running` `alert_activation` job holding the rule's lock key (`activation:<rule_id>`); it logs each one and transitions it to `status = 'error'`. The 15-minute margin covers the gap between saving the rule and enqueueing its job. Users can retry by PATCH-ing the rule (which sets `status = 'activating'` and enqueues a new scan).
 
 **Rejected CVE filtering in all evaluation passes (required):**
 
-The alert evaluation engine (realtime, batch, EPSS-specific, and activation scan) must add `AND cves.status NOT IN ('rejected', 'withdrawn')` to all evaluation queries. When NVD or MITRE rejects a CVE, they update its description to `** REJECT **...` and strip CVSS scores — this triggers a `material_hash` change that would fire alerts for every rule that previously matched. Paging security analysts for rejected CVEs causes immediate alert fatigue and product abandonment.
+The alert evaluation engine (realtime, batch, EPSS-specific, and activation scan) must add `AND COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')` to all evaluation queries. When NVD or MITRE rejects a CVE, they update its description to `** REJECT **...` and strip CVSS scores — this triggers a `material_hash` change that would fire alerts for every rule that previously matched. Paging security analysts for rejected CVEs causes immediate alert fatigue and product abandonment. The status is compared in lower case because feeds send `Rejected` and `REJECTED`. NULL means no source supplied a status, as with a CVE known only from CISA KEV; such a CVE must still match, and a bare `NOT IN` drops it because `NULL NOT IN (...)` is NULL.
+
+The filter belongs on the query that decides what matches. The batched and EPSS candidate scans must keep rejected and withdrawn CVEs, because resolution (see "Resolution alerts" below) considers only CVEs in the candidate list. The EPSS scan also selects CVEs retracted since its cursor by `date_modified_canonical`, because a tombstone clears `epss_score` without changing `date_epss_updated`, and EPSS-only rules run on no other path. The activation scan suppresses resolution, so its scan keeps the filter.
 
 **Tombstone handling — explicitly clear scores on rejection (required):** When a feed adapter ingests a CVE with `vulnStatus == "Rejected"` (NVD) or a non-null `withdrawn`/`withdrawn_at` field (OSV/GHSA), the merge pipeline MUST execute a hard-override UPDATE that explicitly NULLs out historical scores and clears affected packages: `SET cvss_v3_score = NULL, cvss_v4_score = NULL, cvss_v3_vector = NULL, cvss_v4_vector = NULL, epss_score = NULL, status = 'rejected'` (or `'withdrawn'`). Standard partial upsert logic (which only updates fields present in the payload) will preserve the historical CVSS 9.8 score because it is absent from the rejected payload — the system then continues evaluating this CVE using stale critical scores, spamming analysts with alerts for threats that no longer exist.
 
-**Resolution alerts — notify when CVE falls out of a rule (required):** Users do not just need to know when a CVE starts matching their rule; they also need to know when it stops matching. When the batch evaluator processes a CVE update and the new data no longer matches a rule that previously fired (i.e., there is a prior `alert_events` row for this `(rule_id, cve_id)` pair and the current evaluation returns false), the engine MUST enqueue a special **resolution notification** to all channels bound to that rule. The resolution payload includes `event_type: "resolution"` and the reason (e.g., "CVSS score downgraded from 9.8 to 4.3 — no longer meets threshold"). Without this, users track CVEs as active threats long after they were downgraded, wasting remediation effort. The `alert_events` table must add a `last_match_state BOOLEAN NOT NULL DEFAULT true` column to track whether the last evaluation matched (true) or resolved (false), enabling this state-transition check.
+**Resolution alerts — notify when CVE falls out of a rule (required):** Users do not just need to know when a CVE starts matching their rule; they also need to know when it stops matching. When the batch evaluator processes a CVE update and the new data no longer matches a rule that previously fired (i.e., there is a prior `alert_events` row for this `(rule_id, cve_id)` pair and the current evaluation returns false), the engine MUST enqueue a special **resolution notification** to all channels bound to that rule. The webhook body is `{"event_type": "resolution", "cves": [...]}`, and each CVE carries a reason and its current scores. The reason says the CVE's source rejected or withdrew it, or otherwise that it no longer matches the rule's conditions. Without this, users track CVEs as active threats long after they were downgraded, wasting remediation effort. A resolution notifies once per CVE, only when `last_match_state` changes from true to false, and only if at least one resolved event was delivered: activation-scan events, which channels never heard about, resolve silently. Resolutions use their own `notification_deliveries.kind = 'resolution'` batches and debounce window, separate from alerts. The `alert_events` table must add a `last_match_state BOOLEAN NOT NULL DEFAULT true` column to track whether the last evaluation matched (true) or resolved (false), enabling this state-transition check.
 
 ### 10.4 Dedup Model
 Table `alert_events(org_id, rule_id, cve_id, material_hash, last_match_state, first_fired_at, last_fired_at, times_fired)`
-- A rule fires again only if `material_hash` changes OR if `rule.fire_on_non_material_changes=true` (default false).
+- A rule fires again only if `material_hash` changes, OR if a resolved event's CVE matches the rule again at the same `material_hash`.
+- Changes outside `material_hash` never re-fire a rule: EPSS moves, reference links, a reworded description or a new "last modified" date. A rule flag to re-fire on them (`fire_on_non_material_changes`) was specified here, never read by the evaluator, and removed on 2026-11-14: it would mostly re-alert on noise, about once a day per matching CVE for a rule with an EPSS condition. A specific trigger, such as an EPSS rise past a threshold or a new exploit reference, would be its own feature. Reasons and examples: `dev/plans/2026-11-14-remove-fire-on-non-material-changes-design.md`.
+- A resolved event (`last_match_state=false`) reopens when its CVE returns to a `material_hash` the rule already fired on. Examples are a reversed rejection and an EPSS score that drops below a rule's threshold and comes back, which leaves `material_hash` unchanged. A reopen notifies like a new match, except during an activation scan, which reopens silently because it records a baseline. `last_fired_at` and `times_fired` record each reopen.
 
-**alert_events unique constraint + atomic insert (required):** Without a database-level unique constraint, two concurrent alert evaluation workers (e.g., a realtime trigger and a batch job) that race to evaluate the same rule+CVE within milliseconds of each other will both observe that no `alert_events` row exists, both insert a row, and both fan out notifications — producing duplicate alerts for the user. The table MUST have: `UNIQUE(org_id, rule_id, cve_id, material_hash)`. All alert event inserts MUST use `INSERT INTO alert_events ... ON CONFLICT (org_id, rule_id, cve_id, material_hash) DO NOTHING RETURNING id`. The notification fan-out MUST only proceed if the `RETURNING id` clause yields a row (i.e., the insert was not a no-op). This guarantees exactly-once alerting regardless of worker concurrency.
+**alert_events unique constraint + atomic insert (required):** Without a database-level unique constraint, two concurrent alert evaluation workers (e.g., a realtime trigger and a batch job) that race to evaluate the same rule+CVE within milliseconds of each other will both observe that no `alert_events` row exists, both insert a row, and both fan out notifications — producing duplicate alerts for the user. The table MUST have: `UNIQUE(org_id, rule_id, cve_id, material_hash)`. All alert event inserts MUST use `INSERT INTO alert_events ... ON CONFLICT (org_id, rule_id, cve_id, material_hash) DO NOTHING RETURNING id`. The notification fan-out MUST only proceed if the `RETURNING id` clause yields a row (i.e., the insert was not a no-op). This guarantees exactly-once alerting regardless of worker concurrency. When the insert is a no-op, the evaluator runs `UPDATE alert_events ... WHERE ... AND last_match_state = false RETURNING id` and fans out only if that returns a row, so an open event never fires again and only one concurrent evaluator can reopen a resolved one.
 
 ### 10.5 DSL Versioning
 
@@ -1068,6 +1191,9 @@ Alert rules are versioned to handle schema evolution safely:
 - The rule compiler maintains support for all active DSL versions. When the DSL evolves (new fields added, operators changed), the version is bumped, and a migration path is defined.
 - **Adding fields:** backward-compatible; existing rules at older versions simply don't reference the new field. No migration needed.
 - **Removing or renaming fields:** the old version's compiler continues to support the field with a deprecation warning. A background migration job rewrites affected rules to the new version (with admin review for ambiguous cases). Rules that cannot be auto-migrated are **disabled with an admin notification**, never silently dropped or allowed to fail open.
+- **Package correlation shipped without a bump (MATCH-2):** correlating `affected.ecosystem` with `affected.package` under `and` (§10.1) narrows what an existing rule with both conditions matches, and shipped at `dsl_version` 1 with no old compiler kept. The project had no users, and keeping the uncorrelated reading for old rules would have kept the wrong answer the change fixes. Old rules take the new meaning on their next evaluation: an open event whose CVE no longer matches resolves with a "no longer matches" notification (§10.3), and the re-check signal (§5.3) re-evaluates each CVE once on its first merge after the change. Reverting the correlation is a code revert. Reasons and effects: `dev/plans/2026-11-13-product-match-rules-design.md` section 4.3 (existing rules change meaning) and section 15.2 ("No `dsl_version` bump").
+- **Regex and fail-closed fixes shipped without a bump (after MATCH-2):** the regex case-insensitive default (§10.2), the refusal of `or` rules that combine regex with other conditions (§10.2), and `Compile`'s refusal of an operator the field does not take and of a `null` single value (§10.2, values and operators) shipped at `dsl_version` 1 with no old compiler kept. Reasons: the project has no users; package correlation shipped the same way; and an old compiler kept for old rules would keep the wrong answers the fixes correct. Effects on stored rules, from their next evaluation: a regex with an upper-case letter starts matching (all-lower-case patterns match what they did); an `or` rule combining regex with other conditions, which matched as `and`, is set to `status=error` and must be split; a rule holding an invalid operator or a `null` value (reachable only by editing the database) is set to `status=error` instead of running another operator's SQL. Details: `dev/implementation-log/2026-11-14T0746Z-compile-refuses-invalid-operators-and-null-values.md`, `2026-11-14T0750Z-regex-conditions-ignore-case-by-default.md` and `2026-11-14T0754Z-refuse-or-rules-combining-regex-with-other-conditions.md`.
+- **Strict decoding of stored conditions shipped without a bump:** the evaluator decodes a rule's stored `conditions` with the rules `dsl.Parse` uses (`dsl.ParseConditions` in `internal/alert/dsl/parser.go`: `encoding/json/v2`, member names matched exactly, keys the DSL does not define refused), at `dsl_version` 1 with no old decoder kept. Reasons: the API already refuses such keys through `dsl.Parse`, so only a rule written before that or edited in the database can hold one; and reading it with the key ignored or its case folded runs a rule other than the one its author wrote. Effects on stored rules, from their next evaluation: a rule whose conditions hold a key the DSL does not define (for example `"negate": true`), or a case variant of a defined key (`"Field"`), is set to `status=error`, as is one whose conditions are `null`, an empty array, or hold an element that is not an object. Its owner re-saves it through the API, which names the offending key. Details: `dev/implementation-log/2026-11-16T0002Z-stored-alert-rule-conditions-fail-closed-on-unknown-keys.md`.
 - **Fail-closed policy:** if a rule references a field or operator that the current compiler does not recognize (e.g., due to a corrupted or hand-edited rule), the rule evaluation fails closed (no alerts fire, an error is logged, and the rule is marked `status=error`). This is a security product; a broken rule must not silently miss alerts.
 
 ### 10.6 Rule Validation & Dry-Run Endpoints
@@ -1083,17 +1209,22 @@ These endpoints prevent users from discovering rule errors only at the next batc
 
 ## 11. Notification Channels & Delivery Semantics
 
-### 11.1 Channels (MVP)
-- Email (SMTP)
-- Slack incoming webhook
-- Generic webhook (POST JSON)
-- Teams: Enterprise (post-MVP if needed)
+### 11.1 Channels
+Channel types as built (`notification_channels.type`):
+- `webhook` — generic HTTPS POST of JSON, signed (§11.3)
+- `email` — SMTP via `wneessen/go-mail`; the channel holds a recipient list. Email channels need the Pro tier or higher (§14).
+
+Channel `config` keys per type: `webhook` takes `url` (required, not blank) and `custom_headers` (an object of header names to strings); `email` takes `recipients` (an array of strings). Any other key, including a case variant of one of these (`URL`, `Recipients`), is refused, and names match exactly. Custom headers: each name is an HTTP token (RFC 9110), no two names are equal when letter case is ignored, values hold no control character other than tab, and reserved names (the request framing and hop-by-hop headers such as `Host` and `Content-Length`, and the signature headers of §11.3) are refused. Recipients: 1 to 50 RFC 5322 addresses, with no duplicates (compared ignoring letter case). The API (create and PATCH) and delivery apply these rules with the same parser and checks (`internal/notify/channel_config.go`): the API answers 422 at the offending `body.config...` location, and delivery fails a stored config that breaks them as a permanent failure with the reason recorded, so nothing is sent from a config the API would refuse.
+
+Not built: a Slack channel type and Microsoft Teams. A Slack incoming webhook URL can be used as a generic webhook today, but the body is not in Slack's format. The Slack requirements below (§11.3 chunking, §11.4 renderer) stand for when a Slack type is added.
+
+Deliveries are rows in `notification_deliveries` with `kind` `alert`, `digest` or `resolution` and `status` `pending`, `processing`, `succeeded`, `failed` or `cancelled`. A delivery worker (`internal/notify/worker.go`) polls them; it does not use `job_queue`.
 
 ### 11.2 Delivery Guarantees
 - **At-least-once** delivery.
-- Each delivery has an **idempotency key**: `sha256(org_id + event_id + channel_id)`.
-- Retry policy: 3 retries with exponential backoff with **full jitter** (required): `next_run_at = now() + calculated_delay * random(0.5, 1.5)`. Without jitter, if a downstream service (Jira, Splunk) goes offline during a mass alert event and thousands of delivery jobs fail simultaneously, all retries wake up at the exact same millisecond — the "Thundering Herd" instantly re-crashes the recovering service. Full jitter spreads retries across a wide window, allowing the service to recover progressively.
-- **Per-org delivery concurrency limit (noisy neighbor prevention):** Outbound notification delivery is subject to a per-org concurrency cap (default: 5 concurrent deliveries per org). A single org with a broken or slow webhook endpoint cannot monopolize the delivery worker goroutines at the expense of other orgs. Implemented as a per-org semaphore within the notification worker. The cap is configurable via `NOTIFY_MAX_CONCURRENT_PER_ORG`. Enterprise orgs may have higher configured limits.
+- Deduplication comes from the debounce window (below): there is at most one open alert batch, and one open resolution batch, per `(rule, channel)`, enforced by partial unique indexes on rows with `batch_open`. A pending retry is a closed batch and can sit beside a newer open one. Digests have no such index. A per-delivery idempotency key (`sha256(org_id + event_id + channel_id)`) was planned and is not built.
+- Retry policy: `NOTIFY_MAX_ATTEMPTS` (default 4) attempts in total, with exponential backoff from `NOTIFY_BACKOFF_BASE_SECONDS` (default 30) and **full jitter** (required): `next_run_at = now() + base * 2^(n-1) * random(0.5, 1.5)`. Without jitter, if a downstream service (Jira, Splunk) goes offline during a mass alert event and thousands of delivery jobs fail simultaneously, all retries wake up at the exact same millisecond — the "Thundering Herd" instantly re-crashes the recovering service. Full jitter spreads retries across a wide window, allowing the service to recover progressively.
+- **Per-org delivery concurrency limit (noisy neighbor prevention):** Outbound notification delivery is subject to a per-org concurrency cap (default: 5 concurrent deliveries per org). A single org with a broken or slow webhook endpoint cannot monopolize the delivery worker goroutines at the expense of other orgs. Implemented as a per-org semaphore within the notification worker. The cap is configurable via `NOTIFY_MAX_CONCURRENT_PER_ORG` and applies to every org alike.
 
 **Webhook outbound HTTP client timeout (required):** The HTTP client (a `doyensec/safeurl`-wrapped client) used for webhook delivery MUST be configured with `Timeout: 10 * time.Second`. Without a timeout, a "tarpit" server (accepts TCP connection, trickles response at 1 byte/minute) holds a Go goroutine blocked indefinitely. With a per-org concurrency cap of 5, just 5 tarpit webhooks permanently freeze all outbound delivery for that org and consume worker goroutines globally.
 
@@ -1141,8 +1272,10 @@ Required delivery worker pattern:
   - mitigates DNS rebinding attacks
   - disallows non-HTTP(S)
   - enforce timeout + max response size (`http.Client` with `Timeout`; `io.LimitReader` on response body)
+  - ports 80 and 443 only
+- **Private destinations (opt-in):** `WEBHOOK_PRIVATE_HOSTS` lists hosts allowed on a private network, such as a self-hosted ntfy server on a LAN. A listed host may resolve only into `WEBHOOK_PRIVATE_CIDRS` and may also use `WEBHOOK_PRIVATE_PORTS`. Empty (the default) keeps the policy above. The list applies to every org's channels, so a multi-tenant deployment lists only hosts every tenant may reach.
 - Validate webhook URLs at registration time (not just request time)
-- Allow per-channel headers but denylist dangerous ones (`Host`, `Content-Length`, etc.)
+- Allow per-channel headers but refuse reserved ones (`Host`, `Content-Length`, etc.) at the API and at delivery (§11.1, header rules)
 
 **Outbound webhook connection concurrency limit (required, anti-port-starvation):** During high-volume alert events (e.g., a Log4Shell-level vulnerability where hundreds of orgs each have multiple webhook channels), the notification worker creates thousands of simultaneous outbound HTTP connections. Each open TCP connection consumes one OS ephemeral port (range ~32k–60k on Linux). Exhausting the port range causes `connect: cannot assign requested address` — all webhook delivery silently fails with no obvious error in application logs.
 
@@ -1163,54 +1296,59 @@ client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 ```
 Webhook consumers that legitimately need a redirect response must handle it by updating their channel configuration to point to the final URL.
 
-**Webhook signing secret rotation with grace period (required):** An operator must be able to rotate the HMAC signing secret without a delivery gap. If the old secret is invalidated immediately, in-flight deliveries signed with the old secret fail consumer-side verification and are dead-lettered, potentially losing critical CVE alerts. The `notification_channels` table must support a `signing_secret_secondary TEXT NULL` column. During rotation: (1) the `POST .../channels/{id}/rotate-secret` endpoint atomically moves the current `signing_secret` to `signing_secret_secondary` and generates a new primary; (2) outbound deliveries are always signed with `signing_secret` (primary); (3) the documentation tells consumers to verify against primary then fall back to secondary within a configurable grace window (default: 24 hours via `WEBHOOK_SECRET_GRACE_HOURS`); (4) after the grace window, the operator calls `POST .../channels/{id}/clear-secondary` to null out the secondary. This dual-secret pattern is standard in Stripe, GitHub, and Slack webhook security. The `signing_secret` and `signing_secret_secondary` values are stored encrypted at rest (or via external secrets manager); they are never returned in GET responses.
+**Webhook signing secret rotation with grace period (required):** An operator must be able to rotate the HMAC signing secret without a delivery gap. If the old secret is invalidated immediately, in-flight deliveries signed with the old secret fail consumer-side verification and are dead-lettered, potentially losing critical CVE alerts. The `notification_channels` table must support a `signing_secret_secondary TEXT NULL` column. During rotation: (1) the `POST .../channels/{id}/rotate-secret` endpoint atomically moves the current `signing_secret` to `signing_secret_secondary` and generates a new primary; (2) outbound deliveries are signed with the primary in `X-CVErtOps-Signature`, and while a secondary exists also with the secondary in `X-CVErtOps-Signature-Secondary`, so a consumer still holding the old secret can verify; (3) when the consumer has switched, an admin calls `POST .../channels/{id}/clear-secondary` to null out the secondary. Clearing is manual: `WEBHOOK_SECRET_GRACE_HOURS` is defined but not read. This dual-secret pattern is standard in Stripe, GitHub, and Slack webhook security. The secrets are never returned in GET responses, and channel secrets are masked in the audit log. **Open:** the design required the signing secrets to be encrypted at rest; they are stored as plaintext `TEXT`.
 
-**Slack Block Kit message chunking (required):** Slack's Block Kit limits a single incoming webhook message to 50 blocks. At 5–6 blocks per CVE (title, severity badge, scores, description snippet, deep link, divider), a message containing more than ~8 CVEs exceeds this limit and the Slack API returns `400 invalid_blocks` — silently dropping the entire batch. For grouped/digest Slack deliveries, chunk at **20 CVEs per message** (conservative limit accounting for severity headers and footer blocks). The Slack renderer MUST check `len(cves) > 20` before building the Block Kit payload and send multiple sequential webhook calls if needed. Multi-chunk delivery MUST NOT use `errgroup` (see §11.2 prohibition); use sequential delivery and record per-chunk results individually.
+**Slack Block Kit message chunking (required for a Slack channel type, which is not built):** Slack's Block Kit limits a single incoming webhook message to 50 blocks. At 5–6 blocks per CVE (title, severity badge, scores, description snippet, deep link, divider), a message containing more than ~8 CVEs exceeds this limit and the Slack API returns `400 invalid_blocks` — silently dropping the entire batch. For grouped/digest Slack deliveries, chunk at **20 CVEs per message** (conservative limit accounting for severity headers and footer blocks). The Slack renderer MUST check `len(cves) > 20` before building the Block Kit payload and send multiple sequential webhook calls if needed. Multi-chunk delivery MUST NOT use `errgroup` (see §11.2 prohibition); use sequential delivery and record per-chunk results individually.
 
 **Webhook response body must be read and discarded (required):** After posting to a webhook endpoint, the HTTP response body must be explicitly read and discarded regardless of HTTP status: `_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))`. Without this, Go's HTTP/1.1 keep-alive cannot reuse the underlying TCP connection — a new TCP connection is established for every webhook delivery. Under high alert load this creates hundreds of simultaneous half-closed connections, exhausts ephemeral ports, and degrades delivery throughput. The `io.LimitReader(resp.Body, 4096)` cap also prevents a "zip bomb" response: a malicious webhook server that returns a 2 GB response body would cause the delivery goroutine to read indefinitely, holding the goroutine and OOM-killing the worker process.
 
-**Notification channel deletion pre-flight check (required):** `DELETE /api/v1/orgs/{org_id}/channels/{id}` must first check whether any active alert rules (`status NOT IN ('draft', 'disabled')`) reference this channel. If any are found, return `409 Conflict` with a machine-readable error body listing the conflicting rule IDs and names. When deletion is permitted (no active rules), soft-delete the channel row (`UPDATE notification_channels SET deleted_at = now()`) rather than hard-deleting — hard deletion orphans `notification_deliveries` rows that reference this channel by foreign key, breaking delivery history queries. The soft-deleted channel remains visible in history queries but is excluded from new configuration lookups (`WHERE deleted_at IS NULL`).
+**Notification channel deletion pre-flight check (required):** `DELETE /api/v1/orgs/{org_id}/channels/{id}` must first check whether any active alert rules (`status NOT IN ('draft', 'disabled')`) or scheduled reports are bound to this channel. If any are, it returns `409 Conflict` ("channel has active bound rules or reports"); the body does not list them. When deletion is permitted (no active rules), soft-delete the channel row (`UPDATE notification_channels SET deleted_at = now()`) rather than hard-deleting — hard deletion orphans `notification_deliveries` rows that reference this channel by foreign key, breaking delivery history queries. The soft-deleted channel remains visible in history queries but is excluded from new configuration lookups (`WHERE deleted_at IS NULL`).
 
 ### 11.4 Notification Content & Templates
 
-Notifications use a **structured payload model** with per-channel rendering. The core payload is channel-agnostic; renderers format it for each channel type.
+Notifications use a **structured payload model**: the delivery row stores a channel-agnostic JSON payload, and the channel renders it.
 
-**Core notification payload** (per alert event):
+**Payload per CVE** (`cveSnapshot` in `internal/notify/dispatcher.go`):
 ```
 cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
-description_primary (truncated to 280 chars),
-exploit_available, in_cisa_kev,
-affected_packages (list, max 10),
-rule_name, rule_id,
-watchlist_name (if bound),
-cvert_ops_url (deep link to CVE detail)
+description_primary, exploit_available, in_cisa_kev
 ```
+A resolution entry adds the reason the CVE stopped matching (§10.3).
 
-**Channel renderers (MVP):**
+**Bodies by kind:**
+- Alert: a JSON array of CVE entries (one debounced batch per rule and channel).
+- Resolution: `{"event_type": "resolution", "cves": [...]}`.
+- Digest: `{"total_count": N, "cves": [...]}` (§12.1).
+
+**Channel rendering:**
 
 | Channel | Format | Notes |
 |---|---|---|
-| **Email** | HTML with plaintext fallback | Subject: `[CVErt Ops] {severity} — {cve_id}`. Body uses a simple HTML template (inline CSS, no external assets). Digest emails group CVEs by severity. |
-| **Slack** | Block Kit JSON | Uses `section`, `divider`, and `context` blocks. Severity is color-coded via sidebar attachment color. |
-| **Generic webhook** | Raw JSON | Posts the core payload as-is (JSON object). Consumers parse as needed. |
+| **Email** | HTML with plaintext fallback | Subject: `[CVErt Ops] Alert: {rule name} — N CVE(s)`. Simple HTML templates (inline CSS, no external assets). Digest emails list CVEs sorted by severity. |
+| **Generic webhook** | Raw JSON | Posts the stored payload as-is, signed (§11.3). |
+| **Slack** (not built) | Block Kit JSON | Planned: `section`, `divider` and `context` blocks, severity color-coded, chunked at 20 CVEs (§11.3). |
 
-**Template extensibility:**
-- Templates are stored as Go `html/template` (for email) and `text/template` (for Slack/webhook) files, embedded via `embed.FS` for the built-in defaults. One template per channel type per notification kind (alert vs. digest).
+The planned payload also carried `affected_packages`, `rule_name`, `rule_id`, `watchlist_name` and a deep link to the CVE, with the description cut to 280 characters. These are not in the payload; consumers that need rule context can read the alert-event feed with `expand=cve,rule` (Appendix B).
+
+**Templates:**
+- Email templates are Go `html/template` and `text/template` files in `internal/notify/templates`, embedded via `embed.FS`: alert, resolution and digest, plus the account emails (invitation, MFA code, password reset, email verification).
 - Go's `html/template` is auto-escaped by design, preventing XSS in email HTML without needing a sandbox mode.
-- MVP ships with built-in templates. Custom templates are a P1/Enterprise feature (loaded from filesystem or DB, parsed with `template.New().Parse()` at channel-config time, not per-render).
+- Custom templates (loaded from filesystem or DB, parsed at channel-config time, not per-render) are not built.
 
 ---
 
 ## 12. Scheduled Reports (Digests)
 
-MVP:
-- Daily digest (new + materially modified CVEs last 24h)
-- Weekly summary (optional P1)
+As built:
+- Daily digest of new and materially modified CVEs since the previous run, sent to the report's bound channels (email or webhook).
+- Filter by severity threshold.
+- Delivery time of day with timezone support.
+- Digests run on the notification delivery worker's 60-second tick, not as `job_queue` jobs.
 
-Configurable:
-- scope by watchlist and severity threshold
-- delivery time with timezone support
-- optional AI executive summary (Pro+)
+Not built:
+- Weekly or other recurrences: every report advances one day.
+- Watchlist scope: `scheduled_reports.watchlist_ids` is stored and returned by the API, but the digest query ignores it.
+- AI executive summary: the `ai_summary` field exists, but nothing generates a summary.
 
 ### 12.1 Digest Scheduling Architecture
 
@@ -1221,7 +1359,7 @@ Configurable:
 
 **Next-run-at calculation (required — "Anchor to Now"):** When a user creates or updates a scheduled report, `next_run_at` is computed as follows: take the current time in the report's timezone, find the next occurrence of `scheduled_time` on the current or next calendar day, then convert to UTC. If the current time is `08:50` local and `scheduled_time` is `09:00`, the next run is 10 minutes from now. If it is `09:30` local, the next run is tomorrow at `09:00`. This approach anchors scheduling to real calendar time with correct DST handling (the timezone library handles the UTC offset shift automatically).
 
-**After each run — advancing `next_run_at` (required):** After a successful digest delivery, advance `next_run_at` by the report's recurrence interval (24h for daily, 7d for weekly), computed in the report's timezone to handle DST transitions correctly:
+**After each run — advancing `next_run_at` (required):** After a digest run, advance `next_run_at` by one calendar day in the report's timezone, which handles DST transitions correctly:
 ```go
 loc, _ := time.LoadLocation(report.Timezone)
 prev := report.NextRunAt.In(loc)
@@ -1231,11 +1369,13 @@ report.NextRunAt = next.UTC()
 ```
 Do NOT simply add `24 * time.Hour` to the UTC timestamp — this drifts by ±1 hour across DST boundaries.
 
-**Missed-run windowed catch-up (required):** If a worker is down for 48+ hours (crash, deployment), the digest scheduler resumes after recovery. Executing every missed digest in sequence (potentially weeks of dailies) overwhelms channels and spams users. The catch-up policy: execute **at most 1 missed run per report** on recovery, regardless of how many were missed. The scheduler checks `next_run_at < now() - interval '2 hours'` (i.e., overdue by more than a 2-hour grace window). If the report is overdue by more than 2 hours, deliver a single catch-up digest covering the period from the last successful run to now, then advance `next_run_at` to the next future scheduled time. Log the catch-up event with the number of skipped runs. Do NOT deliver one digest per missed interval.
+**Missed-run catch-up (required):** If a worker is down for 48+ hours (crash, deployment), the digest scheduler resumes after recovery. Executing every missed digest in sequence (potentially weeks of dailies) overwhelms channels and spams users. The policy: execute **at most 1 run per due report** on recovery, regardless of how many were missed. That run covers the period from the last successful run to now, and `next_run_at` then skips forward to the next future scheduled time. Do NOT deliver one digest per missed interval. The design also called for a 2-hour grace window and a log line counting skipped runs; neither is built.
 
-**Digest content ordering and truncation (required):** The digest payload includes all CVEs with `date_modified_canonical > last_digest_run_at` that match the report's watchlist/severity filters. This set may be very large after a mass NVD enrichment batch (hundreds to thousands of CVEs). The email renderer must: (1) sort CVEs by `severity` descending (critical → high → medium → low → none), then by `cvss_v3_score` descending as tiebreaker; (2) cap at **25 CVEs** per digest email; (3) include a footer line: "25 of N CVEs shown — view all at [link]". This prevents multi-MB digest emails that are rejected by SMTP relays or marked as spam. The Slack digest renderer caps at 20 CVEs per message (see §11.3 Slack chunking).
+**Digest content ordering and truncation (required):** The digest covers all CVEs with `date_modified_canonical > last_digest_run_at` that match the report's severity filter. This set may be very large after a mass NVD enrichment batch (hundreds to thousands of CVEs), so the digest payload is a JSON object, `{"total_count": N, "cves": [...]}`: `cves` holds at most 500 of them, highest severity first, and `total_count` is the number that matched. Renderers and webhook consumers take N from `total_count`, never from the length of `cves` (see implementation-pitfalls.md NOTIFY-23). The email renderer must: (1) sort CVEs by `severity` descending (critical → high → medium → low → none), then by `cvss_v3_score` descending as tiebreaker; (2) cap at **25 CVEs** per digest email; (3) include a footer line: "25 of N CVEs shown — view all at [link]". This prevents multi-MB digest emails that are rejected by SMTP relays or marked as spam. A Slack renderer, when built, caps at 20 CVEs per message (§11.3 Slack chunking).
 
-**Digest heartbeat — send even on 0 matches (required):** If the CVE corpus has no changes matching the report's filters in the last 24h, the report job MUST still deliver a digest with a "No new vulnerabilities matching your filters" message. Heartbeat delivery prevents users from assuming the system is silent because it is broken. The heartbeat also serves as a liveness indicator for the channel (a misconfigured webhook or expired Slack token is surfaced immediately rather than days later when a real alert fires). The heartbeat cadence matches the configured recurrence (daily, weekly). Heartbeat can be disabled per-report via `send_on_empty = false` (default true).
+**Digest re-scan window (required):** `date_modified_canonical` is stamped by the merge worker's clock before its transaction commits, so a CVE can become visible after a digest's query while carrying a timestamp earlier than the `last_run_at` that digest records. Each digest therefore records as `last_run_at` the time taken before its query, and selects from 2 minutes before the stored `last_run_at`. Digests are not deduplicated by `alert_events`, so `scheduled_reports.rescan_sent_cves` holds the CVE versions, as `(cve_id, date_modified_canonical)` pairs, that a digest sent with timestamps inside the next run's re-scan window. The query leaves those versions out. A CVE modified again inside the window appears again. See implementation-pitfalls.md NOTIFY-21.
+
+**Digest heartbeat — send even on 0 matches (required):** If the CVE corpus has no changes matching the report's filters in the last 24h, the report job MUST still deliver a digest with a "No new vulnerabilities matching your filters" message. Heartbeat delivery prevents users from assuming the system is silent because it is broken. The heartbeat also serves as a liveness indicator for the channel (a misconfigured webhook or SMTP relay is surfaced immediately rather than days later when a real alert fires). The heartbeat is daily, like the digest. Heartbeat can be disabled per-report via `send_on_empty = false` (default true).
 
 ---
 
@@ -1244,35 +1384,36 @@ Do NOT simply add `24 * time.Hour` to the UTC timestamp — this drifts by ±1 h
 ### 13.1 Hard Rule: No "AI decides truth"
 AI augments UX; canonical data remains sourced from feeds.
 
-### 13.2 Natural Language Search (MVP)
+### 13.2 Natural Language Search
 - LLM transforms user text → structured query JSON (filters + sort + limit).
 - The app executes query locally against Postgres.
 - Prompts contain:
   - schema/field list + operator constraints
   - **no CVE content**
 
-### 13.3 Summaries (P1)
-AI summary for a CVE may include CVE content (description, scores, affected products) but must:
+### 13.3 Summaries
+`POST /api/v1/orgs/{org_id}/ai/summarize/{cve_id}` (viewer+). A summary may include CVE content (description, scores, affected products) but must:
 - cite source fields, not invent
-- be cached per `(cve_id, prompt_version, model)`
-- be opt-in by tier (Pro+)
+- be cached per org, keyed by `(org_id, feature, prompt_version, input_hash)` with `input_hash = sha256(cve_id + material_hash)`, so a material change produces a new summary
+
+Summaries are available on every tier within its daily quota; the planned Pro+ gate is not built.
 
 ### 13.4 AI Gateway Requirements
 Central service enforces:
-- per-org quota + rate limit
-- request logging (no sensitive data)
-- caching keyed by `(org_id, feature, prompt_version, input_hash)`
-- cost tracking counters
+- per-org daily quota: NL search 10 / 100 / 1000 and summaries 5 / 50 / 500 per day for Free / Pro / Enterprise, with per-org overrides in `ai_quota_overrides` (set with `cvert-ops quota set|get|list|delete`)
+- request logging without prompt content (`ai_request_log`, with token counts)
+- caching (`ai_cache`) keyed by `(org_id, feature, prompt_version, input_hash)`
+- token counters for cost tracking
 
-**`ai_usage_counters` table:** Tracks per-org, per-feature usage (e.g., `nl_search_count`, `summary_count`) with daily and monthly rollup columns. Used for quota enforcement (section 14) and billing metering. Resets are configurable per tier (monthly for Pro, custom for Enterprise).
+**`ai_usage_counters` table:** one row per org, feature and day: `(org_id, feature, date, count, input_tokens, output_tokens)`. Used for quota enforcement (section 14). Rows are deleted after `AI_LOG_RETENTION_DAYS` (default 90); there is no monthly rollup for billing yet.
 
-**AI gateway design:** The gateway is implemented as an internal Go interface, with vendor-specific adapters behind it:
+**AI gateway design:** The gateway is implemented as an internal Go interface (`internal/ai`), with vendor-specific adapters behind it. Each result carries the call's token counts:
 ```go
 type LLMClient interface {
     // GenerateStructuredQuery sends a NL query and returns structured JSON.
-    GenerateStructuredQuery(ctx context.Context, prompt string) (json.RawMessage, error)
+    GenerateStructuredQuery(ctx context.Context, prompt string) (GenerateResult, error)
     // Summarize generates a CVE summary from structured input.
-    Summarize(ctx context.Context, input CVESummaryInput) (string, error)
+    Summarize(ctx context.Context, input CVESummaryInput) (SummarizeResult, error)
 }
 ```
 This abstraction allows swapping LLM vendors without changing application code.
@@ -1301,16 +1442,25 @@ Required mitigations for `LLMClient.Summarize`:
 
 ## 14. Account Tiers & Feature Flags
 
-Maintain tier matrix (Free/Pro/Enterprise) with hard API enforcement:
-- max alert rules, watchlists, members
-- AI quotas
-- channels availability
-- exports and retention
+Tier matrix with hard API enforcement. The defaults are the single source of truth in `internal/tier/limits.go`; a site admin sets an org's tier and overrides (`PATCH /api/v1/admin/orgs/{org_id}`), and `GET /api/v1/orgs/{org_id}/tier` reports the resolved values.
+
+| Limit or flag | Free | Pro | Enterprise |
+|---|---|---|---|
+| `max_alert_rules` | 5 | 50 | unlimited |
+| `max_watchlists` | 3 | 20 | unlimited |
+| `max_members` | 5 | 25 | unlimited |
+| `api_rate_limit` (requests/min/org) | 60 | 300 | 1000 |
+| `channels_email` | no | yes | yes |
+| `channels_webhook` | yes | yes | yes |
+| AI daily quotas | §13.4 | §13.4 | §13.4 |
+| SSO, SCIM, org audit log | — | — | yes |
+
+A request over a limit gets 403 with problem type `urn:cvert:error:tier-limit`. Retention windows are the same on every tier unless an org override sets them (§21.2). Exports and billing are not built.
 
 Feature flag precedence:
 1. org override
 2. tier default
-3. global default
+3. Free tier default
 
 ---
 
@@ -1319,27 +1469,33 @@ Feature flag precedence:
 - Parameterized queries only (`sqlc` + `pgx` parameterized queries; no string concatenation)
 - JWT parser must always use `jwt.WithValidMethods([]string{"HS256"})` and `jwt.WithExpirationRequired()` — no unguarded `jwt.Parse`/`jwt.ParseWithClaims` calls (see section 7.1)
 - Auth required for all non-public endpoints
-- Strict input validation via `go-playground/validator` struct tags with length bounds; security-critical fields (webhook URLs, regex patterns, etc.) validated with additional handwritten checks
+- Strict input validation via huma schema validation (struct tags with length bounds; unknown request-body fields refused); security-critical fields (webhook URLs, regex patterns, DSL values, etc.) validated with additional handwritten checks
 - Secrets never logged; use env + secret manager pattern
 - Dependency pinning (`go.sum`) + vulnerability scanning (`govulncheck` on CI)
 - Security tests:
   - tenant isolation test per org endpoint
   - authz test per endpoint (role × endpoint matrix from 7.3)
   - SSRF tests for webhook URLs
-- Static scanning: `go vet` + `staticcheck` + `gosec` on CI
+- Static scanning: `golangci-lint` (with `govet`, `staticcheck`, `gosec`, `depguard`, `bodyclose`, `noctx`) on CI
+- Security events (sign-in failures, lockouts, token reuse, MFA and admin actions) go to `security_events` through an asynchronous, rate-limited writer (`internal/secure`); site admins read them at `GET /api/v1/admin/security-events`
+- Org audit log (`audit_log`, Enterprise) records changes with secrets redacted (`internal/audit`)
 
 ---
 
 ## 16. API Contract Standards
 
 - Base path: `/api/v1`
-- Pagination: `limit`, `cursor` (opaque), deterministic ordering (by `date_modified_canonical` desc, then `cve_id` for tiebreak, unless otherwise specified)
-- Error format: RFC 9457 Problem Details (generated automatically by huma):
+- Pagination: `limit`, `cursor` (opaque), deterministic ordering (by `date_modified_canonical` desc, then `cve_id` for tiebreak, unless otherwise specified). A cursor the server did not issue (not decodable, or edited: an unknown, case-variant or duplicate member) answers 400 with the fixed problem detail `invalid cursor`.
+- Error format: RFC 9457 Problem Details (generated by huma, and by `writeProblem` in chi handlers). `title` is the HTTP status text. A validation error looks like:
 ```json
-{ "type": "https://api.cvertops.dev/errors/validation", "title": "Validation Error", "status": 422, "detail": "Request validation failed", "errors": [{ "location": "body.name", "message": "minimum length is 3" }] }
+{ "title": "Unprocessable Entity", "status": 422, "detail": "validation failed", "errors": [{ "location": "body.name", "message": "expected length >= 3" }] }
 ```
+  Most problems leave `type` out. Problems a client must tell apart carry a `urn:cvert:error:` type: `tier-limit`, `pending-session-invalid`, `invalid-code`, `invalid-password`, `enrollment-expired`, `candidate_limit_exceeded`. One response, a required password change, sends the bare `type` string `password_change_required`.
+- Request bodies with unknown fields are refused (422), so a misspelled field is an error rather than silently ignored.
+- Request JSON is decoded with `encoding/json/v2`: member names match case-sensitively, so a case variant of a field is an unknown field (422 at its own location); duplicate member names, data after the JSON value, and invalid UTF-8 are refused (400 at `body`). huma-registered request bodies are validated with exact member names too (`huma.ValidateStrictCasing`), so validation and decoding read the same members. SCIM v2 bodies are the exception RFC 7643 requires: attribute names match case-insensitively (`_` and `-` are not ignored) and unknown attributes are ignored, while two spellings of one attribute, duplicates, trailing data and invalid UTF-8 are refused (400).
+- Empty collections in responses are written as `[]` and `{}`, never `null`: responses are encoded with `encoding/json/v2`, which writes a nil slice or map that way (SCIM responses, encoded with v1, excepted). The generated spec still declares response arrays nullable (huma's `DefaultArrayNullable`).
 - All timestamps UTC ISO8601.
-- OpenAPI 3.1 spec is generated automatically by huma from Go type definitions. Served at `/openapi` endpoint. Used for client type generation and API documentation.
+- OpenAPI 3.1 spec is generated by huma from Go type definitions, including spec-only declarations for routes that chi serves (`registerAllSpecOps` in `internal/api/openapi_spec.go`). At runtime it is served at `/api/v1/openapi.json` (also `/api/v1/openapi.yaml`, `/api/v1/openapi-3.0.json`, and a docs page at `/api/v1/docs`). The committed copy is `openapi.json` at the repository root: `GENERATE_OPENAPI=1 go test ./internal/api -run ^TestOpenAPISpec$` rewrites it, and the same test fails when the committed file differs from the served spec. CI regenerates the SPA's types (`web/src/lib/api/schema.d.ts`) from it and fails on a difference. Every operation declares its credentials and required role. The OAuth/OIDC redirect routes, the SCIM v2 routes, `/healthz` and `/readyz` are not in the spec.
 
 **PATCH payload structs must use pointer types for all optional fields (required):**
 
@@ -1388,7 +1544,9 @@ WHERE (COALESCE(epss_score, -1), cve_id) < (COALESCE($last_val, -1), $last_id)
 ```
 Test every nullable sort column with fixtures containing both null and non-null values where a page boundary falls inside the null group.
 
-**API keys must not be accepted in query strings (required):** Tokens in query strings (`?api_key=cvo_abc123`) are logged by every layer — web server access logs, reverse proxy logs, load balancer logs, CDN edge logs, browser history, and `Referer` headers on subsequent navigations. An API key appearing in a URL is treated as compromised the moment the request is made. The API MUST: (1) accept API keys **only** via the `Authorization: Bearer <key>` HTTP header; (2) return `400 Bad Request` if a request includes an API key in any query parameter (`?api_key=`, `?token=`, `?key=`, `?access_token=`); (3) scan for common parameter names at the middleware layer before reaching any handler. The OpenAPI spec's security scheme must declare only `http bearer` authentication — no `apiKey` in `query` location.
+**API keys must not be accepted in query strings (required):** Tokens in query strings (`?api_key=cvo_abc123`) are logged by every layer — web server access logs, reverse proxy logs, load balancer logs, CDN edge logs, browser history, and `Referer` headers on subsequent navigations. An API key appearing in a URL is treated as compromised the moment the request is made. The API MUST: (1) accept API keys **only** via the `Authorization: Bearer <key>` HTTP header; (2) return `400 Bad Request` if a request carries a non-empty credential-like query parameter (`api_key`, `apikey`, `api-key`, `token`, `key`, `access_token`, `secret`, `bearer`; `internal/api/middleware_apikey_query.go`); (3) scan for common parameter names at the middleware layer before reaching any handler. The OpenAPI spec declares API keys only as `http bearer` and the browser session as an `apiKey` scheme in a cookie; it must never declare a credential in `query` location.
+
+**Version check endpoint (MATCH-1):** `POST /api/v1/orgs/{org_id}/check` (viewer+) answers, for up to 500 exact component versions (a purl, an OSV `ecosystem` and `name`, or a CPE 2.3 string, each with a version), which held advisories affect each one, which range matched, and the lowest version the advisory data no longer reports as affected. It reads only global CVE data, never stores or logs the items, and runs at most 1 check per process until peak memory per check is measured (503 with `Retry-After` beyond that). One invalid item answers 200 with that item `status: "invalid"`; a request over its row or byte limit answers 422 with problem type `urn:cvert:error:candidate_limit_exceeded`. Item `status` is one of `affected`, `not_affected`, `unresolved`, `cannot_evaluate`, `no_advisory_found` and `invalid`. Only `not_affected` clears a version: it means not in any analysed or CNA-named advisory held. `unresolved` means no advisory was established as affected and the data leaves some unresolved; `cannot_evaluate` means the check could not be completed for the item; `no_advisory_found` means no matching advisory was found, not that the component is safe. An Ubuntu item reads its release's standard and Ubuntu Pro streams. An item in a distribution whose feed records issued fixes only (Red Hat, AlmaLinux, Rocky Linux, Alpine, SUSE and others) is never cleared: where it would answer `not_affected` it answers `unresolved`, reason `distro_lists_fixes_only`. The verdict rules, limits and full contract are in `dev/plans/2026-11-08-version-check-endpoint-design.md` (sections 3, 4, 9 and 11); version comparison follows §9.2.
 
 ### Decision D5 — How org context is carried in the API (MVP)
 
@@ -1410,14 +1568,17 @@ Test every nullable sort column with fixtures containing both null and non-null 
 
 Rate limiting is enforced at the API middleware layer to protect against abuse and ensure fair usage across tiers.
 
-**Strategy:** Token-bucket per org, with per-endpoint overrides for expensive operations.
+**Strategy as built:** token buckets in process (`internal/api/ratelimit.go`, `org_ratelimit.go`).
 
-| Scope | Free | Pro | Enterprise |
-|---|---|---|---|
-| Global API (requests/min/org) | 60 | 300 | 1000 (configurable) |
-| CVE search (requests/min/org) | 20 | 100 | 500 |
-| AI NL search (requests/day/org) | 10 | 100 | 1000 |
-| Webhook delivery retries | n/a | n/a | n/a |
+| Scope | Limit |
+|---|---|
+| Org-scoped routes (`/api/v1/orgs/{org_id}/...`) | Tier `api_rate_limit` per org: 60 / 300 / 1000 requests per minute (Free / Pro / Enterprise), burst = per-minute limit ÷ 6. The inbound ingest endpoint counts each patch as one request. |
+| Auth routes (sign-in, registration, password reset, discovery) | 10 per minute per client IP, burst 10 |
+| SCIM v2 | `SCIM_RATE_LIMIT` = 50 requests per second per org |
+| AI | Daily quotas, not rates (§13.4) |
+| Delivery replay | 10 per org per hour (§11.2) |
+
+Not built: separate per-endpoint limits for CVE search. `GET /api/v1/cves` sits outside the org router, so no org limit applies to it (**Open**).
 
 ### Decision D6 — Rate limiting storage (MVP)
 
@@ -1429,10 +1590,11 @@ Rate limiting is enforced at the API middleware layer to protect against abuse a
 - **Operational posture:** Redis introduces new failure modes and operational overhead; Postgres-based counters add contention and complexity.
 - **Roadmap:** once SaaS requires >1 API instance, shared rate-limit state becomes mandatory.
 
-**Alternatives (P1+):**
+**Alternatives (needed before a multi-instance deployment):**
 - **Redis** token buckets (recommended for SaaS scale): shared state, fast, well-understood.
 - **Postgres-backed** rate limit table using `INSERT ... ON CONFLICT DO UPDATE` (works, but can become hot-row contention).
- SaaS.
+
+**Behaviour:**
 - Exceeded limits return `429 Too Many Requests` with `Retry-After` header.
 - API keys inherit the rate limits of their org's tier.
 - Internal/worker goroutine calls (e.g., feed ingestion, notification delivery) bypass API rate limits; they call service functions directly, not through the HTTP layer.
@@ -1442,8 +1604,8 @@ Rate limiting is enforced at the API middleware layer to protect against abuse a
 A naive `sync.Map[string]*rate.Limiter` keyed by IP address accumulates one entry per unique client IP and never releases them. Each entry holds a `golang.org/x/time/rate.Limiter` struct (~200 bytes). A public API with 10,000 unique IPs per day accumulates 3.65 million entries per year — roughly 730 MB of permanently occupied heap. The garbage collector never reclaims these because the map holds a strong reference to each limiter. After weeks to months of operation, memory growth triggers OOM on constrained containers before any individual request rate is exceeded.
 
 **Required:** The in-memory rate limiter must use a TTL-based cache or explicit eviction:
-- **Option A (preferred):** `github.com/hashicorp/golang-lru/v2/expirable` — thread-safe LRU+TTL cache; entries are automatically evicted after a configurable TTL with no background goroutine required. Default TTL: 15 minutes (configurable via `RATE_LIMIT_EVICT_TTL`).
-- **Option B:** A background sweeper goroutine that iterates the `sync.Map` and deletes entries not accessed in the last 15 minutes. Requires storing `lastSeen time.Time` alongside each limiter.
+- **Built:** a map of limiters with a `lastSeen` time per entry and a background sweeper that deletes entries not used within `RATE_LIMIT_EVICT_TTL` (default 15 minutes).
+- **Considered:** `github.com/hashicorp/golang-lru/v2/expirable`, a thread-safe LRU+TTL cache that needs no sweeper goroutine. Not used, so it is not a dependency.
 
 The eviction TTL must be longer than the rate limiter's refill window to avoid evicting an active client's rate state mid-window (i.e., `RATE_LIMIT_EVICT_TTL` > per-org token refill period).
 
@@ -1453,7 +1615,7 @@ In Docker Compose and Kubernetes, `r.RemoteAddr` returns the internal IP of the 
 
 Required pattern:
 - `TRUSTED_PROXIES` env var accepts a comma-separated list of CIDR ranges (e.g., `10.0.0.0/8,172.16.0.0/12`; empty = no trusted proxies)
-- Rate limiter middleware: if `r.RemoteAddr` falls within a trusted CIDR, extract client IP from `X-Forwarded-For` (first non-trusted entry, **right-to-left**) or `X-Real-IP`; otherwise use `r.RemoteAddr` directly
+- Rate limiter middleware: if `r.RemoteAddr` falls within a trusted CIDR, extract client IP from `X-Forwarded-For` (first non-trusted entry, **right-to-left**); `X-Real-IP` is not read; otherwise use `r.RemoteAddr` directly
 - If `TRUSTED_PROXIES` is empty (self-hosted without a proxy), use `r.RemoteAddr` directly — do not blindly trust any forwarded headers
 
 **`X-Forwarded-For` MUST be read right-to-left (required):** `X-Forwarded-For` is a comma-separated list where each proxy appends the IP it received the connection from. Example: `X-Forwarded-For: 1.2.3.4, 10.0.0.2, 10.0.0.3` (client → CDN 10.0.0.2 → ALB 10.0.0.3 → app). Reading left-to-right (`strings.Split(xff, ",")[0]`) is trivially bypassed: a client sends `X-Forwarded-For: 127.0.0.1` and the rate limiter sees loopback and may exempt it. The rightmost non-trusted entry is the most reliable because an attacker cannot inject entries after the last trusted proxy hop. Required algorithm:
@@ -1468,86 +1630,82 @@ for i := len(parts) - 1; i >= 0; i-- {
 }
 return r.RemoteAddr // all XFF entries were trusted proxies
 ```
-Never use `[0]` (leftmost). Never trust `X-Real-IP` without also validating `r.RemoteAddr` is a trusted proxy.
+Never use `[0]` (leftmost). Never trust `X-Real-IP` without also validating `r.RemoteAddr` is a trusted proxy. The same trusted-proxy rule decides whether SCIM honours `X-Forwarded-Proto`.
 
 ---
 
-## 17. Operational / Admin Controls (MVP)
+## 17. Operational / Admin Controls
 
-- `/healthz` for API, worker, DB connectivity
-- Feed status endpoint (last success, cursor, failures)
-- Admin actions:
-  - re-run feed window
-  - rebuild search index
-  - retry dead-letter deliveries
-- Audit log (Enterprise P1)
+Built in Phase 8 (operational maturity). Designs: `dev/plans/2026-03-10-phase8-ops-operate-design.md` (health endpoints, auto-migrate, doctor, site admin API and UI, production compose), `dev/plans/2026-03-10-phase8-ops-observe-design.md` (metrics, dashboards, alert rules), `dev/plans/2026-03-10-phase8-ops-secure-design.md` (key rotation, config reload, security events) and `dev/plans/2026-03-10-phase8-ops-extend-design.md` (generic feeds, inbound ingest).
 
-### 17.1 Bulk Import CLI (`import-bulk`)
+- **Health:** `GET /healthz` is liveness only. `GET /readyz` checks the database, that the schema version matches the binary, and that the delivery worker is running. The container image has a small `healthcheck` binary (`cmd/healthcheck`) for Docker `HEALTHCHECK`, since the distroless image has no shell.
+- **Metrics:** Prometheus on its own listener, `METRICS_PORT` (default 9090), not on the API port. Grafana dashboards, alert rules and Prometheus/Alloy config are in `deploy/grafana/`.
+- **Doctor:** `cvert-ops doctor` and `GET /api/v1/admin/doctor` run the checks in `internal/doctor`: database connectivity, migration currency, database role permissions, RLS enforcement, the encryption key sentinel, JWT configuration, SMTP connectivity, temp disk space, feed schedule and security headers.
+- **Site admin API** (`/api/v1/admin`, site admin only; Appendix B) and SPA pages (§20):
+  - feeds: status, run now (a normal run; there is no window parameter), pause, resume, fetch logs
+  - orgs: list, set tier and overrides, usage
+  - users: list, disable, enable, unlock, force a password reset
+  - deliveries: list across orgs, retry one, retry all failed
+  - `POST /admin/reindex` rebuilds the search index (`system_reindex` job)
+  - `POST /admin/reload-config` (also SIGHUP) reloads rotatable secrets; `GET /admin/config` shows the configuration with secrets masked
+  - `GET /admin/version`, `GET /admin/audit-log`, `GET /admin/security-events`
+- **Org audit log:** `GET /api/v1/orgs/{org_id}/audit-log` (admin+, Enterprise).
+- **Configuration checks:** `cvert-ops validate-feeds` checks generic feed YAML files; `cvert-ops quota` manages AI quota overrides; `cvert-ops rotate-encryption-key` re-encrypts SSO client secrets after an encryption key change (§7.4 notes what it does not cover).
 
-The `cvert-ops import-bulk` cobra subcommand loads CVE data from local files (captured feed snapshots, golden test fixtures) into the database. Primary use cases: (1) seeding a development environment from the test fixture corpus (see Phase 10 plan), (2) offline/airgapped deployments where API access is unavailable. NOT the primary mechanism for initial production data population — use the feed adapters' normal API sync for that. Can be re-run when a full re-sync is needed; does not affect normal incremental polling.
+### 17.1 Bulk Import CLI (`import-bulk`) — not built
+
+`cvert-ops import-bulk` exists as a subcommand but only logs "not yet implemented". Development and test databases are seeded with `testutil.SeedCorpus` (§3.3), and production instances populate themselves through the feeds' first walks. The design below is kept for airgapped deployments, should one need it.
+
+Planned behaviour: load CVE data from local files (captured feed snapshots) into the database, for offline/airgapped deployments where API access is unavailable.
 
 ```
-cvert-ops import-bulk --source nvd --input /path/to/nvdcve-1.1-2024.json.gz
-cvert-ops import-bulk --source nvd --input https://nvd.nist.gov/.../nvdcve-1.1-2024.json.gz
-cvert-ops import-bulk --source osv --ecosystem npm --input gs://osv-vulnerabilities/npm/all.zip
 cvert-ops import-bulk --source mitre --input /path/to/cvelistV5.zip
+cvert-ops import-bulk --source osv --input /path/to/all.zip
 ```
 
-Behavior:
-- Reads the bulk file (local path or HTTPS URL; GCS path via `gsutil`-compatible URL or pre-downloaded file).
-- Streams and parses the file using `json.Decoder` (never buffers the full file in memory).
-- Feeds records through the same merge pipeline as normal adapter output (`CanonicalPatch` → advisory lock → upsert → commit per CVE).
-- After completion, initializes the feed cursor to the bulk file's `as-of` timestamp so incremental API polling continues from that point without re-processing.
-- Logs progress (CVEs processed/sec, errors) to stdout and records a `system_jobs_log` entry.
+- Stream and parse the file using `json.Decoder` (never buffer the full file in memory).
+- Feed records through the same merge pipeline as normal adapter output (`CanonicalPatch` → advisory lock → upsert → commit per CVE).
+- After completion, initialize the feed cursor to the file's as-of timestamp so incremental polling continues from that point.
 - Idempotent: can be re-run; upserts are safe to replay.
 
 ---
 
-## 18. Implementation Phases (Tracker)
+## 18. Implementation Phases (Status)
 
-**Phase 0 — Repo + CI skeleton** (no product code)
-- Go 1.26 module init (`github.com/scarson/cvert-ops`), linter config (`golangci-lint`), test harness (`testcontainers-go`), docker compose dev stack (Postgres + Mailpit)
-- Skeleton HTTP server (huma + chi) + worker process (cobra subcommands) + DB migrations (`golang-migrate`, embedded)
-- Prometheus `/metrics` + `/healthz` endpoints
-- GitHub Actions CI pipeline
-- `.env.example` with documented config vars
+All numbered phases are complete. The record of each is in `dev/implementation-log/` and its design and plan in `dev/plans/`. Dates come from the implementation log and the merge history.
 
-**Phase 1 — Data ingestion + canonical storage + search** (MVP core)
-- adapters: NVD, MITRE, CISA KEV, OSV, GHSA, EPSS (poll)
-- merge rules + material_hash
-- FTS + facets + CVE detail API
+| Phase | Scope | Done |
+|---|---|---|
+| 0 — Repo + CI skeleton | Go module, golangci-lint, testcontainers harness, compose dev stack (PostgreSQL + Mailpit), skeleton server and worker, embedded migrations, `/metrics`, `/healthz`, GitHub Actions, `.env.example` | 2026-02-25 |
+| 1 — Ingestion, canonical storage, search | NVD, MITRE, KEV, OSV, GHSA and EPSS adapters; merge and `material_hash`; FTS and the CVE search and detail API | 2026-02-25 to 2026-02-28 |
+| 2 — Orgs, auth, RBAC, watchlists, alert rules | Native auth, GitHub and Google sign-in, org model and RLS (§6.2), RBAC (§7.3), watchlists, alert DSL compiler and evaluator | 2026-02-28 |
+| 3 — Notifications and digests | Webhook and email channels (Slack was planned and not built), delivery retries and replay, daily digests, email templates | 2026-03-01 |
+| 4 — AI gateway | `LLMClient` with Gemini, NL search, summaries, quotas, caching; saved searches | 2026-03-01 |
+| 5 — Hardening and SaaS readiness | Tiers and per-org rate limits, retention cleanup, audit logging, per-org OIDC SSO with domain discovery and identity linking | 2026-03-02 to 2026-03-03 |
+| Frontend | Vue 3 SPA embedded in the binary (§20) | 2026-03-06 |
+| Feed wiring | MSRC and Red Hat adapters, feed scheduler, site admin feed API | 2026-03-06 to 2026-03-08 |
+| 6 — Production readiness | Password reset, email verification, account lockout, CORS, invitation emails, channel test endpoint, channel RBAC fix, Appendix B rewrite, bug-fix pass | 2026-03-09 |
+| 8 — Operational maturity | Metrics, dashboards and alert rules; `/readyz`, auto-migrate, doctor, site admin API and UI, production compose; generic feeds, inbound ingest, `validate-feeds`; JWT and encryption key rotation, config reload, security events (§17) | 2026-03-10 to 2026-03-18 |
+| 9 — Health review remediation | 45 findings from the 2026-03-10 health review, API contract convergence, bug hunt fixes | 2026-03-15 to 2026-03-19 |
+| 11 — MFA | TOTP, email codes, recovery codes, org and member mandates (§7.4) | 2026-03-17 to 2026-03-18 |
+| 7 — SCIM | SCIM 2.0 provisioning with group-to-role mapping (§7.5) | 2026-03-19 to 2026-03-26 |
+| 10 — Test fixture corpus | Golden fixtures for every adapter, `testutil.SeedCorpus`, MSRC CSAF and GHSA reference fixes | 2026-04-05 |
 
-**Phase 2 — Org model + RBAC + watchlists + alert rules**
-- org/user auth, org-scoped tables, RBAC (section 7.3)
-- Postgres RLS policies on all org-scoped tables (section 6.2); pgx middleware for `SET LOCAL app.org_id`
-- watchlist CRUD + matching joins
-- alert DSL compiler → SQL + event generation
+**Work after the phases (November 2026).** Work moved from numbered phases to one design or fix at a time, each in `dev/plans/` and `dev/implementation-log/`. The larger pieces:
+- **Self-hosted deployment:** production compose fixes, database settings under the app role, private webhook destinations (§11.3), SPA sign-in with MFA steps.
+- **Alert correctness:** evaluator cursor re-scan window and failure hold, candidate-cap chunking, resolution notifications and reopening resolved events (§10.3–10.4), activation recovery, CVEs without a status, severity case.
+- **Feeds:** resumable first walks across job limits, OSV incremental runs from `modified_id.csv`, MITRE paging, NVD `caught_up`, EPSS run fixes, MSRC paging, a complete Red Hat walk.
+- **Range and source data:** one source row per advisory, whole-range union, OSV ecosystem vocabulary (`internal/ecosystem`), NVD CPE match ranges and CNA `affected[]` entries (Appendix A.2).
+- **Version checks (MATCH-1):** `internal/version` with ecosystem-native comparison (§9.2) and `POST /orgs/{org_id}/check` (§16), including the rule that a distribution whose feed lists only fixes never answers `not_affected`.
+- **Product and package rules (MATCH-2):** `affected.cpe_product`, package correlation, the match-inputs re-check signal, and DSL fail-closed fixes (§5.3, §10).
+- **API for automation:** complete OpenAPI spec with declared credentials, `whoami`, alert-event `expand` and the ascending alert-event feed, watchlist CVE items and whole-list replace, unknown request fields refused.
+- **Platform:** Go 1.27, PostgreSQL 18 minimum, removal of the unread `fire_on_non_material_changes` rule flag.
 
-**Phase 3 — Notifications + reports**
-- email/slack/webhook channels + notification templates (section 11.4)
-- delivery retries + DLQ
-- daily digest reports
-
-**Phase 4 — AI gateway + NL search**
-- LLMClient interface + vendor adapter
-- NL → query JSON + execution
-- quotas + caching + metrics
-
-**Phase 5 — Hardening and SaaS readiness**
-- Org tiering with resolved limits + tier-gated middleware
-- Data retention automation (bounded-batch cleanup, tier-aware windows)
-- Audit logging with non-blocking writes + secret redaction
-- SSO/OIDC connections + email domain discovery + identity linking
-- Vendor feed enrichment (MSRC, Red Hat) + site admin role for feed management
-
-**Frontend** — Vue 3 + Vite SPA implemented alongside Phase 5 and embedded in the Go binary (same origin in production, Vite proxy in dev)
-
-**Phase 6 — Backend cleanup & production readiness**
-- Security hardening: password reset, email verification, account lockout, CORS
-- Missing workflows: invite-only bootstrap fix, invitation emails, channel test endpoint
-- RBAC fix: channel mutations restricted to admin/owner per §7.3
-- PLAN.md reconciliation: Appendix B rewrite, internal inconsistency fixes
-- Bug fix pass: 25 findings from 6 bug hunt reports — TOCTOU races, anti-enumeration, memory leaks, validation gaps, transaction helper compliance, concurrency safety
+**Open work.** Each item names where it is described.
+- **Designed, waiting for a decision:** API client CLI and MCP server (`dev/plans/2026-11-13-api-client-cli-and-mcp-server-design.md`, draft for Sam's review; no code). Reading Red Hat's unfixed package states in the version check, so RHEL 8–10 main streams can answer `affected` or `not_affected` for CVEs Red Hat has not fixed (proposed, not built: `dev/plans/2026-11-13-redhat-unfixed-package-states-proposal.md` section 3). Deferred product-rule items (`dev/deferred-features.md` §12).
+- **Required before a multi-tenant hosted deployment:** encrypt the alert-event feed cursor or move to per-org positions (Appendix B, alert events); shared rate-limit state before more than one API instance (Decision D6, §16.1).
+- **Gaps between the design and the code, found in the 2026-11-14 review of this document** (marked **Open** where they are described): federated sign-in skips MFA (§7.2, §7.4); webhook signing secrets stored in plaintext (§11.3); refresh-token reuse inside the grace window does not revoke (§7.1); watchlist and rule ownership not enforced (§7.3); TOTP secrets not covered by `rotate-encryption-key` (§7.4); no Content-Security-Policy or HSTS (§18.3); `http.TimeoutHandler` not applied (§18.3); CVE search outside the org rate limit (§16.1); digest watchlist scope ignored (§12); NVD attribution notice missing from the SPA (§3.2).
+- **Planned and not built:** Slack and Teams channels; weekly digests and AI digest summaries; CWE dictionary ingestion (§8.2); `import-bulk` (§17.1); CVE annotations and assignment, watchlist templates (§19.5); org deletion and ownership transfer; a session list and per-device sign-out; ecosystem-aware CVSS precedence (§5.1); CVSS and EPSS search filters (§8.1); SAML and WebAuthn; custom notification templates; tracing; exports and billing; SPA pages for alert rules, channels, reports, saved searches and SSO/SCIM settings (§20).
 
 ### 18.1 Worker Architecture (Decision)
 
@@ -1556,15 +1714,18 @@ Go's goroutine model makes the task queue decision fundamentally different from 
 **Architecture: single binary with embedded worker pool, cobra subcommands**
 
 The CVErt Ops binary uses cobra for CLI subcommands:
-- `cvert-ops serve` (default) — runs HTTP server + worker pool in one process. Suitable for self-hosted single-instance deployments.
-- `cvert-ops worker` — runs standalone worker pool only. For SaaS scaling where API and workers run separately.
+- `cvert-ops serve` — runs HTTP server + worker pool + delivery worker in one process, and applies pending migrations at startup under a PostgreSQL advisory lock unless `--skip-auto-migrate` is given. Suitable for self-hosted single-instance deployments.
+- `cvert-ops worker` — runs everything except the HTTP API: the worker pool, the delivery worker (with its digest and retention tickers) and the feed scheduler. For SaaS scaling where API and workers run separately. Does not migrate.
 - `cvert-ops migrate` — runs pending database migrations and exits.
-- `cvert-ops import-bulk` — imports a bulk data file for a given feed source (see section 17.1). Used for development seeding and airgapped deployments; exits on completion.
+- `cvert-ops import-bulk` — stub; not built (section 17.1).
+- `cvert-ops quota` (`set`, `get`, `list`, `delete`) — per-org AI quota overrides (§13.4).
+- `cvert-ops validate-feeds` — checks the syntax of generic feed YAML files (§3.1). Its `--dry-run` flag returns "not yet implemented".
+- `cvert-ops doctor` — runs the health checks (§17).
+- `cvert-ops rotate-encryption-key` — re-encrypts SSO client secrets with the current `SSO_ENCRYPTION_KEY` (§7.4 notes what it does not cover).
 
 **Graceful shutdown:**
 - On SIGTERM/SIGINT: stop accepting new HTTP requests and new jobs
-- Wait for in-flight requests and jobs to complete (up to configurable deadline, default 60s via `SHUTDOWN_TIMEOUT_SECONDS`)
-- After deadline: force exit; in-flight jobs are reclaimed by stale lock detection (worker heartbeat timeout)
+- `serve` waits up to `SHUTDOWN_TIMEOUT_SECONDS` (default 60) for in-flight HTTP requests and for the delivery worker to drain; `worker` waits 5 seconds. Jobs still running at exit are reclaimed by stale lock detection (below).
 
 The binary runs two logical components:
 - **HTTP server** (goroutines managed by `net/http`)
@@ -1573,15 +1734,19 @@ The binary runs two logical components:
 The worker pool processes jobs from a **Postgres-backed job queue** using `SELECT ... FOR UPDATE SKIP LOCKED`, which provides:
 - reliable at-least-once delivery (jobs are claimed transactionally)
 - retry with configurable backoff (failed jobs are re-enqueued with a `run_after` timestamp)
-- dead-letter visibility (jobs exceeding max retries are moved to a dead-letter table)
+- dead-letter visibility (jobs exceeding max retries stay in the table with `status = 'dead'`)
 - priority support (jobs have a `priority` column; workers poll highest priority first)
-- concurrency control via optional `lock_key` + partial unique index (e.g., `lock_key='feed:nvd'`) to enforce max-1-concur**Job table (MVP):**
+- concurrency control via optional `lock_key` + partial unique index (e.g., `lock_key='feed:nvd'`) to enforce max-1-concurrent jobs per key
+
+**Queues as built:** `feed_ingest`, `epss_ingest`, `alert_activation`, `alert_batch`, `alert_epss`, `alert_zombie_sweep`, `retention_cleanup`, `system_reindex`. Notification and digest delivery do not use `job_queue`; they poll `notification_deliveries` (§11.1).
+
+**Job table:**
 ```sql
 -- Decision: single-table queue with optional dedupe/lock semantics.
 -- Status: pending -> running -> succeeded | dead
 CREATE TABLE job_queue (
     id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    queue        text NOT NULL,                -- 'feed_ingest', 'notify', 'report', 'cleanup'
+    queue        text NOT NULL,                -- e.g. 'feed_ingest', 'alert_batch', 'retention_cleanup'
     priority     int  NOT NULL DEFAULT 0,      -- higher = more urgent
     payload      jsonb NOT NULL,
 
@@ -1648,12 +1813,11 @@ ALTER TABLE job_queue SET (
 
 **Worker goroutines:**
 - One goroutine per queue type (configurable concurrency per queue).
-- Each goroutine polls with `SKIP LOCKED`, processes the job, and updates status — all within a single transaction.
-- Stale lock detection: a periodic goroutine reclaims jobs where `locked_at` exceeds a timeout (e.g., 5 min), to handle worker crashes.
+- Each goroutine claims a job with one `UPDATE ... FOR UPDATE SKIP LOCKED` statement, runs the handler outside any transaction, then marks it succeeded or failed in a separate statement. A failed job is retried after `2^attempts` seconds.
+- Stale lock detection: a periodic goroutine reclaims jobs where `locked_at` is older than the maximum job duration (10 minutes) plus 2 minutes, to handle worker crashes. There is no heartbeat column. A reclaimed job with attempts left returns to `pending`; one that has used `max_attempts` becomes `dead`, so a job that keeps killing its worker is not retried forever.
 
 **Why not an external queue for MVP:**
 - No Redis dependency → simpler Docker Compose stack → better for self-hosted/homelab persona.
-- Transactional consistency: a feed ingestion job can claim a job, write CVE data, and update the job status in the same transaction.
 - Throughput ceiling of Postgres `SKIP LOCKED` is well above MVP needs (thousands of jobs/sec).
 - If SaaS scaling demands exceed Postgres queue throughput, the `job_queue` table can be replaced with Redis/NATS without changing the worker goroutine structure — only the "claim next job" function changes.
 
@@ -1691,7 +1855,7 @@ Auditing deferred resources in loops is a required code review gate for any new 
 
 **Decision: huma + chi (code-first, OpenAPI 3.1)**
 
-huma (`github.com/danielgtaylor/huma`, v2.37.1) wraps chi as the underlying router. Go types and handler definitions automatically generate an OpenAPI 3.1 specification served at `/openapi`.
+huma (`github.com/danielgtaylor/huma/v2`) wraps chi as the underlying router. Go types and handler definitions automatically generate an OpenAPI 3.1 specification, served at `/api/v1/openapi.json` and committed as `openapi.json` (§16). Auth, MFA and CVE routes are huma operations; most org-scoped routes are chi handlers described in the spec through spec-only huma declarations.
 
 **Why huma + chi:**
 1. **OpenAPI 3.1 native** — future-proof; oapi-codegen only supports 3.0.x
@@ -1699,7 +1863,6 @@ huma (`github.com/danielgtaylor/huma`, v2.37.1) wraps chi as the underlying rout
 3. **RFC 9457 Problem Details** — modern structured error responses out of the box
 4. **Chi middleware preserved** — huma wraps chi, so the full chi middleware ecosystem (20+ built-in, 100+ third-party) is available for auth, CORS, rate limiting, request ID
 5. **Natural for Go development** — write Go code, not OpenAPI YAML; spec can never drift from code
-6. **Go 1.26 compatible** — requires Go 1.25+ (satisfied)
 
 **Alternative considered:** Spec-first with oapi-codegen + chi. Stronger contract enforcement but OpenAPI 3.0 only, more ceremony for a solo developer, and higher learning curve (OpenAPI YAML + generated code).
 
@@ -1707,7 +1870,7 @@ huma (`github.com/danielgtaylor/huma`, v2.37.1) wraps chi as the underlying rout
 
 **Timezone database embedding (required):**
 
-`gcr.io/distroless/static-debian12` does not include `/usr/share/zoneinfo`. Any call to `time.LoadLocation("America/New_York")` (for user-configured digest delivery times or scheduled cron triggers) will panic or silently fall back to UTC offsets — incorrect behavior for users outside UTC. Add to `cmd/cvert-ops/main.go`:
+Any call to `time.LoadLocation("America/New_York")` (for user-configured digest delivery times) fails if the host has no IANA timezone database, which leaves users outside UTC with wrong delivery times. The distroless image ships timezone data, but the binary must not depend on its image or host. `cmd/cvert-ops/main.go` has:
 ```go
 import _ "time/tzdata" // embed IANA timezone database in binary
 ```
@@ -1717,9 +1880,11 @@ This compiler directive embeds the timezone database directly in the static bina
 
 If CVErt Ops is deployed with multiple replicas (Docker Compose `scale: 2`, Kubernetes `replicas: 3`), all instances start simultaneously and all call `migrate.Up()` concurrently. `golang-migrate`'s Postgres driver uses a `schema_migrations` advisory lock, but concurrent calls may still result in table lock contention and index creation errors, permanently corrupting migration state.
 
-Required approach (choose one):
-1. **Postgres advisory lock wrapper:** Acquire `pg_advisory_lock(hashtext('cvert_ops_migrate'))` before calling `migrate.Up()`, release after. Only one instance applies migrations; others wait and then no-op since migrations are already applied.
-2. **Separate migrate subcommand (recommended):** Run `cvert-ops migrate` as a Kubernetes init container or Docker Compose `command` override that exits after migrations complete, before the main containers start. The `serve` and `worker` subcommands should verify schema version matches expected but NOT call `migrate.Up()` automatically.
+As built, both protections exist:
+1. **Advisory lock around auto-migrate:** `serve` acquires `pg_advisory_lock(hashtext('cvertops-migrate'))` before calling `migrate.Up()` and releases it after. Only one instance applies migrations; others wait and then no-op since migrations are already applied. `--skip-auto-migrate` turns auto-migrate off; `worker` never migrates.
+2. **Separate migrate subcommand:** `cvert-ops migrate` can run as a Kubernetes init container or a Docker Compose service that exits before the main containers start. `docker/compose.yml` does this and also leaves `serve`'s auto-migrate on, so migrations run twice (harmless under the lock).
+
+When the applied schema version differs from the one the binary expects, `serve` logs a warning and `/readyz` reports not ready.
 
 **`sqlc` UUID type configuration (required):**
 
@@ -1749,7 +1914,7 @@ go func() {
     workerPool.Enqueue(bgCtx, activationScanJob)
 }()
 ```
-Never pass `r.Context()` directly to background work. Never use `context.Background()` (loses tracing). `context.WithoutCancel` is the correct bridge.
+Never pass `r.Context()` directly to background work. Never use `context.Background()` (loses request values). `context.WithoutCancel` is the correct bridge.
 
 **Container memory limit auto-configuration (required):**
 
@@ -1806,7 +1971,7 @@ The `import-bulk` subcommand is a cobra CLI path that reads files directly via t
 
 **`WriteTimeout` and streaming endpoints (required, non-obvious):**
 
-`WriteTimeout` bounds the total time from connection accept to writing the complete response. Setting it globally is dangerous for CVErt Ops because the digest preview and any future SSE-based endpoints emit a response body over a long duration — a 30-second `WriteTimeout` would abort mid-stream responses after 30 seconds regardless of whether the client is still receiving. For this reason, `WriteTimeout` is **intentionally omitted** from the global `http.Server` struct (leaving it infinite) and instead applied per-handler via `http.TimeoutHandler` where it is meaningful:
+`WriteTimeout` bounds the total time from connection accept to writing the complete response. Setting it globally is dangerous for CVErt Ops because the digest preview and any future SSE-based endpoints emit a response body over a long duration — a 30-second `WriteTimeout` would abort mid-stream responses after 30 seconds regardless of whether the client is still receiving. For this reason, `WriteTimeout` is **intentionally omitted** from the global `http.Server` struct (leaving it infinite) and was to be applied per-handler via `http.TimeoutHandler` where it is meaningful. **Open:** no handler uses `http.TimeoutHandler` yet, so non-streaming responses have no write deadline beyond the 14-second database statement timeout (§19.2).
 
 ```go
 // Global server — no WriteTimeout (would break streaming endpoints)
@@ -1838,19 +2003,19 @@ r.Use(func(next http.Handler) http.Handler {
     })
 })
 ```
-`X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY` are safe to set universally on an API server. `Strict-Transport-Security` (HSTS) should only be sent by the process that terminates TLS — since the MVP deployment model uses a reverse proxy for TLS termination, HSTS belongs in the proxy config, not in the Go server. A convenience alternative: `github.com/unrolled/secure` provides a configurable middleware covering these headers.
+`X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY` are safe to set universally on an API server. `Strict-Transport-Security` (HSTS) should only be sent by the process that terminates TLS — the deployment model uses a reverse proxy (Caddy in `docker/`) for TLS termination, so HSTS belongs in the proxy config, not in the Go server. **Open:** the server sends only the three headers above; it sends no Content-Security-Policy, although the same origin serves the SPA, and `docker/Caddyfile` sets no HSTS. A convenience alternative: `github.com/unrolled/secure` provides a configurable middleware covering these headers.
 
 **Reference — complete HTTP hardening checklist:** The items in this section (server timeouts, request body limit, `WriteTimeout` per-handler, security headers) cover the Go-specific and non-obvious hardening requirements for this codebase. They are not an exhaustive list. Before production deployment, validate against **OWASP Application Security Verification Standard (ASVS) Level 2** — particularly sections V14 (Configuration) and V12 (Files and Resources). The `golangci-lint` pipeline (Phase 0) catches several OWASP-relevant code patterns at the static analysis level.
 
 ---
 
-## 19. Research Decision Backlog (ALL RESOLVED)
+## 19. Research Decision Backlog (historical, all resolved)
 
-All research decisions have been resolved. See `research.md` for detailed findings and rationale.
+The research decisions taken before implementation, kept for their rationale (`dev/research.md` has the findings). Each was later built as decided, except where noted.
 
-1) ~~OIDC/OAuth library selection~~ → **RESOLVED:** `coreos/go-oidc/v3` + `golang.org/x/oauth2`. MVP: email/password + GitHub + Google OAuth. See section 7.2.
-2) ~~CWE dictionary ingestion~~ → **RESOLVED:** Full dictionary ingestion from MITRE CWE. See section 8.2.
-3) ~~Postgres RLS for hosted mode~~ → **RESOLVED:** `SET LOCAL app.org_id` per-transaction; always enable RLS; implementation deferred to P1. See section 6.2.
+1) ~~OIDC/OAuth library selection~~ → **RESOLVED:** `coreos/go-oidc/v3` + `golang.org/x/oauth2`. Built with GitHub, Google and per-org OIDC (§7.2).
+2) ~~CWE dictionary ingestion~~ → **RESOLVED:** Full dictionary ingestion from MITRE CWE. Not built yet (§8.2).
+3) ~~Postgres RLS for hosted mode~~ → **RESOLVED:** `SET LOCAL app.org_id` per-transaction; always enable RLS. Built in Phase 2, not deferred (§6.2).
 4) ~~LLM vendor/model~~ → **RESOLVED:** Google Gemini (`google.golang.org/genai`). See section 13.4.
 5) ~~HTTP framework + OpenAPI strategy~~ → **RESOLVED:** huma + chi (code-first, OpenAPI 3.1). See section 18.2.
 
@@ -1858,28 +2023,22 @@ All research decisions have been resolved. See `research.md` for detailed findin
 
 ## 19.1 Observability
 
-**Logging:** `slog` (Go stdlib, zero dependencies). JSON output in production, text in dev. Go 1.26 adds `slog.NewMultiHandler()` for distributing to multiple destinations.
+**Logging:** `slog` (Go stdlib, zero dependencies). JSON output in production, text in dev.
 
-Context propagation: HTTP middleware adds `request_id`, `org_id`, `user_id` to request context. Custom slog handler extracts these and includes them in all downstream log records. Implement `slog.LogValuer` interface on types containing sensitive data to ensure redaction.
+Context propagation: HTTP middleware stores a logger carrying `request_id` in the request context (`internal/api/log_middleware.go`; helpers in `internal/log`). Types holding secrets implement `slog.LogValuer` to redact them (the config does, through `Config.LogValue()`). **Open:** the design added `org_id` and `user_id` as well and had every log record carry them through a context-aware handler; as built, only `request_id` is added and few call sites read the context logger, so most API log lines carry no request ID.
 
-**Metrics:** `prometheus/client_golang` with `/metrics` endpoint from Phase 0. Expose:
-- Go runtime metrics (goroutines, memory, GC)
-- HTTP request latency/count per endpoint
-- Feed ingestion items/errors per source
-- Job queue depth and processing time
-- Notification delivery success/failure counts
+**Metrics:** `prometheus/client_golang` on the metrics listener (`METRICS_PORT`, §17), names prefixed `cvertops_`. They cover Go runtime, HTTP requests, feed ingestion, the worker pool and job queue, notification delivery, AI calls, alert evaluation (including the candidate cap), security events and the database pool. Dashboards and alert rules: `deploy/grafana/`.
 
-**Tracing:** Deferred to P1. Structured logs with request_id provide basic correlation for MVP.
+**Tracing:** not built. Structured logs provide basic correlation.
 
 ## 19.2 Configuration
 
-**Library:** `caarlos0/env/v11` for env var parsing + `go-playground/validator` for startup validation.
+**Library:** `caarlos0/env/v11` for env var parsing (`internal/config/config.go`); startup checks (secret lengths, `EXTERNAL_URL`, cookie settings, CIDR lists) are handwritten.
 
 All configuration via environment variables (12-factor). Docker Compose `.env` files are the primary config surface for self-hosted deployments.
 
-- Nested config structs supported (e.g., `SMTPConfig`, `DatabaseConfig`)
-- Validation at startup via struct tags (`required`, `min`, `max`, `url`)
-- Secret redaction: config types implement custom `String()` method that masks sensitive fields
+- Secret redaction: `Config.LogValue()` masks sensitive fields when the config is logged, and `GET /api/v1/admin/config` returns it masked
+- Rotatable secrets (`JWT_SECRET`, `JWT_SECRET_PREVIOUS`, the encryption keys) reload on SIGHUP or `POST /api/v1/admin/reload-config`
 - `.env.example` file in repo documents all available config vars with defaults and descriptions
 
 **PgBouncer / connection pooler compatibility (required):**
@@ -1888,15 +2047,15 @@ Enterprise and high-availability deployments routinely place PgBouncer (or simil
 
 `pgx` v5 (used by `pgxpool`) defaults to **extended query protocol with named prepared statements**. When a prepared statement is created on backend connection A, it exists only on that backend. When PgBouncer routes the next query to backend B, Postgres returns: `ERROR: prepared statement "pgx_N" does not exist`. This immediately crashes the query, and with a pooled connection, may crash the entire worker goroutine or trigger a cascade of errors across the pool.
 
-**Required:** Configure pgxpool to use the simple query protocol (no named prepared statements) when connecting through a pooler:
+**Required:** Configure pgxpool to use a query mode with no named prepared statements:
 ```go
 config, err := pgxpool.ParseConfig(cfg.DatabaseURL)
 if err != nil { log.Fatal(err) }
-// Use simple protocol — compatible with PgBouncer transaction pooling mode
-config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+// Compatible with PgBouncer transaction pooling mode: each execution re-sends the SQL as an unnamed statement.
+config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheDescribe
 pool, err := pgxpool.NewWithConfig(ctx, config)
 ```
-Alternatively, append `?default_query_exec_mode=simple_protocol` to `DATABASE_URL`. Expose a `DB_QUERY_EXEC_MODE` env var (default `simple_protocol`) so operators who connect directly to Postgres can opt into extended protocol for performance. Self-hosted single-instance deployments without PgBouncer work correctly with either mode; the simple protocol has negligible performance impact at our scale.
+Expose a `DB_QUERY_EXEC_MODE` env var (default `cache_describe`) so operators who connect directly to Postgres can opt into `extended_protocol` for performance. Do not use `QueryExecModeSimpleProtocol` or `QueryExecModeExec`: they assume parameter types from Go types, so a `[]byte` is sent as `bytea` and `jsonb` columns reject it. `cache_describe` caches statement descriptions per connection, so run schema migrations before starting the new binary.
 
 **Database connection pool sizing (required):**
 
@@ -1905,53 +2064,56 @@ Alternatively, append `?default_query_exec_mode=simple_protocol` to `DATABASE_UR
 **Required:**
 - Expose `DB_MAX_CONNS` env var, default `25`. This maps directly to `pgxpool.Config.MaxConns`.
 - Document the scaling formula in `.env.example`: `DB_MAX_CONNS × number_of_app_instances < postgres_max_connections − 10`. The buffer of 10 reserves headroom for `psql` admin sessions and migration runs.
-- Log a warning at startup if the configured pool size appears dangerously high relative to the queried Postgres `max_connections` value (via `SHOW max_connections`). This is advisory, not fatal — the operator may have custom Postgres configuration.
+- Log a warning at startup if the configured pool size exceeds 80% of the queried Postgres `max_connections` value (via `SHOW max_connections`). This is advisory, not fatal — the operator may have custom Postgres configuration.
 
 **Database query timeout via `statement_timeout` (required):** Without a query timeout, a misbehaving DSL rule, a slow CVE merge, or a retention cleanup batch that locks a hot table can hold a Postgres backend connection for minutes or indefinitely, consuming a connection from the finite pool and blocking queries waiting on locked rows. Set a global `statement_timeout` in pgxpool's `RuntimeParams`:
 ```go
 config.ConnConfig.RuntimeParams["statement_timeout"] = "14000" // 14 seconds in ms
 ```
-14 seconds is deliberately longer than the 10-second webhook timeout (§11.2) and the 5-second `ReadHeaderTimeout` — it covers worst-case legitimate queries (full-text search + regex post-filter at max candidates) without interfering with normal operations. Worker jobs that legitimately need longer (activation scan batches, bulk import, retention cleanup) must set `SET LOCAL statement_timeout = 0` at the transaction level via `tx.Exec(ctx, "SET LOCAL statement_timeout = 0")`. Expose `DB_STATEMENT_TIMEOUT_MS` env var (default `14000`) for operator tuning.
+14 seconds is deliberately longer than the 10-second webhook timeout (§11.2) and the 5-second `ReadHeaderTimeout` — it covers worst-case legitimate queries (full-text search + regex post-filter at max candidates) without interfering with normal operations. Expose `DB_STATEMENT_TIMEOUT_MS` env var (default `14000`) for operator tuning. The alert evaluator, whose rule queries can legitimately take longer, raises the limit for its own transactions to `DB_LONG_STATEMENT_TIMEOUT_MS` (default 120000) with `SET LOCAL statement_timeout` (`store.SetStatementTimeout`).
 
 **Connection idle timeout (required):** Postgres backend processes are not freed until their pgxpool connection is closed. Without an idle timeout, connections acquired during peak load remain open indefinitely — holding ~5–10 MB of Postgres backend memory per connection even when the application is idle. Additionally, cloud NAT gateways (AWS NAT Gateway, GCP Cloud NAT) silently drop TCP sessions idle for >300 seconds. A pgx connection idle for 5+ minutes receives a `broken pipe` or `connection reset` error on the next query — silently wasting the first query of a low-traffic period. Configure:
 ```go
 config.MaxConnIdleTime = 5 * time.Minute
 ```
-Connections idle for more than 5 minutes are proactively closed and returned to the OS before the NAT gateway drops them.
+Connections idle for more than 5 minutes are proactively closed and returned to the OS before the NAT gateway drops them. The value is configurable as `DB_MAX_CONN_IDLE_TIME` (default `5m`).
 
 ## 19.3 Testing Strategy
 
-- **Unit tests:** Table-driven tests for pure logic (merge rules, DSL compiler, validation). Mock HTTP responses (recorded fixtures) for feed adapter tests.
-- **Integration tests:** `testcontainers-go` for ephemeral Postgres containers per test suite. Realistic database testing without a shared dev instance.
-- **Pre-populated DB snapshots:** For tests that need feed data (alert evaluation, search, digests), load pre-built Postgres snapshots to avoid hitting real APIs and rate limits during CI.
+- **Unit tests:** Table-driven tests for pure logic (merge rules, DSL compiler, validation, version comparison, check verdicts).
+- **Golden tests:** every feed adapter except the generic and CSAF helpers replays captured real responses (`internal/feed/<adapter>/golden_test.go`) to catch upstream schema drift.
+- **Integration tests:** `testcontainers-go` with one PostgreSQL 18 container per test binary (`internal/testutil`). Realistic database testing without a shared dev instance; the app role, RLS and production settings are exercised.
+- **Seeded corpus:** `testutil.SeedCorpus` runs 65 real CVEs from eight feeds' golden fixtures through the real merge pipeline, for tests that need a realistic corpus (alert evaluation, search, digests, checks). Raw SQL inserts of CVE data are not used, because they bypass `material_hash`, child tables and the FTS index (`dev/testing-pitfalls.md`).
 - **Email testing:** Mailpit in docker-compose as a local SMTP trap for dev/test. Real SMTP configured via env vars for production.
-- **CI pipeline:** GitHub Actions — lint (`golangci-lint`), vet (`go vet`), test (`go test` with testcontainers), vulnerability scan (`govulncheck`), build binary, build Docker image.
-- **RBAC test matrix:** Integration tests must cover each role × each endpoint from the permission matrix (section 7.3).
-- **RLS isolation tests (P1):** Verify cross-org isolation with RLS enabled (Org A creates data → Org B queries → 0 results).
+- **Frontend:** Vitest unit tests under `web/`; type checking with `vue-tsc`; lint with oxlint and eslint. No browser end-to-end suite.
+- **CI pipeline** (`.github/workflows/ci.yml`, on pushes and pull requests to `main`): golangci-lint; API and store tests, each sharded in two; other Go tests; `govulncheck`; web type check, lint, unit tests and a check that the generated API types match `openapi.json`; Go binary build; a smoke test that starts the production compose stack; web build. Pull requests to `dev` run no CI, so a merge to `dev` must follow a local test run.
+- **RBAC test matrix:** Integration tests cover each role × each endpoint from the permission matrix (section 7.3).
+- **RLS isolation tests:** Org A creates data → Org B queries → 0 results, run as the non-bypass app role.
 
 ## 19.4 Registration Mode
 
-Configurable via `REGISTRATION_MODE` env var:
-- `invite-only` (default): only org owners/admins can invite new members. Most secure for self-hosted security teams.
-- `open`: anyone can register and create their own org. Suitable for SaaS or community instances.
-- First user auto-becomes owner of a default org regardless of mode (preserves homelab single-user simplicity).
+Configurable via `REGISTRATION_MODE` env var (any value other than `open` acts as `invite-only`):
+- `invite-only` (default): after the first user, register returns 403 and GitHub/Google sign-up is refused. A new person joins through an invitation, which needs an existing account to accept, or through SCIM provisioning (§7.5). **Open:** an invited person with no account has no way to create one except SCIM.
+- `open`: anyone can register, and GitHub and Google sign-in create users. A new user has no org until they create one or accept an invitation.
+- The first user auto-becomes owner of a default org regardless of mode, and site admin if they registered with a password (§7.3). This preserves homelab single-user simplicity.
 
-## 19.5 New Features (from Competitive Analysis)
+## 19.5 Features from the Competitive Analysis
 
-### CVE Assignment (P1)
-Add `assignee_user_id UUID REFERENCES users(id)` to `cve_annotations` table. Allows security teams to assign CVEs to team members for triage.
+### CVE Assignment (not built)
+Add `assignee_user_id UUID REFERENCES users(id)` to a `cve_annotations` table, so security teams can assign CVEs to team members for triage.
 - Endpoint: `PATCH /api/v1/orgs/{org_id}/cves/{cve_id}/annotations` (set assignee, tags, notes, snooze state)
-- Shows in digest emails and future dashboard widgets
+- Shows in digest emails and dashboard widgets
 - Inspired by OpenCVE's "assigned CVEs" feature
 
-### Saved Searches
+### Saved Searches (built)
 Reusable filter presets independent of alert rules. Users save search queries and share them within an org.
-- Table: `saved_searches(id UUID PK, org_id UUID NOT NULL, user_id UUID NOT NULL, name TEXT NOT NULL, query_json JSONB NOT NULL, is_shared BOOLEAN DEFAULT false, created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ)`
-- Constraints: `UNIQUE(org_id, name)`
-- Endpoints: `GET/POST /api/v1/orgs/{org_id}/saved-searches`, `GET/PATCH/DELETE /api/v1/orgs/{org_id}/saved-searches/{id}`
-- `is_shared` flag controls org-wide visibility (respects RBAC: viewers can use shared searches, members can create their own, admins can manage all)
+- Table: `saved_searches(id, org_id, user_id NULL, name, query_json JSONB, nl_query NULL, is_shared BOOLEAN DEFAULT false, deleted_at NULL, created_at, updated_at)`. `user_id` becomes NULL when the user is deleted; `nl_query` (up to 1,000 characters) holds the natural-language query a search was made from, if any.
+- Uniqueness: `(org_id, user_id, name)` among live rows
+- Endpoints: `GET/POST /api/v1/orgs/{org_id}/saved-searches`, `GET/PATCH/DELETE /api/v1/orgs/{org_id}/saved-searches/{id}`, `POST .../{id}/execute`
+- `is_shared` controls org-wide visibility. The creator edits or deletes a private search; a shared one can also be changed by an admin+
+- Executed under the alert evaluator's query settings (§10.3)
 
-### Watchlist Bootstrap Templates
+### Watchlist Bootstrap Templates (not built)
 Pre-built watchlist templates that users can import during onboarding to reduce friction (inspired by OpenCVE's vendor/product auto-discovery).
 
 Ship embedded preset watchlists (JSON files via `embed.FS`):
@@ -1969,75 +2131,80 @@ Endpoints:
 
 ```
 cvert-ops/
-├── cmd/cvert-ops/        # cobra CLI (main.go, serve.go, worker.go, migrate.go, import_bulk.go)
+├── cmd/
+│   ├── cvert-ops/        # cobra CLI: main.go (serve, worker, migrate, import-bulk), doctor.go, quota.go, rotate.go, validate.go
+│   └── healthcheck/      # tiny binary for the container HEALTHCHECK
 ├── internal/
-│   ├── api/              # HTTP handlers + huma operations + middleware
-│   ├── config/           # caarlos0/env config structs
-│   ├── feed/             # feed adapters (nvd, mitre, kev, osv, ghsa, epss)
-│   ├── merge/            # CVE merge pipeline
-│   ├── alert/            # alert DSL compiler + evaluator
-│   ├── notify/           # notification channels + delivery
-│   ├── auth/             # JWT, OAuth, API keys, argon2id
-│   ├── worker/           # job queue + goroutine pool
-│   ├── search/           # FTS + facets
-│   ├── report/           # digest generation
-│   ├── ai/               # LLMClient interface + Gemini adapter
-│   ├── metrics/          # Prometheus counters/histograms
-│   └── store/            # repository layer (sqlc generated + squirrel dynamic)
+│   ├── ai/               # LLMClient interface + Gemini adapter, prompt sanitization
+│   ├── alert/            # alert evaluator, rule cache; dsl/ holds the DSL parser, validator and compiler
+│   ├── api/              # HTTP handlers, huma operations, middleware, SPA serving, OpenAPI spec
+│   ├── audit/            # org audit log writer + secret redaction
+│   ├── auth/             # JWT, API keys, SCIM tokens, argon2id
+│   ├── check/            # version check verdict logic (§16)
+│   ├── config/           # caarlos0/env config, reloadable secrets
+│   ├── crypto/           # AES-256-GCM for secrets at rest
+│   ├── dbutil/           # nullable type conversion helpers
+│   ├── doctor/           # health checks for the doctor command and API
+│   ├── ecosystem/        # OSV ecosystem vocabulary, package name folding, purl mapping
+│   ├── feed/             # adapters: nvd, mitre, kev, osv, ghsa, epss, msrc, redhat, generic, csaf; archive paging, circuit breaker, CNA parsing
+│   ├── ingest/           # feed and EPSS job handlers + scheduler
+│   ├── log/              # context-aware slog helpers
+│   ├── merge/            # CVE merge pipeline + per-CVE advisory locks
+│   ├── metrics/          # Prometheus collectors
+│   ├── notify/           # channels, delivery worker, digests; templates/ holds the email templates
+│   ├── report/           # empty (digests live in notify)
+│   ├── retention/        # retention cleanup job
+│   ├── search/           # empty (search lives in store/cve.go)
+│   ├── secure/           # security event pipeline
+│   ├── store/            # repository layer: queries/ (sqlc input), generated/ (sqlc output), squirrel for dynamic SQL
+│   ├── testutil/         # test database helpers, SeedCorpus
+│   ├── tier/             # tier limits and feature flags
+│   ├── version/          # ecosystem-native version and range comparison (§9.2)
+│   └── worker/           # job queue + goroutine pool
 ├── migrations/           # SQL migration files (embedded via embed.FS)
-├── templates/            # notification + watchlist templates (embedded via embed.FS)
-├── openapi/              # exported OpenAPI spec (generated by huma)
-├── docker/               # Docker Compose, Dockerfile, Caddyfile
-├── dev/                  # internal dev docs (research, pitfalls, deferred features)
-├── docs/                 # user-facing documentation (future)
+├── web/                  # Vue 3 SPA; built into web/dist and embedded (§20)
+├── docker/               # Dockerfile, compose.yml, compose.prod.yml, Caddyfile, postgres-tls, init-app-role.sh, smoke-test.sh
+├── deploy/grafana/       # dashboards, Prometheus alert rules, Prometheus and Alloy config
+├── dev/                  # internal dev docs: plans, specs, research, pitfalls, implementation log, reviews
+├── docs/                 # deployment and testing docs, handoffs, performance audits
+├── openapi.json          # exported OpenAPI spec (generated by huma; §16)
+├── sqlc.yaml, .golangci.yml, .env.example
 ├── .github/workflows/    # GitHub Actions CI
-├── PLAN.md               # product requirements document
-├── CLAUDE.md             # Claude Code project instructions
-├── .env.example          # documented env vars with defaults
-├── .mcp.json             # MCP server configuration (Claude Code)
+├── PLAN.md               # product and architecture reference (this file)
+├── README.md, LICENSE
+├── CLAUDE.md, AGENTS.md  # agent instructions
 └── go.mod / go.sum
 ```
 
 ---
 
-## 20. Frontend (Deferred)
+## 20. Frontend
 
-The MVP is **API-first**. This `plan.md` covers the backend: API, ingestion, alerting, notifications, and AI gateway. The web frontend is planned but **out of scope** for this document and the initial implementation phases (0–5).
+A Vue 3 single-page app in `web/` (§18, "Frontend"; design `dev/plans/2026-03-03-frontend-design.md`). The API stays the primary interface; the SPA covers sign-in, CVE search and detail, watchlists, account and org membership settings, and site administration.
 
-### 20.1 Why Deferred
-- The API contract (Appendix B) must stabilize before frontend work begins. Building the UI against a moving API wastes effort.
-- The backend can be fully validated via API tests, CLI tools, and webhook/notification delivery without a UI.
-- Self-hosted users and DevSecOps personas (the earliest adopters) are comfortable with API-only interaction.
+### 20.1 Decisions taken
+The frontend was deferred until the API stabilized; these were the open decisions, now taken:
 
-### 20.2 Decisions Required Before Frontend Work Begins
+| Decision | Taken |
+|---|---|
+| Rendering strategy and framework | SPA: Vue 3 + Vite + TypeScript, vue-router, Pinia |
+| Packaging | Embedded in the Go binary (`web/embed.go`, `//go:embed all:dist`) and served by the SPA fallback at `/*`; same origin as the API in production, Vite proxy in development. The Docker build compiles it in a Node 24 stage. |
+| Open-source scope | Full UI in the open-source core |
+| Design system | Tailwind 4 + shadcn-vue (reka-ui) |
+| Accessibility / browser support | WCAG 2.1 AA (`dev/specs/accessibility-spec.md`), evergreen browsers |
+| API client | `openapi-fetch` with types generated from `openapi.json` |
 
-These decisions are **not needed now** but are listed here so they are not forgotten:
+### 20.2 Pages
+Built (`web/src/router/index.ts`):
+- **Public:** login (with MFA steps), register, invitation, forgot and reset password, verify email
+- **Signed in:** create org, CVE search, CVE detail (scores, affected packages and ranges, source comparison), watchlists and watchlist detail, members, groups, account (password, MFA enrolment and methods)
+- **Site admin:** dashboard, orgs, users, feeds, deliveries, audit log, system
 
-| Decision | Options to evaluate | Notes |
-|---|---|---|
-| **Rendering strategy** | SPA (React/Vue + API calls) vs. server-rendered (Go templates + HTMX) vs. hybrid (Next.js) | Go + HTMX is appealing for simplicity (single binary serves both API and UI); SPA gives richer interactivity. |
-| **Framework / library** | React, Vue, Svelte, HTMX | Evaluate based on team familiarity, component ecosystem, and SSR needs. |
-| **Packaging** | Embedded in Go binary (`embed.FS`) vs. separate frontend container vs. static CDN | Embedding static assets in the Go binary is uniquely attractive: single binary = single Docker image = simplest self-hosted install. |
-| **Open-source scope** | Full UI in open-source core vs. API-only OSS with UI in SaaS only | Business decision with community implications. |
-| **Design system** | Tailwind + headless UI, shadcn/ui, custom | Affects velocity and consistency. |
-| **Accessibility / browser support** | WCAG 2.1 AA target, evergreen browsers only, mobile-responsive | Should be decided before any UI code. |
+Not built: alert rules (list, builder, event history), notification channels and org delivery log, scheduled reports, saved searches, AI natural-language search and summaries, SSO and SCIM settings, the org audit log, billing. `web/src/views/FeedStatusView.vue` exists but has no route. The NVD attribution notice (§3.2) is not shown.
 
-### 20.3 Provisional Page Inventory
+### 20.3 API Design Implications
 
-For future planning reference, the frontend will likely need at minimum:
-
-- **Public:** Login / register, OAuth callback, password reset
-- **CVE views:** Search/list (with facets + NL search bar), CVE detail (scores, affected packages, source comparison, AI summary), CVE timeline/history
-- **Org management:** Org settings, member management, group management, billing (SaaS)
-- **Watchlists:** List, create/edit, item management
-- **Alert rules:** List, rule builder (visual DSL editor), alert event history
-- **Notifications:** Channel configuration (SMTP, Slack, webhook), delivery log
-- **Reports:** Scheduled report config, report viewer / digest preview
-- **Admin:** Feed status dashboard, rerun/rebuild controls, audit log (Enterprise)
-
-### 20.4 API Design Implications
-
-Even though the frontend is deferred, the API should be designed with frontend consumption in mind:
+The API is designed with frontend consumption in mind:
 - Pagination and filtering patterns should be consistent and UI-friendly (cursor-based, not offset).
 - Error responses should include machine-readable codes suitable for i18n.
 - Bulk operations (e.g., "add 50 packages to a watchlist") should be supported to avoid N+1 UI patterns.
@@ -2048,20 +2215,25 @@ Even though the frontend is deferred, the API should be designed with frontend c
 ## 21. Data Retention & Cleanup Policy
 
 ### 21.1 Principle
-Retention defaults should be generous enough to be useful out-of-the-box but bounded enough to prevent unbounded storage growth, especially for high-volume tables. All retention periods are configurable via org settings (within tier-allowed bounds) or global defaults for self-hosted.
+Retention defaults should be generous enough to be useful out-of-the-box but bounded enough to prevent unbounded storage growth, especially for high-volume tables. Every window is a global setting (`RETENTION_*` env vars, `internal/config/config.go`). Three org-scoped tables can also take a per-org window from the org's tier overrides, set by a site admin.
 
 ### 21.2 Retention Defaults
 
-| Data | Default retention | Tier override | Notes |
+| Data | Default retention (setting) | Per-org override | Notes |
 |---|---|---|---|
-| `cves` (canonical records) | Indefinite | — | CVE records are never deleted; `rejected` CVEs are soft-flagged. |
-| `cve_sources` | Indefinite | — | Needed for provenance and "show source differences." |
-| `cve_raw_payloads` | 90 days | Enterprise: configurable (30–365 days) | Largest growth table. Cleanup job deletes rows older than threshold. |
-| `feed_fetch_log` | 90 days | Enterprise: configurable | Operational/debug data; safe to prune. |
-| `alert_events` | 1 year | Enterprise: configurable (90 days–indefinite) | Historical alert record. Older events are archived or deleted. |
-| `notification_deliveries` | 90 days | Enterprise: configurable | Delivery log; useful for debugging. |
-| `report_runs` | 1 year | Enterprise: configurable | Includes rendered report content. |
-| `ai_usage_counters` | Indefinite (rolled up monthly) | — | Daily granularity retained for 90 days; monthly aggregates kept indefinitely for billing/audit. |
+| `cves`, `cve_sources` and CVE child tables | Indefinite | — | CVE records are never deleted; rejected and withdrawn CVEs keep a tombstone (§3.2). |
+| `cve_raw_payloads` | 90 days (`RETENTION_RAW_PAYLOAD_DAYS`) | — | Largest growth table. |
+| `feed_fetch_log` | 90 days (`RETENTION_FEED_FETCH_LOG_DAYS`) | — | Operational/debug data. |
+| `job_queue` (`succeeded` and `dead`) | 24 hours (`RETENTION_JOB_QUEUE_HOURS`) | — | §18.1. |
+| `refresh_tokens` | Expiry plus 60 seconds | — | Kept for the refresh grace window (§7.1). |
+| `ai_request_log`, `ai_cache`, `ai_usage_counters` | 90 days (`AI_LOG_RETENTION_DAYS`) | — | No monthly rollup is kept (§13.4). |
+| `security_events` | 90 days (`RETENTION_SECURITY_EVENTS_DAYS`) | — | |
+| `alert_events` | 365 days (`RETENTION_ALERT_EVENTS_DAYS`) | `retention_alert_events_days` | An event's age counts from its most recent fire (`last_fired_at`). |
+| `notification_deliveries` | 90 days (`RETENTION_NOTIFICATION_DELIVERIES_DAYS`) | `retention_notification_deliveries_days` | Delivery log; useful for debugging. |
+| `audit_log` | 365 days (`RETENTION_AUDIT_LOG_DAYS`) | `retention_audit_log_days` | |
+| `watchlist_items` (removed items) | 30 days after removal (`RETENTION_WATCHLIST_ITEMS_DAYS`), minimum 7 | — | Removing an item, or replacing a watchlist's items, soft-deletes rows; the cleanup job hard-deletes rows whose `deleted_at` is older than the window. Live items are never purged. The batch and EPSS alert evaluators read CVE items removed since their cursor to resolve those CVEs' events, and the EPSS evaluator can hold its cursor for three daily runs (§10.3, cursor advancement), so a configured window below 7 days is raised to 7. |
+
+A per-org override of -1 keeps that table's rows forever. The planned per-tier ranges (for example "Enterprise: 30–365 days") are not enforced, and every tier has the same defaults.
 
 ### 21.3 Cleanup Implementation
 
@@ -2076,8 +2248,8 @@ Retention defaults should be generous enough to be useful out-of-the-box but bou
 - **SaaS vs self-host:** SaaS needs predictable runtime; self-host may disable cleanup entirely.
 
 **Implementation (required pattern):**
-- A scheduled **retention cleanup job** runs daily (off-peak, configurable time) via the Postgres job queue (section 18.1), with `lock_key='cleanup:retention'` to prevent concurrent runs.
-- The job processes one table at a time, deleting in bounded batches (default batch size: **10,000** rows).
+- A scheduled **retention cleanup job** runs once every 24 hours, counted from process start (the time of day cannot be set), on the `retention_cleanup` queue (section 18.1) with `lock_key='cleanup:retention'` to prevent concurrent runs and `max_attempts` 1.
+- The job processes one table at a time, deleting in bounded batches (`RETENTION_CLEANUP_BATCH_SIZE`, default **10,000** rows), and stops after `RETENTION_MAX_RUNTIME_SECONDS` (default 300).
 
 Example (repeat until 0 rows deleted):
 ```sql
@@ -2097,15 +2269,15 @@ WHERE p.id = doomed.id;
 - `cve_raw_payloads(ingested_at)`
 - `notification_deliveries(created_at)` (or whichever timestamp drives retention)
 - `feed_fetch_log(started_at)`
-- `alert_rule_runs(started_at)`
-- etc.
+- `watchlist_items(deleted_at) WHERE deleted_at IS NOT NULL` (partial: holds only removed items)
+- one per other cleaned table, on the timestamp that drives its window
 
 **Logging:**
-- Log rows deleted per table per run to a dedicated `system_jobs_log` table (preferred) or reuse `feed_fetch_log` with a distinct `feed_name='system.retention'`.
+- Rows deleted per table per run are logged with slog. The design preferred a row in `system_jobs_log`; that table exists, but nothing writes to it.
 
 **Config flags:**
 - Self-hosted deployments can disable cleanup: `RETENTION_CLEANUP_ENABLED=false`
-- Batch size and max runtime per run are configurable.
+- Batch size and max runtime per run are configurable (above).
 
 **Alternative (revisit later):**
 - Partition large tables by time (monthly partitions) and `DROP PARTITION` for near-instant retention, at the cost of more complex migrations.
@@ -2113,10 +2285,12 @@ WHERE p.id = doomed.id;
 
 ---
 
-# Appendix A — Schema-First Plan (Models, Keys, Indexes, Migrations)
+# Appendix A — Schema (Models, Keys, Indexes, Migrations)
+
+The migrations in `migrations/` (65 up/down pairs, latest `000065_change_date_keyset_indexes`) are the authority; this appendix describes the tables and the reasons for their shape.
 
 ## A.1 Conventions
-- **DB:** Postgres 15+  
+- **DB:** Postgres 18+  
 - **PKs:** UUIDv4 for org-scoped (generated via `gen_random_uuid()`); `cve_id` (text) for CVEs
 - **Times:** `timestamptz` UTC, default `now()`
 - **JSON:** `jsonb`
@@ -2126,27 +2300,34 @@ WHERE p.id = doomed.id;
 ## A.2 Global Tables (Core)
 
 ### `cves`
-PK `cve_id text`. Key columns: `status`, `date_published`, `date_modified_source_max`, `date_modified_canonical`, `date_first_seen`, `description_primary`, `severity`, CVSS v3/v4 scores/vectors/sources, `cvss_score_diverges bool`, `cwe_ids text[]`, `exploit_available`, `in_cisa_kev`, `epss_score`, `date_epss_updated`, `material_hash`.
+PK `cve_id text`. Key columns: `status`, `date_published`, `date_modified_source_max`, `date_modified_canonical`, `date_first_seen`, `description_primary`, `severity`, CVSS v3/v4 scores/vectors/sources, `cvss_score_diverges bool`, `cwe_ids text[]`, `exploit_available`, `in_cisa_kev`, `epss_score`, `date_epss_updated`, `material_hash`, `match_inputs_hash text` (nullable), `date_match_inputs_changed timestamptz` (nullable).
 Note: no `epss_score_baseline` column — EPSS is not part of `material_hash`; see section 5.3.
-Indexes: BTREE on severity/kev/exploit, BTREE dates (including `date_modified_canonical`, `date_epss_updated`), `GIN(cwe_ids)`. No `fts_document` column here.
+Note: `match_inputs_hash` and `date_match_inputs_changed` are the re-check signal for alert rule match inputs outside `material_hash` (section 5.3, and section 10.3 for how evaluation reads them). NULL means not yet computed and counts as a change on the next merge. Not exposed by the API.
+Indexes: BTREE on severity/kev/exploit, BTREE on `date_published`, `GIN(cwe_ids)`, and one BTREE per change date paired with `cve_id`: `(date_modified_canonical, cve_id)`, `(date_epss_updated, cve_id)` and `(date_match_inputs_changed, cve_id) WHERE date_match_inputs_changed IS NOT NULL`. The batch and EPSS evaluators page their candidate scans on these `(date, cve_id)` keysets (section 10.3). No `fts_document` column here.
 
 ### `cve_search_index`
 PK `cve_id text REFERENCES cves(cve_id) ON DELETE CASCADE`. Columns: `fts_document tsvector NOT NULL`. Indexes: `GIN(fts_document)`. This 1:1 table isolates the GIN index from `cves` write churn (see section 5.2). Updated only when description or CWE-contributing fields change during merge.
 
 ### `cve_sources`
-PK `(cve_id, source_name)`. Columns: `normalized_json jsonb`, `source_date_modified`, `source_url`, `ingested_at`. Indexes: `source_name`, `source_date_modified`.
+PK `(cve_id, source_name, source_id)`. Columns: `normalized_json jsonb`, `source_date_modified`, `source_url`, `ingested_at`. Indexes: `source_name`, `source_date_modified`.
 
 ### `cve_raw_payloads`
 PK `id uuid`. Columns: `cve_id`, `source_name`, `ingested_at`, `payload jsonb`. Index: `(cve_id, source_name, ingested_at desc)`.
 
 ### `cve_references`
-PK `id uuid`. Columns: `cve_id`, `url`, `url_canonical`, `tags text[]`. Constraint: `UNIQUE(cve_id, url_canonical)`. Indexes: `cve_id`, `url_canonical`.
+PK `id uuid`. Columns: `cve_id`, `url`, `url_canonical`, `tags text[]`. Constraint: unique index on `(cve_id, text_key_digest(url_canonical))`, where `text_key_digest` is the SHA-256 of the URL: a reference URL has no length bound, and a btree row holds at most 2,704 bytes. Index: `cve_id`.
 
 ### `cve_affected_packages`
-PK `id uuid`. Columns: `cve_id`, `ecosystem`, `package_name`, `namespace`, `range_type`, `introduced`, `fixed`, `last_affected`, `events jsonb`. Indexes: `(ecosystem, package_name)`, `cve_id`.
+PK `id uuid`. Columns: `cve_id`, `ecosystem`, `package_name`, `namespace`, `range_type`, `introduced`, `fixed`, `last_affected`, `events jsonb`. Indexes: `cve_id`, and `cve_affected_packages_check_idx` on `(ecosystem, <folded package_name>)`, where the folded expression is exactly what `ecosystem.FoldedNameSQL("ecosystem", "package_name")` builds (lower case, and PyPI separator runs collapsed), so the version check endpoint's package lookup can use it. The merge leaves out an entry whose `package_name` is over 1,024 bytes and logs a warning, so the folded key stays under the btree row limit of 2,704 bytes. No registry allows a name that long.
 
 ### `cve_affected_cpes`
-PK `id uuid`. Columns: `cve_id`, `cpe`, `cpe_normalized`. Constraint: `UNIQUE(cve_id, cpe_normalized)`. Indexes: `cpe_normalized`, `cve_id`.
+PK `id uuid`. Columns: `cve_id`, `cpe`, `cpe_normalized`. Constraint: unique index on `(cve_id, text_key_digest(cpe_normalized))`, the SHA-256 of the CPE, because a CPE has no length bound and is stored in full. Index: `cve_id`. Holds every CPE a source names, including NVD `vulnerable: false` platforms. It is a `material_hash` input and what CPE watchlist items match.
+
+### `cve_cpe_matches`
+PK `id uuid`. Columns: `cve_id`, `cpe`, `cpe_normalized`, `version_start_including`, `version_start_excluding`, `version_end_including`, `version_end_excluding`, `vulnerable boolean not null`. FK `cve_id` to `cves` (`ON DELETE CASCADE`, deferred, because the late-binding CVE ID move updates child tables first). Indexes: `cve_id`, and `cve_cpe_matches_check_idx` on `(left(cpe_normalized, 512) COLLATE "C")`, so the version check endpoint's range on a CPE prefix uses an index whatever the database collation. The key holds the first 512 characters, because a CPE has no length bound, so a query cuts its bounds to 512 characters and also compares the whole value. One row per distinct NVD `cpeMatch` entry, since NVD repeats a criteria string with a different range per release branch. Not a `material_hash` input; the `part:vendor:product` of its `vulnerable` rows is a `match_inputs_hash` input (section 5.3). "What is affected" reads only `vulnerable` rows. Alert rules read it: `affected.cpe_product` matches `vulnerable` rows by CPE prefix through `cve_cpe_matches_check_idx`, or through `cve_id` when the evaluator has candidate IDs (section 10.1).
+
+### `cve_cna_affected`
+PK `id uuid`. Columns: `cve_id`, `vendor`, `product`, `package_name`, `collection_url`, `default_status`, `versions jsonb not null default '[]'`, `package_key text` (nullable). FK as `cve_cpe_matches`. Indexes: `cve_id`; `cve_cna_affected_check_idx` on `(left(lower(vendor), 256) COLLATE "C", left(lower(product), 256) COLLATE "C")`, cut to 256 characters because vendor and product can reach 2,048 and a key over the btree row limit would fail the CVE's merge; `cve_cna_affected_package_key_idx` on `(package_key) WHERE package_key IS NOT NULL`. One row per distinct CVE 5 `containers.cna.affected[]` entry across every source that carries one: the MITRE record and the copy NVD relays in `cve.affected[]`. Both copies are kept when they differ, because CNA data can only report a version as affected or unresolved, so a stale copy cannot clear one. `package_key` is the entry's `packageURL` mapped by `ecosystem.PackageKey` to `<ecosystem>/<folded name>`, the identity a version check package item looks up. It is NULL when the entry has no `packageURL`, or the mapping refuses it (a `repository_url`, a private namespace, a distro package, a key over 2,600 bytes). `versions` holds `version`, `less_than`, `less_than_or_equal`, `status`, `version_type`, and `changes`. Not a `material_hash` input; its vendor and product pairs are a `match_inputs_hash` input (section 5.3). Alert rules read it: `affected.cpe_product` matches its lower-cased vendor and product against the product's CNA spellings through `cve_cna_affected_check_idx`, or through `cve_id` when the evaluator has candidate IDs (section 10.1).
 
 
 ### `epss_staging`
@@ -2157,11 +2338,13 @@ Stores EPSS scores for CVE IDs not yet present in the corpus (see EPSS note in s
 - Indexes: `BTREE(ingested_at)`
 
 
-**IS DISTINCT FROM for JSONB column upserts (required):** When upserting `cve_sources.normalized_json` or `cve_raw_payloads.payload` (JSONB columns), a naive `ON CONFLICT DO UPDATE SET normalized_json = EXCLUDED.normalized_json` writes a new physical tuple even when the value is unchanged. For JSONB above ~2KB, Postgres stores the value in TOAST pages — each UPDATE allocates a new TOAST entry even if the content is identical. Daily feed re-ingestion for 250,000+ CVE sources writes 250,000 TOAST entries per day without this guard — equivalent to daily full-table rewrites, causing runaway TOAST table bloat. **Required pattern:**
+**IS DISTINCT FROM for JSONB column upserts (required):** When upserting a JSONB column such as `cve_sources.normalized_json` (`cve_raw_payloads` is append-only and is not upserted), a naive `ON CONFLICT DO UPDATE SET normalized_json = EXCLUDED.normalized_json` writes a new physical tuple even when the value is unchanged. For JSONB above ~2KB, Postgres stores the value in TOAST pages — each UPDATE allocates a new TOAST entry even if the content is identical. Daily feed re-ingestion for 250,000+ CVE sources writes 250,000 TOAST entries per day without this guard — equivalent to daily full-table rewrites, causing runaway TOAST table bloat. **Required pattern:**
 ```sql
-ON CONFLICT (cve_id, source_name) DO UPDATE
-    SET normalized_json = EXCLUDED.normalized_json,
-        ingested_at = EXCLUDED.ingested_at
+ON CONFLICT (cve_id, source_name, source_id) DO UPDATE
+    SET normalized_json      = EXCLUDED.normalized_json,
+        source_date_modified = EXCLUDED.source_date_modified,
+        source_url           = EXCLUDED.source_url,
+        ingested_at          = now()
     WHERE cve_sources.normalized_json IS DISTINCT FROM EXCLUDED.normalized_json
 ```
 The `WHERE` clause makes the DO UPDATE a no-op when the JSONB is unchanged, preventing the TOAST allocation. Apply the same pattern to all JSONB columns that are upserted from feed data.
@@ -2176,10 +2359,16 @@ WHERE deleted_at IS NULL;
 This enforces uniqueness only among live rows. Apply to all soft-deletable entities with user-facing names: `watchlists`, `notification_channels`, `saved_searches`, `alert_rules`, `groups`.
 
 ### `feed_sync_state` / `feed_fetch_log`
-See sections 3.3 and earlier schema notes.
+See section 3.3. `feed_sync_state` also holds the alert evaluator cursors (`alert:batch`, `alert:epss`).
 
-### `system_jobs_log` (recommended)
-Append-only log of internal system jobs (retention cleanup, index rebuilds, etc.). Useful when `feed_fetch_log` semantics feel too feed-specific.
+### `cwe_dictionary`
+`(cwe_id text PK, name, description)`. Exists, not populated (§8.2).
+
+### `system_settings`, `security_events`
+`system_settings` holds instance-wide settings, including the encryption key sentinel that `cvert-ops doctor` checks. `security_events` is the security event log (§15), global and read by site admins.
+
+### `system_jobs_log` (exists, unused)
+Append-only log of internal system jobs (retention cleanup, index rebuilds, etc.), intended for when `feed_fetch_log` semantics feel too feed-specific. Nothing writes to it yet (§21.3).
 
 - **PK:** `id uuid`
 - Columns: `job_type text not null`, `started_at timestamptz not null`, `ended_at timestamptz null`, `status text not null`, `details jsonb null`, `error_summary text null`
@@ -2188,32 +2377,49 @@ Append-only log of internal system jobs (retention cleanup, index rebuilds, etc.
 ### `job_queue`
 See section 18.1 for full schema.
 
-## A.3 Org/Tenant Tables (Core)
-`organizations`, `users` (includes `password_hash_version int`, `token_version int not null default 1`), `user_identities`, `org_members` (includes `role`), `groups`, `group_members`, `watchlists` (includes `group_id` nullable), `watchlist_items`, `cve_annotations` (includes `assignee_user_id uuid` nullable), `alert_rules` (includes `watchlist_ids uuid[]`, `dsl_version int`), `alert_rule_runs`, `alert_events`, `notification_channels`, `notification_deliveries`, `scheduled_reports`, `report_runs`, `ai_usage_counters`, `saved_searches` (includes `query_json jsonb`, `is_shared boolean`).
+## A.3 Org/Tenant Tables
+
+Org-scoped, with `org_id`, a `BTREE(org_id)` index and the RLS policy of §6.2:
+- **Org and membership:** `org_members` (`role`, `deactivated_at`, `scim_exempt`), `org_invitations`, `groups` (soft-deleted), `group_members` (`scim_managed`), `api_keys`
+- **Watchlists:** `watchlists` (`group_id` nullable), `watchlist_items` (package, CPE or CVE items; soft-deleted)
+- **Alerts:** `alert_rules` (`watchlist_ids uuid[]`, `dsl_version`, `status`), `alert_rule_runs`, `alert_rule_channels`, `alert_events` (`last_match_state`, `last_fired_at`, `times_fired`, feed position)
+- **Notifications and reports:** `notification_channels`, `notification_deliveries` (`kind`), `scheduled_reports` (`rescan_sent_cves`), `report_channels`
+- **Search:** `saved_searches` (`query_json`, `nl_query`, `is_shared`)
+- **Identity:** `sso_connections`, `sso_email_domains`, `scim_configs`, `scim_groups`, `scim_group_members`, `mfa_requirements`
+- **Audit and AI:** `audit_log`, `ai_usage_counters`, `ai_quota_overrides`, `ai_cache`, `ai_request_log`
+
+Without RLS (read through the bypass helpers, §6.2): `organizations` (tier, tier overrides, MFA policy; access is checked through `org_members`), `users` (`password_hash_version`, `token_version`, `is_site_admin`, `disabled_at`, `force_password_reset`, lockout counters), `user_identities`, `refresh_tokens`, `password_reset_tokens`, `email_verification_tokens`, `mfa_credentials`, `mfa_recovery_codes`, `mfa_challenges`.
+
+Planned and not created: `cve_annotations` (§19.5), `report_runs` (digest history).
 
 ## A.4 Migration Order
-1) Global CVE tables + CWE dictionary + feed state/log + job_queue
-2) Org/auth tables (including `user_identities`, `groups`, `group_members`, `password_hash_version`, `token_version`)
-3) Watchlists + annotations (including `assignee_user_id`)
-4) Saved searches
-5) Alerts (including `dsl_version`, `watchlist_ids`)
-6) Notifications
-7) Reports
-8) AI counters
+
+The order the migrations were written in, which is also the dependency order:
+1. `job_queue` (000001), CVE core tables (000002), feed state, `cwe_dictionary` and `system_jobs_log` (000003)
+2. Orgs, users, refresh tokens, members, API keys, invitations, groups (000004–000012)
+3. Watchlists (000014), alert rules, runs and events (000015–000016)
+4. Notification channels and deliveries (000017, 000019), scheduled reports (000018)
+5. AI quota, cache and request log (000020–000022), saved searches (000023–000024)
+6. Tiers, retention indexes, audit log, SSO, vendor enrichment, site admin, password reset, email verification, system settings, admin columns, feed pause (000025–000037)
+7. Security events, MFA, SCIM (000039–000045)
+8. Later changes: RLS policy rewrite (000051), watchlist CVE items (000052), version ranges and CNA data (000053), per-advisory source rows (000057), resolution deliveries (000058), check lookup indexes (000059), bounded index keys (000060–000061), alert-event feed positions (000062), match-inputs re-check (000063), keyset indexes (000065)
 
 ---
 
 # Appendix B — API Endpoint Reference (v1)
 
-> Comprehensive list of all implemented endpoints. Role requirements follow §7.3 permission matrix.
+> All implemented endpoints. Role requirements follow the §7.3 permission matrix. The OpenAPI spec (`openapi.json`, §16) is the authority for request and response shapes; it omits the redirect, SCIM v2 and health routes.
 
 **Infrastructure (no auth):**
-- `GET /healthz` — health check (DB ping)
-- `GET /metrics` — Prometheus metrics
+- `GET /healthz` — liveness
+- `GET /readyz` — readiness: database, schema version, delivery worker (§17)
+- `GET /metrics` — Prometheus metrics, on the separate metrics listener (`METRICS_PORT`, default 9090), not the API port
+- `GET /api/v1/openapi.json` (also `.yaml`, `openapi-3.0.json`) and `GET /api/v1/docs` — the API spec and docs page
+- `GET /*` — the embedded SPA (§20)
 
-**Public CVE endpoints (no auth, huma-registered):**
-- `GET /api/v1/cves` — paginated search with filters/facets
-- `GET /api/v1/cves/{cve_id}` — canonical CVE detail
+**CVE endpoints (any authenticated user or API key, huma-registered):**
+- `GET /api/v1/cves` — paginated search with filters (§8.1)
+- `GET /api/v1/cves/{cve_id}` — canonical CVE detail, including version ranges
 - `GET /api/v1/cves/{cve_id}/sources` — per-source comparison
 
 **Auth (huma-registered, rate-limited):**
@@ -2222,6 +2428,7 @@ See section 18.1 for full schema.
 - `POST /api/v1/auth/refresh` — rotate refresh token, issue new access token
 - `POST /api/v1/auth/logout` — log out, clear auth cookies
 - `GET /api/v1/auth/me` — current user profile + org memberships
+- `GET /api/v1/whoami` — the calling credential: for an API key, the key (ID, name, role, expiry) and its org with the role it acts with, tier and rate limit; for a session, each active org with the same fields (any credential; a key's call counts against its org's rate limit)
 - `POST /api/v1/auth/change-password` — change password (authenticated)
 - `GET /api/v1/auth/invitations/{token}` — public invitation detail
 - `POST /api/v1/auth/invitations/{token}/accept` — accept invitation (authenticated)
@@ -2230,6 +2437,15 @@ See section 18.1 for full schema.
 - `POST /api/v1/auth/reset-password` — reset password with token
 - `POST /api/v1/auth/verify-email` — verify email with token
 - `POST /api/v1/auth/resend-verification` — resend verification email (authenticated)
+
+**MFA (huma-registered; pending sign-in session or authenticated; §7.4):**
+- `POST /api/v1/auth/mfa/challenge` — send an email code for the pending sign-in
+- `POST /api/v1/auth/mfa/verify` — complete sign-in with a TOTP, email or recovery code
+- `POST /api/v1/auth/mfa/totp/setup`, `POST /api/v1/auth/mfa/totp/confirm` — enrol TOTP
+- `POST /api/v1/auth/mfa/email-otp/setup`, `POST /api/v1/auth/mfa/email-otp/confirm` — enrol email codes
+- `GET /api/v1/auth/mfa/methods` — list enrolled methods
+- `DELETE /api/v1/auth/mfa/methods/{method}` — remove a method (needs the password; refused while MFA is mandated)
+- `POST /api/v1/auth/mfa/recovery-codes/regenerate` — new recovery codes
 
 **SSO (chi-registered, rate-limited/authenticated):**
 - `POST /api/v1/auth/discover` — SSO email domain discovery (public, rate-limited)
@@ -2241,9 +2457,18 @@ See section 18.1 for full schema.
 - `GET /api/v1/auth/oidc/callback` — generic OIDC callback
 - `GET /api/v1/auth/oidc/link-callback` — OIDC identity link callback
 
-**Admin (site-admin only, chi-registered):**
+**Admin (site-admin only, cookie session only, chi-registered; §17):**
 - `GET /api/v1/admin/feeds` — feed sync status
-- `POST /api/v1/admin/feeds/{feed}/run` — trigger feed re-run (202 Accepted)
+- `POST /api/v1/admin/feeds/{feed}/run` — trigger a feed run (202 Accepted)
+- `POST /api/v1/admin/feeds/{feed}/pause`, `POST /api/v1/admin/feeds/{feed}/resume` — pause or resume a feed
+- `GET /api/v1/admin/feeds/{feed}/logs` — recent fetch log
+- `GET /api/v1/admin/orgs` — all orgs; `PATCH /api/v1/admin/orgs/{org_id}` — tier and overrides; `GET /api/v1/admin/orgs/{org_id}/usage`
+- `GET /api/v1/admin/users` — all users; `POST /api/v1/admin/users/{user_id}/disable`, `/enable`, `/unlock`, `/reset-password`
+- `GET /api/v1/admin/deliveries` — deliveries across orgs; `POST /api/v1/admin/deliveries/{id}/retry`; `POST /api/v1/admin/deliveries/retry-failed`
+- `POST /api/v1/admin/reindex` — rebuild the search index (202 Accepted)
+- `POST /api/v1/admin/reload-config` — reload rotatable secrets; `GET /api/v1/admin/config` — configuration, secrets masked
+- `GET /api/v1/admin/version`, `GET /api/v1/admin/doctor`
+- `GET /api/v1/admin/audit-log` — audit log across orgs; `GET /api/v1/admin/security-events` — security event log
 
 **Org management (role-gated, chi-registered):**
 - `POST /api/v1/orgs` — create org (authenticated)
@@ -2257,11 +2482,15 @@ See section 18.1 for full schema.
 - `GET /api/v1/orgs/{org_id}/invitations` — list pending invitations (admin+)
 - `DELETE /api/v1/orgs/{org_id}/invitations/{id}` — cancel invitation (admin+)
 - `POST /api/v1/orgs/{org_id}/invitations/{id}/resend` — resend invitation email (admin+)
+- `PATCH /api/v1/orgs/{org_id}/mfa-settings` — org MFA policy (owner)
+- `POST /api/v1/orgs/{org_id}/members/{user_id}/reset-mfa` — remove a member's MFA methods (admin+)
+- `POST /api/v1/orgs/{org_id}/members/{user_id}/force-password-reset` — require a new password at next sign-in (admin+)
+- `POST`, `DELETE /api/v1/orgs/{org_id}/members/{user_id}/require-mfa` — require MFA for one member, or stop (admin+)
 
 **API keys (chi-registered):**
 - `POST /api/v1/orgs/{org_id}/api-keys` — create API key (member+)
 - `GET /api/v1/orgs/{org_id}/api-keys` — list API keys (viewer+)
-- `DELETE /api/v1/orgs/{org_id}/api-keys/{id}` — revoke API key (viewer+)
+- `DELETE /api/v1/orgs/{org_id}/api-keys/{id}` — revoke API key (viewer+ for keys they created; admin+ for any key)
 
 **Watchlists (chi-registered):**
 - `GET /api/v1/orgs/{org_id}/watchlists` — list (viewer+)
@@ -2271,7 +2500,14 @@ See section 18.1 for full schema.
 - `DELETE /api/v1/orgs/{org_id}/watchlists/{id}` — delete (member+)
 - `GET /api/v1/orgs/{org_id}/watchlists/{id}/items` — list items (viewer+)
 - `POST /api/v1/orgs/{org_id}/watchlists/{id}/items` — add item (member+)
+- `PUT /api/v1/orgs/{org_id}/watchlists/{id}/items` — replace all items (member+, at most 10,000, see §9.2)
 - `DELETE /api/v1/orgs/{org_id}/watchlists/{id}/items/{item_id}` — remove item (member+)
+
+**Inbound ingest (chi-registered):**
+- `POST /api/v1/orgs/{org_id}/ingest` — push canonical patches from the org's own tooling (member+; each patch counts against the org rate limit; §3.1)
+
+**Version check (chi-registered):**
+- `POST /api/v1/orgs/{org_id}/check` — which held advisories affect each of up to 500 exact component versions, with the matched range and fix (viewer+, see §16 "Version check endpoint")
 
 **Notification channels (chi-registered, admin+ for mutations):**
 - `GET /api/v1/orgs/{org_id}/channels` — list (viewer+)
@@ -2296,7 +2532,7 @@ See section 18.1 for full schema.
 - `DELETE /api/v1/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}` — unbind channel (member+)
 
 **Alert events (chi-registered, flat — not nested under rules):**
-- `GET /api/v1/orgs/{org_id}/alert-events` — list (viewer+, filters: `?rule_id=`, `?cve_id=`, `?last_match_state=`, `?since=`)
+- `GET /api/v1/orgs/{org_id}/alert-events` — list (viewer+, filters: `?rule_id=`, `?cve_id=`, `?last_match_state=`, `?since=` compared against the event's most recent fire; `?expand=cve,rule` embeds each event's CVE severity, CVSS, KEV and EPSS, and its rule name and matching watchlist items, in the same query; `?order=asc` with `?after=` and `?limit=` (1 to 1000, 100 with `expand=rule`) is a polling feed: each change to an event (first fire, reopen, resolve, move to a new CVE ID) gives it a new per-org position, drawn under a lock so positions follow commit order, and a poller sees each change exactly once (implementation-pitfalls.md API-12). Required before a multi-tenant hosted deployment: the feed cursor carries a value of one sequence shared by all orgs, so its advance reveals event volume across orgs. Encrypt it, or move to per-org positions under cursor version 2, before tenants who do not trust each other share an instance)
 
 **Deliveries (chi-registered, flat — not nested under channels):**
 - `GET /api/v1/orgs/{org_id}/deliveries` — list (viewer+, filters: `?channel_id=`, `?rule_id=`, `?status=`)
@@ -2338,6 +2574,14 @@ See section 18.1 for full schema.
 - `DELETE /api/v1/orgs/{org_id}/sso` — delete SSO connection (owner)
 - `PUT /api/v1/orgs/{org_id}/sso/domains` — set email domains for SSO (owner)
 - `GET /api/v1/orgs/{org_id}/sso/link` — init identity linking (member+)
+- `POST`, `PATCH`, `DELETE /api/v1/orgs/{org_id}/sso/scim` — create, change or delete the SCIM configuration (owner); `GET` — read it (admin+)
+- `POST /api/v1/orgs/{org_id}/sso/scim/rotate-token` — new SCIM bearer token (owner)
+- `GET /api/v1/orgs/{org_id}/sso/scim/groups` — SCIM groups (admin+); `PATCH /api/v1/orgs/{org_id}/sso/scim/groups/{id}/mapping` — map to a role and group (admin+)
+
+**SCIM 2.0 (SCIM bearer token, no session; not in the OpenAPI spec; §7.5):**
+- `GET /api/v1/orgs/{org_id}/scim/v2/ServiceProviderConfig`, `/Schemas`, `/ResourceTypes`
+- `POST`, `GET /api/v1/orgs/{org_id}/scim/v2/Users`; `GET`, `PUT`, `PATCH`, `DELETE .../Users/{id}`
+- `POST`, `GET /api/v1/orgs/{org_id}/scim/v2/Groups`; `GET`, `PUT`, `PATCH`, `DELETE .../Groups/{id}`
 
 **Audit log (chi-registered, enterprise tier):**
 - `GET /api/v1/orgs/{org_id}/audit-log` — list audit entries (admin+)

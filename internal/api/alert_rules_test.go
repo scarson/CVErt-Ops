@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/alert"
@@ -100,8 +102,7 @@ const validRuleDSL = `{
   "logic": "and",
   "conditions": [{"field": "cvss_v3_score", "operator": "gte", "value": 7.0}],
   "watchlist_ids": [],
-  "enabled": true,
-  "fire_on_non_material_changes": false
+  "enabled": true
 }`
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -358,6 +359,158 @@ func TestAlertRule_PatchInvalidDSL(t *testing.T) {
 	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
 	if patchResp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("patch invalid DSL: got %d, want 422", patchResp.StatusCode)
+	}
+}
+
+// TestAlertRule_ValidationErrorsSameOnCreateAndPatch verifies that create and PATCH
+// refuse the same conditions with the same error list (testing-pitfalls §4): an
+// "and" rule whose correlated ecosystem conditions no ecosystem satisfies together,
+// a rule naming more than 50 products, an "and" rule of more than 10 set
+// conditions, and a malformed product value.
+func TestAlertRule_ValidationErrorsSameOnCreateAndPatch(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Each case sends a create and a PATCH, more than the free tier's burst allows.
+	if _, err := db.DB().ExecContext(ctx,
+		`UPDATE organizations SET tier_overrides = '{"api_rate_limit": 100000}' WHERE id = $1`, aliceReg.OrgID); err != nil {
+		t.Fatalf("raise rate limit: %v", err)
+	}
+
+	type problemError struct {
+		Message  string `json:"message"`
+		Location string `json:"location"`
+	}
+	type problem struct {
+		Errors []problemError `json:"errors"`
+	}
+	decodeProblem := func(t *testing.T, resp *http.Response, what string) problem {
+		t.Helper()
+		if resp.StatusCode != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: got %d, want 422", what, resp.StatusCode)
+		}
+		var p problem
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("%s: decode problem: %v", what, err)
+		}
+		return p
+	}
+
+	// The same mapped product in 51 one-value conditions counts 51 times and has
+	// no unmapped-product warning, so under "or" the rule-level error is the only
+	// entry. Under "and" eleven of them are over the 10-set limit.
+	nodeConds := make([]string, 51)
+	for i := range nodeConds {
+		nodeConds[i] = `{"field": "affected.cpe_product", "operator": "eq", "value": "nodejs:node.js"}`
+	}
+	cases := []struct {
+		name       string
+		logic      string
+		conditions string
+		want       []problemError
+	}{
+		{
+			name:  "never matching ecosystems",
+			logic: "and",
+			conditions: `[
+    {"field": "affected.ecosystem", "operator": "eq", "value": "npm"},
+    {"field": "affected.ecosystem", "operator": "eq", "value": "PyPI"},
+    {"field": "affected.package", "operator": "contains", "value": "lodash"}
+  ]`,
+			want: []problemError{{
+				Message:  `every ecosystem condition must hold on the same package row, and no ecosystem satisfies all of them, so this rule can never match; use one "in" condition if any of them is enough`,
+				Location: "body.conditions",
+			}},
+		},
+		{
+			name:       "51 products",
+			logic:      "or",
+			conditions: "[" + strings.Join(nodeConds, ",") + "]",
+			want:       []problemError{{Message: "a rule may name at most 50 products in total", Location: "body.conditions"}},
+		},
+		{
+			name:       "11 set conditions in an and rule",
+			logic:      "and",
+			conditions: "[" + strings.Join(nodeConds[:11], ",") + "]",
+			want: []problemError{{
+				Message:  `an "and" rule may hold at most 10 product, package and ecosystem conditions; list more values in one "in" condition, or use an "or" rule`,
+				Location: "body.conditions",
+			}},
+		},
+		{
+			name:       "malformed product value",
+			logic:      "and",
+			conditions: `[{"field": "affected.cpe_product", "operator": "eq", "value": "nodejs node.js"}]`,
+			want: []problemError{{
+				Message:  "value must be printable ASCII with no spaces, as a CPE 2.3 name is",
+				Location: "body.conditions[0].affected.cpe_product",
+			}},
+		},
+		{
+			name:       "null numeric value",
+			logic:      "and",
+			conditions: `[{"field": "cvss_v3_score", "operator": "gt", "value": null}]`,
+			want: []problemError{{
+				Message:  "value must be a number: null is not allowed",
+				Location: "body.conditions[0].cvss_v3_score",
+			}},
+		},
+		{
+			name:  "or rule combining regex with another condition",
+			logic: "or",
+			conditions: `[
+    {"field": "severity", "operator": "eq", "value": "critical"},
+    {"field": "description_primary", "operator": "regex", "value": "remote code"}
+  ]`,
+			want: []problemError{{
+				Message:  `an "or" rule cannot combine regex conditions with other conditions, because a regex is checked only on CVEs the other conditions match; put the regex conditions in a rule of their own`,
+				Location: "body.conditions",
+			}},
+		},
+	}
+
+	// Create a valid rule and make it active so a conditions change is allowed (activating → 409).
+	validResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer validResp.Body.Close() //nolint:errcheck,gosec // G104
+	if validResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create valid rule: got %d, want 202", validResp.StatusCode)
+	}
+	var rule struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(validResp.Body).Decode(&rule); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if err := db.SetAlertRuleStatus(ctx, mustParseUUID(t, aliceReg.OrgID), mustParseUUID(t, rule.ID), "active"); err != nil {
+		t.Fatalf("set status to active: %v", err)
+	}
+
+	for _, tc := range cases {
+		createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, `{
+  "name": "Refused Rule",
+  "logic": "`+tc.logic+`",
+  "conditions": `+tc.conditions+`,
+  "watchlist_ids": []
+}`)
+		created := decodeProblem(t, createResp, tc.name+": create")
+		createResp.Body.Close() //nolint:errcheck,gosec // G104
+		if !reflect.DeepEqual(created.Errors, tc.want) {
+			t.Errorf("%s: create errors = %+v, want %+v", tc.name, created.Errors, tc.want)
+		}
+
+		patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, rule.ID, `{"logic":"`+tc.logic+`","conditions":`+tc.conditions+`}`)
+		patched := decodeProblem(t, patchResp, tc.name+": patch")
+		patchResp.Body.Close() //nolint:errcheck,gosec // G104
+		if !reflect.DeepEqual(patched.Errors, created.Errors) {
+			t.Errorf("%s: patch errors = %+v, want the create errors %+v", tc.name, patched.Errors, created.Errors)
+		}
 	}
 }
 
@@ -1807,10 +1960,16 @@ func TestAlertRule_ActivatingEnqueuesJob(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
-	// Verify a job was enqueued with queue = 'alert_activation'.
+	// Verify a job was enqueued with queue = 'alert_activation' under the rule's
+	// activation lock key, which the zombie activation sweeper looks up.
+	ruleID, err := uuid.Parse(created.ID)
+	if err != nil {
+		t.Fatalf("parse rule id: %v", err)
+	}
 	var count int
-	err := db.DB().QueryRowContext(ctx,
-		`SELECT count(*) FROM job_queue WHERE queue = 'alert_activation' AND status = 'pending'`,
+	err = db.DB().QueryRowContext(ctx,
+		`SELECT count(*) FROM job_queue WHERE queue = 'alert_activation' AND status = 'pending' AND lock_key = $1`,
+		alert.ActivationLockKey(ruleID),
 	).Scan(&count)
 	if err != nil {
 		t.Fatalf("query job_queue: %v", err)
@@ -1924,6 +2083,135 @@ func TestCreateAlertRule_MalformedJSON(t *testing.T) {
 	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
 		t.Errorf("Content-Type = %q, want application/problem+json", ct)
 	}
+}
+
+// TestCreateAlertRule_UnknownFieldRefused verifies that a misspelled field is
+// refused with 422 naming it, rather than dropped. Dropping watchlist_id would
+// create a rule that runs against every CVE instead of the watchlist.
+func TestCreateAlertRule_UnknownFieldRefused(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	body := `{
+  "name": "Misspelled Watchlist Rule",
+  "logic": "and",
+  "conditions": [{"field": "cvss_v3_score", "operator": "gte", "value": 7.0}],
+  "watchlist_id": ["00000000-0000-0000-0000-000000000001"],
+  "enabled": true
+}`
+	resp := doCreateAlertRuleRaw(t, ctx, ts, token, aliceReg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("misspelled field: got %d, want 422", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+	var problem huma.ErrorModel
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if len(problem.Errors) != 1 || problem.Errors[0].Location != "body.watchlist_id" {
+		t.Errorf("errors = %+v, want one error at body.watchlist_id", problem.Errors)
+	}
+
+	// The refused request must not have created a rule.
+	listResp := doListAlertRules(t, ctx, ts, token, aliceReg.OrgID)
+	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
+	var list struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Items) != 0 {
+		t.Errorf("rules after refused create = %d, want 0", len(list.Items))
+	}
+}
+
+// TestAlertRule_UnknownConditionKeyRefused verifies that a key a condition does
+// not define is refused with its location on create, PATCH and validate, rather
+// than dropped. Dropping "negate" would save a rule that matches the opposite of
+// what its writer meant.
+func TestAlertRule_UnknownConditionKeyRefused(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "condkey@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "condkey@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	const negatedConditions = `[{"field": "cvss_v3_score", "operator": "gte", "value": 7.0, "negate": true}]`
+	wantProblem := func(t *testing.T, resp *http.Response) {
+		t.Helper()
+		if resp.StatusCode != http.StatusUnprocessableEntity {
+			t.Fatalf("got %d, want 422", resp.StatusCode)
+		}
+		var problem huma.ErrorModel
+		if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+			t.Fatalf("decode problem: %v", err)
+		}
+		if len(problem.Errors) != 1 ||
+			problem.Errors[0].Location != "body.conditions[0].negate" ||
+			problem.Errors[0].Message != "unexpected property" {
+			t.Errorf("errors = %+v, want one unexpected property at body.conditions[0].negate", problem.Errors)
+		}
+	}
+
+	t.Run("create", func(t *testing.T) {
+		body := strings.Replace(validRuleDSL,
+			`[{"field": "cvss_v3_score", "operator": "gte", "value": 7.0}]`, negatedConditions, 1)
+		resp := doCreateAlertRule(t, ctx, ts, token, reg.OrgID, body)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		wantProblem(t, resp)
+	})
+
+	t.Run("patch", func(t *testing.T) {
+		// A disabled rule is not activating, so it accepts PATCH at once.
+		disabled := strings.Replace(validRuleDSL, `"enabled": true`, `"enabled": false`, 1)
+		created := doCreateAlertRule(t, ctx, ts, token, reg.OrgID,
+			strings.Replace(disabled, "High CVSS Rule", "Patch Target Rule", 1))
+		defer created.Body.Close() //nolint:errcheck,gosec // G104
+		if created.StatusCode != http.StatusCreated {
+			t.Fatalf("create: got %d, want 201", created.StatusCode)
+		}
+		var rule struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(created.Body).Decode(&rule); err != nil {
+			t.Fatalf("decode create: %v", err)
+		}
+		resp := doPatchAlertRule(t, ctx, ts, token, reg.OrgID, rule.ID, `{"conditions": `+negatedConditions+`}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		wantProblem(t, resp)
+	})
+
+	t.Run("validate", func(t *testing.T) {
+		resp := doValidateAlertRule(t, ctx, ts, token, reg.OrgID,
+			`{"logic": "and", "conditions": `+negatedConditions+`, "watchlist_ids": []}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("got %d, want 200", resp.StatusCode)
+		}
+		var result validateRuleResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("decode validate: %v", err)
+		}
+		want := dslErrorEntry{Index: 0, Field: "negate", Message: "unexpected property", Severity: "error"}
+		if result.Valid || len(result.Errors) != 1 || result.Errors[0] != want {
+			t.Errorf("validate = %+v, want invalid with one error %+v", result, want)
+		}
+	})
 }
 
 // TestCreateAlertRule_LocationHeader verifies Location header on 201 and 202 responses.
@@ -2113,5 +2401,48 @@ func TestCreateAlertRule_DuplicateName(t *testing.T) {
 	}
 	if !strings.Contains(problem.Detail, "already exists") {
 		t.Errorf("detail = %q, want substring 'already exists'", problem.Detail)
+	}
+}
+
+// TestAlertRule_NoFireOnNonMaterialChanges checks the API neither accepts nor
+// returns fire_on_non_material_changes, which was removed because nothing read it
+// (dev/plans/2026-11-14-remove-fire-on-non-material-changes-design.md). A client
+// that still sends it is refused like any other field the body does not define.
+func TestAlertRule_NoFireOnNonMaterialChanges(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "flag@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "flag@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	withFlag := strings.Replace(validRuleDSL, `"enabled": true`, `"enabled": true, "fire_on_non_material_changes": true`, 1)
+	refused := doCreateAlertRule(t, ctx, ts, token, reg.OrgID, withFlag)
+	defer refused.Body.Close() //nolint:errcheck,gosec // G104
+	if refused.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("create with removed field: got %d, want 422", refused.StatusCode)
+	}
+	var problem huma.ErrorModel
+	if err := json.NewDecoder(refused.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if len(problem.Errors) != 1 || problem.Errors[0].Location != "body.fire_on_non_material_changes" {
+		t.Errorf("errors = %+v, want one error at body.fire_on_non_material_changes", problem.Errors)
+	}
+
+	created := doCreateAlertRule(t, ctx, ts, token, reg.OrgID, validRuleDSL)
+	defer created.Body.Close() //nolint:errcheck,gosec // G104
+	if created.StatusCode != http.StatusAccepted {
+		t.Fatalf("create: got %d, want 202", created.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(created.Body).Decode(&body); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if _, ok := body["fire_on_non_material_changes"]; ok {
+		t.Errorf("create response has fire_on_non_material_changes: %v", body)
 	}
 }

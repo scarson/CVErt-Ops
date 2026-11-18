@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -958,4 +959,177 @@ func TestSCIMDeleteUser_SoleOwner(t *testing.T) {
 		t.Fatalf("status = %d, want 400 (body: %s)", resp.StatusCode, string(body))
 	}
 	assertSCIMContentType(t, resp)
+}
+
+// sendSCIMRawBody sends body to rawURL byte for byte, so a test can send JSON
+// that json.Marshal cannot produce (duplicate attributes, trailing data).
+func sendSCIMRawBody(t *testing.T, client *http.Client, method, rawURL, token, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), method, rawURL, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/scim+json")
+	resp, err := client.Do(req) //nolint:gosec // G704: httptest URL
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	return resp
+}
+
+// decodeSCIMErrorResponse decodes a SCIM error body.
+func decodeSCIMErrorResponse(t *testing.T, resp *http.Response) SCIMError {
+	t.Helper()
+	var scimErr SCIMError
+	if err := json.NewDecoder(resp.Body).Decode(&scimErr); err != nil {
+		t.Fatalf("decode SCIM error: %v", err)
+	}
+	return scimErr
+}
+
+func TestNamesAttributeTwice(t *testing.T) {
+	t.Parallel()
+
+	kelvin := string(rune(0x212A))         // KELVIN SIGN; strings.ToLower gives "k"
+	dottedCapitalI := string(rune(0x0130)) // LATIN CAPITAL LETTER I WITH DOT ABOVE; strings.ToLower gives "i"
+	longS := string(rune(0x017F))          // LATIN SMALL LETTER LONG S; strings.ToLower leaves it unchanged
+	tests := []struct {
+		name string
+		keys []string
+		want bool
+	}{
+		{"no keys", nil, false},
+		{"distinct keys", []string{"active", "displayName"}, false},
+		{"case variants", []string{"active", "Active"}, true},
+		{"case variants among others", []string{"userName", "active", "ACTIVE"}, true},
+		{"underscore is not ignored", []string{"userName", "user_name"}, false},
+		{"kelvin sign lowers to k", []string{"kind", kelvin + "ind"}, true},
+		{"dotted capital I lowers to i", []string{"active", "act" + dottedCapitalI + "ve"}, true},
+		{"long s does not lower to s", []string{"schemas", longS + "chemas"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := make(map[string]json.RawMessage, len(tc.keys))
+			for _, k := range tc.keys {
+				m[k] = json.RawMessage(`true`)
+			}
+			if got := namesAttributeTwice(m); got != tc.want {
+				t.Errorf("namesAttributeTwice(%q) = %v, want %v", tc.keys, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSCIMPatchUser_PathlessReplaceAttributeNamedTwice(t *testing.T) {
+	t.Parallel()
+	env := newSCIMUserTestEnv(t)
+	ctx := context.Background()
+
+	dottedCapitalI := string(rune(0x0130)) // LATIN CAPITAL LETTER I WITH DOT ABOVE; strings.ToLower gives "i"
+	tests := []struct {
+		name           string
+		value          string
+		wantStatus     int
+		wantDeactivate bool
+	}{
+		{"case-variant duplicate refused", `{"active":false,"Active":true}`, http.StatusBadRequest, false},
+		{
+			"duplicate after strings.ToLower refused",
+			`{"active":false,"act` + dottedCapitalI + `ve":true}`,
+			http.StatusBadRequest, false,
+		},
+		{"case-variant duplicate of an ignored attribute refused", `{"displayName":"a","DISPLAYNAME":"b"}`, http.StatusBadRequest, false},
+		{"case-variant name accepted", `{"Active":false}`, http.StatusOK, true},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			user := env.db.MustCreateUser(t, ctx, fmt.Sprintf("pathless-dup-%d@example.com", i), "Pathless Dup", "", 0)
+			if err := env.db.CreateOrgMember(ctx, env.orgID, user.ID, "viewer"); err != nil {
+				t.Fatalf("CreateOrgMember: %v", err)
+			}
+
+			body := `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],` +
+				`"Operations":[{"op":"replace","value":` + tc.value + `}]}`
+			rawURL := fmt.Sprintf("%s/api/v1/orgs/%s/scim/v2/Users/%s", env.ts.URL, env.orgID, user.ID)
+			resp := sendSCIMRawBody(t, env.ts.Client(), http.MethodPatch, rawURL, env.rawToken, body)
+			defer resp.Body.Close() //nolint:errcheck
+
+			if resp.StatusCode != tc.wantStatus {
+				respBody, _ := io.ReadAll(resp.Body) //nolint:errcheck
+				t.Fatalf("status = %d, want %d (body: %s)", resp.StatusCode, tc.wantStatus, string(respBody))
+			}
+			assertSCIMContentType(t, resp)
+			if tc.wantStatus == http.StatusBadRequest {
+				scimErr := decodeSCIMErrorResponse(t, resp)
+				if scimErr.Status != "400" {
+					t.Errorf("status field = %q, want %q", scimErr.Status, "400")
+				}
+				if scimErr.SCIMType != "invalidValue" {
+					t.Errorf("scimType = %q, want %q", scimErr.SCIMType, "invalidValue")
+				}
+				if want := "pathless operation value has duplicate attributes"; scimErr.Detail != want {
+					t.Errorf("detail = %q, want %q", scimErr.Detail, want)
+				}
+			}
+
+			member, err := env.db.GetOrgMemberFull(ctx, env.orgID, user.ID)
+			if err != nil {
+				t.Fatalf("GetOrgMemberFull: %v", err)
+			}
+			if member == nil {
+				t.Fatal("member is nil")
+			}
+			if member.DeactivatedAt.Valid != tc.wantDeactivate {
+				t.Errorf("deactivated = %v, want %v", member.DeactivatedAt.Valid, tc.wantDeactivate)
+			}
+		})
+	}
+}
+
+func TestSCIMCreateUser_DuplicateAttributeRefused(t *testing.T) {
+	t.Parallel()
+	env := newSCIMUserTestEnv(t)
+	ctx := context.Background()
+
+	body := `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],` +
+		`"externalId":"ext-dup-attr-001",` +
+		`"userName":"dup-attr-a@example.com","USERNAME":"dup-attr-b@example.com"}`
+	rawURL := fmt.Sprintf("%s/api/v1/orgs/%s/scim/v2/Users", env.ts.URL, env.orgID)
+	resp := sendSCIMRawBody(t, env.ts.Client(), http.MethodPost, rawURL, env.rawToken, body)
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusBadRequest {
+		respBody, _ := io.ReadAll(resp.Body) //nolint:errcheck
+		t.Fatalf("status = %d, want 400 (body: %s)", resp.StatusCode, string(respBody))
+	}
+	assertSCIMContentType(t, resp)
+	scimErr := decodeSCIMErrorResponse(t, resp)
+	if scimErr.Status != "400" {
+		t.Errorf("status field = %q, want %q", scimErr.Status, "400")
+	}
+	if scimErr.SCIMType != "" {
+		t.Errorf("scimType = %q, want empty", scimErr.SCIMType)
+	}
+	if scimErr.Detail != "invalid JSON body" {
+		t.Errorf("detail = %q, want %q", scimErr.Detail, "invalid JSON body")
+	}
+
+	linked, err := env.db.GetUserByProviderID(ctx, scimProvider(env.scimConfigID), "ext-dup-attr-001")
+	if err != nil {
+		t.Fatalf("GetUserByProviderID: %v", err)
+	}
+	if linked != nil {
+		t.Errorf("user %s was provisioned from a refused body", linked.ID)
+	}
+	for _, email := range []string{"dup-attr-a@example.com", "dup-attr-b@example.com"} {
+		u, err := env.db.GetUserByEmail(ctx, email)
+		if err != nil {
+			t.Fatalf("GetUserByEmail(%s): %v", email, err)
+		}
+		if u != nil {
+			t.Errorf("user %s was created from a refused body", email)
+		}
+	}
 }

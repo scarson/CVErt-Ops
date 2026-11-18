@@ -10,6 +10,7 @@ import (
 
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/doctor"
+	"github.com/scarson/cvert-ops/migrations"
 )
 
 func doctorCmd() *cobra.Command {
@@ -34,6 +35,11 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 	}
 	defer db.Close()
 
+	expectedSchemaVersion, err := migrations.LatestVersion()
+	if err != nil {
+		return fmt.Errorf("embedded migrations: %w", err)
+	}
+
 	checks := doctor.StandardChecks(doctor.StandardChecksConfig{
 		DB:                       db,
 		ExpectedSchemaVersion:    expectedSchemaVersion,
@@ -44,7 +50,7 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 		SMTPHost:                 cfg.SMTPHost,
 		SMTPPort:                 cfg.SMTPPort,
 		SMTPUsername:             cfg.SMTPUsername,
-		CORSAllowedOrigins:      cfg.CORSAllowedOrigins,
+		CORSAllowedOrigins:       cfg.CORSAllowedOrigins,
 		CookieAuth:               true, // always cookie-based auth with web SPA
 	})
 	results := doctor.Run(ctx, checks)

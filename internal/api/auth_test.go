@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
 	"golang.org/x/time/rate"
 
@@ -199,8 +200,10 @@ func TestLoginRateLimited(t *testing.T) {
 	doRegister(t, ctx, ts, "ratelimit@example.com", "test-password-1234")
 
 	// Replace the rate limiter with a tight burst of 2 AFTER registration.
+	// rate.Every(time.Hour) ensures tokens don't replenish between requests
+	// (each login includes argon2 hashing, so three logins can take >1s).
 	srv.rateLimiter.Stop()
-	srv.rateLimiter = newIPRateLimiter(rate.Limit(1), 2, time.Minute)
+	srv.rateLimiter = newIPRateLimiter(rate.Every(time.Hour), 2, time.Minute)
 
 	// First 2 logins: allowed (burst=2).
 	for i := 1; i <= 2; i++ {
@@ -280,6 +283,245 @@ func TestLoginSuccess(t *testing.T) {
 	}
 	if cookieValue(resp, "refresh_token") == "" {
 		t.Error("refresh_token cookie not set")
+	}
+}
+
+// TestLoginUnknownFieldRefused verifies that a huma-registered operation refuses
+// a body member its schema does not define, with the same 422 problem that
+// decodeJSON writes for chi handlers, and accepts the read-only "$schema"
+// member its published schema declares.
+func TestLoginUnknownFieldRefused(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	doRegister(t, ctx, ts, "loginextra@example.com", "test-password-1234")
+
+	postLogin := func(body string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/login", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+		if err != nil {
+			t.Fatalf("login request: %v", err)
+		}
+		return resp
+	}
+
+	resp := postLogin(`{"email":"loginextra@example.com","password":"test-password-1234","remember_me":true}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown field: got %d, want 422", resp.StatusCode)
+	}
+	var problem huma.ErrorModel
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if problem.Detail != "validation failed" {
+		t.Errorf("detail = %q, want %q", problem.Detail, "validation failed")
+	}
+	found := false
+	for _, e := range problem.Errors {
+		if e.Location == "body.remember_me" && e.Message == "unexpected property" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("errors = %q, want unexpected property at body.remember_me", problemErrorSummary(problem))
+	}
+
+	schemaResp := postLogin(`{"$schema":"https://example.com/schemas/LoginInputBody.json","email":"loginextra@example.com","password":"test-password-1234"}`)
+	defer schemaResp.Body.Close() //nolint:errcheck,gosec // G104
+	if schemaResp.StatusCode != http.StatusOK {
+		t.Errorf("login with $schema: got %d, want 200", schemaResp.StatusCode)
+	}
+}
+
+// TestLoginMalformedBodyRefused verifies that a huma-registered operation
+// decodes its body with encoding/json/v2's defaults, as decodeJSON does for chi
+// handlers: a duplicate member name or invalid UTF-8 is a 400 at "body", not a
+// body decoded by picking the last duplicate or replacing the invalid byte.
+// Bodies are sent byte for byte. Response bodies are not logged, because huma
+// echoes the request body, password included, in the problem's errors[0].value.
+func TestLoginMalformedBodyRefused(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	const email = "loginmalformed@example.com"
+	const password = "test-password-1234"
+	doRegister(t, ctx, ts, email, password)
+
+	postLogin := func(t *testing.T, contentType string, body []byte) *http.Response {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/login", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("build login request: %v", err)
+		}
+		req.Header.Set("Content-Type", contentType)
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+		if err != nil {
+			t.Fatalf("login request: %v", err)
+		}
+		return resp
+	}
+
+	duplicateName := []byte(`{"email":"other@example.com","email":"` + email + `","password":"` + password + `"}`)
+	tests := []struct {
+		name        string
+		contentType string
+		body        []byte
+	}{
+		{
+			name:        "duplicate name",
+			contentType: "application/json",
+			body:        duplicateName,
+		},
+		{
+			// huma selects the format for a "+json" media type by its "json" suffix.
+			name:        "duplicate name with json suffix media type",
+			contentType: "application/merge-patch+json",
+			body:        duplicateName,
+		},
+		{
+			name:        "invalid UTF-8",
+			contentType: "application/json; charset=utf-8",
+			body:        []byte("{\"email\":\"" + email + "\",\"password\":\"" + password + "\xff\"}"),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := postLogin(t, tc.contentType, tc.body)
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			}
+			if cookies := resp.Cookies(); len(cookies) != 0 {
+				t.Errorf("response set %d cookies, want none", len(cookies))
+			}
+			var problem huma.ErrorModel
+			if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+				t.Fatalf("decode problem: %v", err)
+			}
+			if problem.Status != http.StatusBadRequest {
+				t.Errorf("problem status = %d, want 400", problem.Status)
+			}
+			if len(problem.Errors) != 1 {
+				t.Fatalf("problem has %d errors, want 1", len(problem.Errors))
+			}
+			if problem.Errors[0].Location != "body" {
+				t.Errorf("errors[0].location = %q, want %q", problem.Errors[0].Location, "body")
+			}
+		})
+	}
+
+	t.Run("valid body", func(t *testing.T) {
+		resp := postLogin(t, "application/json", []byte(`{"email":"`+email+`","password":"`+password+`"}`))
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if cookieValue(resp, "access_token") == "" {
+			t.Error("access_token cookie not set")
+		}
+		if cookieValue(resp, "refresh_token") == "" {
+			t.Error("refresh_token cookie not set")
+		}
+	})
+}
+
+// TestRegisterCaseVariantMemberRefused verifies that register refuses a body
+// whose password member differs from the schema's name only in case. The
+// decoder matches names exactly, so if validation accepted the case variant the
+// account would be created with an empty password.
+func TestRegisterCaseVariantMemberRefused(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	const email = "casevariant@example.com"
+	body := `{"email":"` + email + `","Password":"test-password-1234"}`
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/register", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("build register request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("register request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", resp.StatusCode)
+	}
+	var problem huma.ErrorModel
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	found := false
+	for _, e := range problem.Errors {
+		if e.Location == "body.Password" && e.Message == "unexpected property" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("errors = %q, want unexpected property at body.Password", problemErrorSummary(problem))
+	}
+
+	user, err := db.GetUserByEmail(ctx, email)
+	if err != nil {
+		t.Fatalf("look up user: %v", err)
+	}
+	if user != nil {
+		t.Errorf("user %s was created from a refused body", user.ID)
+	}
+}
+
+// TestLoginCaseVariantSiblingRefused verifies that login refuses a body holding
+// a valid password member and a sibling whose name differs from it only in
+// case, at the sibling's location, without signing the user in.
+func TestLoginCaseVariantSiblingRefused(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	const email = "casesibling@example.com"
+	const password = "test-password-1234"
+	doRegister(t, ctx, ts, email, password)
+
+	body := `{"email":"` + email + `","password":"` + password + `","PASSWORD":"x"}`
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/login", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("build login request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("login request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", resp.StatusCode)
+	}
+	if cookies := resp.Cookies(); len(cookies) != 0 {
+		t.Errorf("response set %d cookies, want none", len(cookies))
+	}
+	var problem huma.ErrorModel
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	found := false
+	for _, e := range problem.Errors {
+		if e.Location == "body.PASSWORD" && e.Message == "unexpected property" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("errors = %q, want unexpected property at body.PASSWORD", problemErrorSummary(problem))
 	}
 }
 
@@ -425,7 +667,7 @@ func TestRefreshRotates(t *testing.T) {
 
 	// Refresh: should issue new tokens and mark old JTI used.
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: oldRefreshToken})
+	req.AddCookie(requestCookie("refresh_token", oldRefreshToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("refresh request: %v", err)
@@ -470,7 +712,7 @@ func TestRefreshGraceWindow(t *testing.T) {
 
 	// First refresh: consumes the token, returns new tokens.
 	req1, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req1.AddCookie(&http.Cookie{Name: "refresh_token", Value: firstRefreshToken})
+	req1.AddCookie(requestCookie("refresh_token", firstRefreshToken))
 	resp1, err := ts.Client().Do(req1) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("first refresh: %v", err)
@@ -482,7 +724,7 @@ func TestRefreshGraceWindow(t *testing.T) {
 
 	// Second refresh with the SAME (now-used) token — within grace window → 200.
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req2.AddCookie(&http.Cookie{Name: "refresh_token", Value: firstRefreshToken})
+	req2.AddCookie(requestCookie("refresh_token", firstRefreshToken))
 	resp2, err := ts.Client().Do(req2) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("grace refresh: %v", err)
@@ -506,7 +748,7 @@ func TestRefreshTheftDetection(t *testing.T) {
 
 	// Refresh normally (token A consumed, replaced by B).
 	req1, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req1.AddCookie(&http.Cookie{Name: "refresh_token", Value: firstRefreshToken})
+	req1.AddCookie(requestCookie("refresh_token", firstRefreshToken))
 	resp1, _ := ts.Client().Do(req1) //nolint:gosec // G704 false positive
 	resp1.Body.Close()               //nolint:errcheck,gosec // G104
 
@@ -523,7 +765,7 @@ func TestRefreshTheftDetection(t *testing.T) {
 
 	// Re-use the same token after grace window — theft detected → 401.
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req2.AddCookie(&http.Cookie{Name: "refresh_token", Value: firstRefreshToken})
+	req2.AddCookie(requestCookie("refresh_token", firstRefreshToken))
 	resp2, err := ts.Client().Do(req2) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("theft re-use: %v", err)
@@ -556,7 +798,7 @@ func TestLogoutClearsCookies(t *testing.T) {
 	refreshToken := cookieValue(loginResp, "refresh_token")
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/logout", nil)
-	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: refreshToken})
+	req.AddCookie(requestCookie("refresh_token", refreshToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("logout: %v", err)
@@ -588,7 +830,7 @@ func TestGetMe(t *testing.T) {
 	accessToken := cookieValue(loginResp, "access_token")
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/auth/me", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	req.AddCookie(requestCookie("access_token", accessToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("get me: %v", err)
@@ -625,6 +867,52 @@ func TestGetMe(t *testing.T) {
 	}
 }
 
+// TestGetMe_LeavesOutDeactivatedMembership lists only orgs the user can open: every
+// org route refuses a deactivated membership.
+func TestGetMe_LeavesOutDeactivatedMembership(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	regOut := doRegister(t, ctx, ts, "me-left@example.com", "test-password-1234")
+	userID, err := uuid.Parse(regOut.UserID)
+	if err != nil {
+		t.Fatalf("parse user id: %v", err)
+	}
+	left, err := db.CreateOrg(ctx, "Left Org")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err := db.CreateOrgMember(ctx, left.ID, userID, "member"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	if err := db.DeactivateOrgMember(ctx, left.ID, userID); err != nil {
+		t.Fatalf("deactivate: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, "me-left@example.com", "test-password-1234")
+	loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/auth/me", nil)
+	req.AddCookie(requestCookie("access_token", cookieValue(loginResp, "access_token")))
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("get me: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	var body struct {
+		Orgs []struct {
+			OrgID string `json:"org_id"`
+		} `json:"orgs"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode me response: %v", err)
+	}
+	if len(body.Orgs) != 1 || body.Orgs[0].OrgID != regOut.OrgID {
+		t.Errorf("orgs = %+v, want only the registration org %s", body.Orgs, regOut.OrgID)
+	}
+}
+
 // ── Task 29: Change password ──────────────────────────────────────────────────
 
 func TestChangePassword_Success(t *testing.T) {
@@ -643,7 +931,7 @@ func TestChangePassword_Success(t *testing.T) {
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	req.AddCookie(requestCookie("access_token", accessToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("change-password: %v", err)
@@ -684,7 +972,7 @@ func TestChangePassword_WrongCurrentPassword(t *testing.T) {
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	req.AddCookie(requestCookie("access_token", accessToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("change-password: %v", err)
@@ -713,7 +1001,7 @@ func TestChangePassword_InvalidatesRefreshTokens(t *testing.T) {
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	req.AddCookie(requestCookie("access_token", accessToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("change-password: %v", err)
@@ -725,7 +1013,7 @@ func TestChangePassword_InvalidatesRefreshTokens(t *testing.T) {
 
 	// Old refresh token should now be rejected (token_version mismatch).
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req2.AddCookie(&http.Cookie{Name: "refresh_token", Value: refreshToken})
+	req2.AddCookie(requestCookie("refresh_token", refreshToken))
 	resp2, err := ts.Client().Do(req2) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("refresh after change-password: %v", err)
@@ -790,7 +1078,7 @@ func TestRefreshInvalidToken(t *testing.T) {
 
 	// Refresh with garbage token.
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: "totally-invalid-jwt"})
+	req.AddCookie(requestCookie("refresh_token", "totally-invalid-jwt"))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("refresh: %v", err)
@@ -820,7 +1108,7 @@ func TestRefreshRevokedTokenVersion(t *testing.T) {
 
 	// The refresh token's token_version no longer matches → 401.
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: refreshToken})
+	req.AddCookie(requestCookie("refresh_token", refreshToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("refresh: %v", err)
@@ -857,7 +1145,7 @@ func TestGetMe_InvalidToken(t *testing.T) {
 	_, ts := newRegisterServer(t, db, "open")
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/auth/me", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: "garbage-token"})
+	req.AddCookie(requestCookie("access_token", "garbage-token"))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("get me: %v", err)
@@ -914,7 +1202,7 @@ func TestChangePassword_OAuthOnlyAccount(t *testing.T) {
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	req.AddCookie(requestCookie("access_token", accessToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("change-password: %v", err)
@@ -1310,7 +1598,7 @@ func TestChangePassword_ClearsForcePasswordReset(t *testing.T) {
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("change-password: %v", err)
@@ -1327,6 +1615,58 @@ func TestChangePassword_ClearsForcePasswordReset(t *testing.T) {
 	}
 	if status.ForcePasswordReset {
 		t.Error("force_password_reset should be false after password change")
+	}
+}
+
+// TestChangePassword_RestrictedSession_RejectsStaleTokenVersion verifies that a
+// pending token issued before the user's token_version changed (for example by
+// an admin MFA reset) can no longer change the password.
+func TestChangePassword_RestrictedSession_RejectsStaleTokenVersion(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	doRegister(t, ctx, ts, "forcereset-stale@example.com", "test-old-password-1")
+	user, err := db.GetUserByEmail(ctx, "forcereset-stale@example.com")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if _, err := db.AdminForcePasswordReset(ctx, user.ID); err != nil {
+		t.Fatalf("set force_password_reset: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, "forcereset-stale@example.com", "test-old-password-1")
+	loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	pendingToken := cookieValue(loginResp, "mfa_pending_token")
+	if pendingToken == "" {
+		t.Fatal("expected mfa_pending_token cookie from login with force_password_reset")
+	}
+
+	if _, err := db.IncrementTokenVersion(ctx, user.ID); err != nil {
+		t.Fatalf("increment token version: %v", err)
+	}
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/change-password",
+		bytes.NewBufferString(`{"new_password":"test-new-password-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("change-password: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("change-password with stale pending token: got %d, want 401", resp.StatusCode)
+	}
+
+	after, err := db.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get user after: %v", err)
+	}
+	if after.PasswordHash.String != user.PasswordHash.String {
+		t.Error("password hash changed with a stale pending token")
 	}
 }
 
@@ -1425,7 +1765,7 @@ func TestChangePassword_RestrictedSession_PendingTokenHasFreshTokenVersion(t *te
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("change-password: %v", err)
@@ -1494,7 +1834,7 @@ func TestRefresh_TokenReuse_EmitsSecurityEvent(t *testing.T) {
 
 	// First refresh: consumes the token.
 	req1, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req1.AddCookie(&http.Cookie{Name: "refresh_token", Value: firstRefreshToken})
+	req1.AddCookie(requestCookie("refresh_token", firstRefreshToken))
 	resp1, err := ts.Client().Do(req1) //nolint:gosec
 	if err != nil {
 		t.Fatalf("first refresh: %v", err)
@@ -1514,7 +1854,7 @@ func TestRefresh_TokenReuse_EmitsSecurityEvent(t *testing.T) {
 
 	// Re-use the token after grace window — theft detected → 401.
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req2.AddCookie(&http.Cookie{Name: "refresh_token", Value: firstRefreshToken})
+	req2.AddCookie(requestCookie("refresh_token", firstRefreshToken))
 	resp2, err := ts.Client().Do(req2) //nolint:gosec
 	if err != nil {
 		t.Fatalf("theft re-use: %v", err)

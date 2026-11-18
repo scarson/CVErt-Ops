@@ -2064,6 +2064,75 @@ func TestStore_VerifyAndUpdateTOTPStep_Direct(t *testing.T) {
 	}
 }
 
+func TestStore_CreateTOTPCredential_SpendsConfirmedStep(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := tdb.CreateUser(ctx, "totp-create-step@example.com", "TOTP Create", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := tdb.CreateTOTPCredential(ctx, user.ID, []byte("encrypted-secret"), 100); err != nil {
+		t.Fatalf("CreateTOTPCredential: %v", err)
+	}
+
+	cred, err := tdb.GetMFACredentialByUserAndMethod(ctx, user.ID, "totp")
+	if err != nil {
+		t.Fatalf("GetMFACredentialByUserAndMethod: %v", err)
+	}
+	if cred == nil {
+		t.Fatal("expected a TOTP credential")
+	}
+	if !cred.LastUsedStep.Valid || cred.LastUsedStep.Int64 != 100 {
+		t.Errorf("LastUsedStep = %v, want 100", cred.LastUsedStep)
+	}
+
+	ok, err := tdb.VerifyAndUpdateTOTPStep(ctx, user.ID, 100)
+	if err != nil {
+		t.Fatalf("VerifyAndUpdateTOTPStep(100): %v", err)
+	}
+	if ok {
+		t.Error("expected the confirmed step to be rejected as a replay")
+	}
+
+	ok, err = tdb.VerifyAndUpdateTOTPStep(ctx, user.ID, 101)
+	if err != nil {
+		t.Fatalf("VerifyAndUpdateTOTPStep(101): %v", err)
+	}
+	if !ok {
+		t.Error("expected the step after the confirmed step to be accepted")
+	}
+}
+
+func TestStore_CreateTOTPCredential_RollsBackOnDuplicate(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := tdb.CreateUser(ctx, "totp-create-dup@example.com", "TOTP Dup", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := tdb.CreateTOTPCredential(ctx, user.ID, []byte("first-secret"), 100); err != nil {
+		t.Fatalf("first CreateTOTPCredential: %v", err)
+	}
+	if err := tdb.CreateTOTPCredential(ctx, user.ID, []byte("second-secret"), 200); err == nil {
+		t.Fatal("expected a duplicate TOTP credential to be rejected")
+	}
+
+	cred, err := tdb.GetMFACredentialByUserAndMethod(ctx, user.ID, "totp")
+	if err != nil {
+		t.Fatalf("GetMFACredentialByUserAndMethod: %v", err)
+	}
+	if cred == nil {
+		t.Fatal("expected the first TOTP credential to remain")
+	}
+	if string(cred.SecretEnc) != "first-secret" || cred.LastUsedStep.Int64 != 100 {
+		t.Errorf("credential changed by rejected create: secret %q, step %v", cred.SecretEnc, cred.LastUsedStep)
+	}
+}
+
 func TestStore_UserMFARequiredOrgNames_Direct(t *testing.T) {
 	t.Parallel()
 	tdb := testutil.NewTestDB(t)

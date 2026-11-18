@@ -720,6 +720,77 @@ func TestGroupMapping_SetNotificationGroup(t *testing.T) {
 	}
 }
 
+// TestGroupMapping_ClearNotificationGroup verifies that mapped_group_id null
+// clears the notification group mapping and removes the SCIM group's members
+// from that notification group.
+func TestGroupMapping_ClearNotificationGroup(t *testing.T) {
+	t.Parallel()
+	env := newSCIMAdminEnv(t)
+	ctx := context.Background()
+	env.createSSOForSCIM(t)
+
+	createResp := doSCIMConfigCreate(t, env.ts, env.token, env.orgID.String())
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(createResp.Body)
+		t.Fatalf("create config: got %d. Body: %s", createResp.StatusCode, b)
+	}
+
+	notifGroup := env.db.MustCreateGroup(t, ctx, env.orgID, "Security Team", "Security notifications")
+	scimGroup, err := env.db.CreateSCIMGroup(ctx, env.orgID, nil, "Security")
+	if err != nil {
+		t.Fatalf("create scim group: %v", err)
+	}
+	memberReg := doRegister(t, ctx, env.ts, "scim-notif-clear@example.com", "test-password-1234")
+	memberID := mustParseUUID(t, memberReg.UserID)
+	if err := env.db.CreateOrgMember(ctx, env.orgID, memberID, "viewer"); err != nil {
+		t.Fatalf("create org member: %v", err)
+	}
+	if err := env.db.AddSCIMGroupMember(ctx, scimGroup.ID, memberID, env.orgID); err != nil {
+		t.Fatalf("add scim group member: %v", err)
+	}
+
+	isNotifMember := func() bool {
+		t.Helper()
+		members, err := env.db.ListGroupMembers(ctx, env.orgID, notifGroup.ID)
+		if err != nil {
+			t.Fatalf("list notification group members: %v", err)
+		}
+		for _, m := range members {
+			if m.UserID == memberID {
+				return true
+			}
+		}
+		return false
+	}
+
+	setResp := doSCIMGroupMappingPatch(t, env.ts, env.token, env.orgID.String(),
+		scimGroup.ID.String(), `{"mapped_group_id":"`+notifGroup.ID.String()+`"}`)
+	defer setResp.Body.Close() //nolint:errcheck,gosec // G104
+	if setResp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(setResp.Body)
+		t.Fatalf("set group mapping: got %d, want 200. Body: %s", setResp.StatusCode, b)
+	}
+	if !isNotifMember() {
+		t.Fatal("member should be in the notification group after the mapping is set")
+	}
+
+	clearResp := doSCIMGroupMappingPatch(t, env.ts, env.token, env.orgID.String(),
+		scimGroup.ID.String(), `{"mapped_group_id":null}`)
+	defer clearResp.Body.Close() //nolint:errcheck,gosec // G104
+	if clearResp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(clearResp.Body)
+		t.Fatalf("clear group mapping: got %d, want 200. Body: %s", clearResp.StatusCode, b)
+	}
+	result := readBody(t, clearResp)
+	if result["mapped_group_id"] != nil {
+		t.Errorf("mapped_group_id = %v, want null after clear", result["mapped_group_id"])
+	}
+	if isNotifMember() {
+		t.Error("member should be removed from the notification group after the mapping is cleared")
+	}
+}
+
 func TestGroupMapping_ClearMapping(t *testing.T) {
 	t.Parallel()
 	env := newSCIMAdminEnv(t)

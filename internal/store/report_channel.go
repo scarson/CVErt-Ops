@@ -64,11 +64,17 @@ func (s *Store) ListActiveChannelsForDigest(ctx context.Context, orgID, reportID
 	var result []generated.ListActiveChannelsForDigestRow
 	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
 		var err error
-		result, err = q.ListActiveChannelsForDigest(ctx, generated.ListActiveChannelsForDigestParams{
-			ReportID: reportID,
-			OrgID:    orgID,
-		})
+		result, err = listActiveChannelsForDigest(ctx, q, orgID, reportID)
 		return err
+	})
+	return result, err
+}
+
+// listActiveChannelsForDigest runs the ListActiveChannelsForDigest query in q's transaction.
+func listActiveChannelsForDigest(ctx context.Context, q *generated.Queries, orgID, reportID uuid.UUID) ([]generated.ListActiveChannelsForDigestRow, error) {
+	result, err := q.ListActiveChannelsForDigest(ctx, generated.ListActiveChannelsForDigestParams{
+		ReportID: reportID,
+		OrgID:    orgID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list active channels for digest: %w", err)

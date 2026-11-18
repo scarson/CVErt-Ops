@@ -9,8 +9,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -67,6 +73,161 @@ func TestChannelTest_Webhook_Unreachable(t *testing.T) {
 	}
 	if result.Error == "" {
 		t.Error("expected non-empty error message")
+	}
+}
+
+// newPrivateDestServer starts a server whose webhook client allows the given
+// private destinations, so a test can reach or be refused by a loopback receiver.
+func newPrivateDestServer(t *testing.T, db *testutil.TestDB, hosts, cidrs, ports string) *httptest.Server {
+	t.Helper()
+	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
+		JWTSecret:           "regtestsecret",
+		RegistrationMode:    "open",
+		Argon2MaxConcurrent: 5,
+		MFAPendingTokenTTL:  5 * time.Minute,
+		WebhookPrivateHosts: hosts,
+		WebhookPrivateCIDRs: cidrs,
+		WebhookPrivatePorts: ports,
+	}
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
+	return ts
+}
+
+// testLoopbackChannel registers a webhook channel at a loopback receiver that
+// answers with status, tests it, and returns the response status and body.
+func testLoopbackChannel(t *testing.T, cidrs string, status int) (int, testChannelResult) {
+	t.Helper()
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+	}))
+	t.Cleanup(receiver.Close)
+	u, err := url.Parse(receiver.URL)
+	if err != nil {
+		t.Fatalf("parse receiver URL: %v", err)
+	}
+
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	ts := newPrivateDestServer(t, db, "127.0.0.1", cidrs, u.Port())
+	reg := doRegister(t, ctx, ts, "admin@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "admin@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	channelBody := `{"name":"lan-hook","type":"webhook","config":{"url":"` + receiver.URL + `/hook"}}`
+	createResp := doCreateChannel(t, ctx, ts, token, reg.OrgID, channelBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec
+	if createResp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(createResp.Body)
+		t.Fatalf("create channel: got %d, body: %s", createResp.StatusCode, body)
+	}
+	var ch struct {
+		ID string `json:"id"`
+	}
+	json.NewDecoder(createResp.Body).Decode(&ch) //nolint:errcheck,gosec
+
+	resp := doTestChannel(t, ctx, ts, token, reg.OrgID, ch.ID)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	var result testChannelResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode test channel response: %v", err)
+	}
+	return resp.StatusCode, result
+}
+
+// TestChannelTest_Webhook_RefusedDestinationHidesAddress verifies that a refused
+// dial does not return the resolved address, which would let an org admin map
+// internal DNS by registering host names and testing them.
+func TestChannelTest_Webhook_RefusedDestinationHidesAddress(t *testing.T) {
+	t.Parallel()
+	// 127.0.0.1 is listed, but its network is not, so the dial is refused with
+	// "ip: 127.0.0.1 not found in allowlist".
+	status, result := testLoopbackChannel(t, "10.0.0.0/8", http.StatusOK)
+	if status != http.StatusBadGateway {
+		t.Fatalf("test channel: got %d, want 502", status)
+	}
+	if result.Success {
+		t.Fatal("expected success=false for a refused destination")
+	}
+	if result.Error != notify.ErrCauseWithheld.Error() {
+		t.Errorf("error = %q, want %q", result.Error, notify.ErrCauseWithheld.Error())
+	}
+	if strings.Contains(result.Error, "127.0.0.1") {
+		t.Errorf("error %q reveals the resolved address", result.Error)
+	}
+}
+
+// TestChannelTest_Webhook_ReportsReceiverStatus verifies that a status from a
+// receiver the request reached is still reported to the caller.
+func TestChannelTest_Webhook_ReportsReceiverStatus(t *testing.T) {
+	t.Parallel()
+	status, result := testLoopbackChannel(t, "127.0.0.0/8", http.StatusInternalServerError)
+	if status != http.StatusBadGateway {
+		t.Fatalf("test channel: got %d, want 502", status)
+	}
+	if !strings.Contains(result.Error, "unexpected status 500") {
+		t.Errorf("error = %q, want it to report the receiver's status 500", result.Error)
+	}
+}
+
+// TestChannelTest_Webhook_StoredConfigRefused verifies that a stored webhook config the
+// delivery parser refuses (here a custom header value that is not a string) fails the
+// test without sending anything and without echoing stored values.
+func TestChannelTest_Webhook_StoredConfigRefused(t *testing.T) {
+	t.Parallel()
+	var called atomic.Int32
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(receiver.Close)
+	u, err := url.Parse(receiver.URL)
+	if err != nil {
+		t.Fatalf("parse receiver URL: %v", err)
+	}
+
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	ts := newPrivateDestServer(t, db, "127.0.0.1", "127.0.0.0/8", u.Port())
+	reg := doRegister(t, ctx, ts, "admin@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "admin@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	// Stored directly, bypassing API validation, as for a row written before it existed.
+	config := `{"url":"` + receiver.URL + `/hook","custom_headers":{"Authorization":"Bearer tk_stored_secret","X-A":1}}`
+	ch, _, err := db.CreateNotificationChannel(ctx, mustParseUUID(t, reg.OrgID), "stored-hook", "webhook", json.RawMessage(config))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+
+	resp := doTestChannel(t, ctx, ts, token, reg.OrgID, ch.ID.String())
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusBadGateway {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("test channel: got %d, body: %s, want 502", resp.StatusCode, body)
+	}
+	var result testChannelResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode test channel response: %v", err)
+	}
+	if result.Success {
+		t.Error("expected success=false for refused stored config")
+	}
+	if !strings.Contains(result.Error, "parse webhook config") {
+		t.Errorf("error = %q, want it to report the config parse failure", result.Error)
+	}
+	if strings.Contains(result.Error, "tk_stored_secret") || strings.Contains(result.Error, receiver.URL) {
+		t.Errorf("error %q echoes a stored config value", result.Error)
+	}
+	if n := called.Load(); n != 0 {
+		t.Errorf("receiver calls = %d, want 0", n)
 	}
 }
 

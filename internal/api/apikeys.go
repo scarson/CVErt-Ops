@@ -77,8 +77,7 @@ func (srv *Server) createAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req createAPIKeyBody
-	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {

@@ -515,6 +515,34 @@ func TestGetInvitationByToken_NotFound(t *testing.T) {
 	}
 }
 
+// TestListUserOrgs_LeavesOutDeactivatedMemberships lists only orgs the user can act
+// in: every org route refuses a deactivated membership.
+func TestListUserOrgs_LeavesOutDeactivatedMemberships(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user := s.MustCreateUser(t, ctx, "partly-active@example.com", "Partly", "", 0)
+	active := s.MustCreateOrg(t, ctx, "Active Org")
+	left := s.MustCreateOrg(t, ctx, "Left Org")
+	for _, org := range []uuid.UUID{active.ID, left.ID} {
+		if err := s.CreateOrgMember(ctx, org, user.ID, "member"); err != nil {
+			t.Fatalf("CreateOrgMember: %v", err)
+		}
+	}
+	if err := s.DeactivateOrgMember(ctx, left.ID, user.ID); err != nil {
+		t.Fatalf("DeactivateOrgMember: %v", err)
+	}
+
+	orgs, err := s.ListUserOrgs(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("ListUserOrgs: %v", err)
+	}
+	if len(orgs) != 1 || orgs[0].OrgID != active.ID {
+		t.Errorf("ListUserOrgs = %+v, want only %s", orgs, active.ID)
+	}
+}
+
 func TestListUserOrgs_NoOrgs(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

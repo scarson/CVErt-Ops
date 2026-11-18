@@ -338,6 +338,105 @@ func TestRecoverStaleJobs_RecoversStuck(t *testing.T) {
 	}
 }
 
+// staleJobState is the row state RecoverStaleJobs writes.
+type staleJobState struct {
+	Status     string
+	LockedBy   *string
+	LockedAt   *time.Time
+	FinishedAt *time.Time
+	LastError  *string
+}
+
+// claimAndBackdate enqueues a job with maxAttempts, claims it once, and moves its
+// locked_at 20 minutes into the past so RecoverStaleJobs sees it as stuck.
+func claimAndBackdate(t *testing.T, db *testutil.TestDB, queue string, maxAttempts int32) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	id, err := db.EnqueueJob(ctx, queue, 0, json.RawMessage(`{}`), nil, maxAttempts, nil)
+	if err != nil {
+		t.Fatalf("EnqueueJob: %v", err)
+	}
+	if _, err := db.ClaimJob(ctx, queue, "worker-1"); err != nil {
+		t.Fatalf("ClaimJob: %v", err)
+	}
+	if _, err := db.DB().ExecContext(ctx,
+		"UPDATE job_queue SET locked_at = now() - interval '20 minutes' WHERE id = $1", id,
+	); err != nil {
+		t.Fatalf("backdate locked_at: %v", err)
+	}
+	return id
+}
+
+func readStaleJobState(t *testing.T, db *testutil.TestDB, id uuid.UUID) staleJobState {
+	t.Helper()
+	var s staleJobState
+	if err := db.DB().QueryRowContext(context.Background(),
+		"SELECT status, locked_by, locked_at, finished_at, last_error FROM job_queue WHERE id = $1", id,
+	).Scan(&s.Status, &s.LockedBy, &s.LockedAt, &s.FinishedAt, &s.LastError); err != nil {
+		t.Fatalf("read job %s: %v", id, err)
+	}
+	return s
+}
+
+func TestRecoverStaleJobs_ExhaustedJobBecomesDead(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// max_attempts = 1: the one claim used the job's only attempt.
+	exhausted := claimAndBackdate(t, db, "exhausted", 1)
+	// max_attempts = 3: two attempts remain.
+	retryable := claimAndBackdate(t, db, "retryable", 3)
+
+	n, err := db.RecoverStaleJobs(ctx, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("RecoverStaleJobs: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("RecoverStaleJobs = %d, want 2", n)
+	}
+
+	dead := readStaleJobState(t, db, exhausted)
+	if dead.Status != "dead" {
+		t.Errorf("exhausted job status = %q, want dead", dead.Status)
+	}
+	if dead.FinishedAt == nil {
+		t.Error("exhausted job finished_at is NULL, want set")
+	}
+	if dead.LastError == nil || *dead.LastError == "" {
+		t.Error("exhausted job last_error is empty, want a message")
+	}
+	if dead.LockedBy != nil || dead.LockedAt != nil {
+		t.Errorf("exhausted job lock not cleared: locked_by=%v locked_at=%v", dead.LockedBy, dead.LockedAt)
+	}
+
+	pending := readStaleJobState(t, db, retryable)
+	if pending.Status != "pending" {
+		t.Errorf("retryable job status = %q, want pending", pending.Status)
+	}
+	if pending.FinishedAt != nil {
+		t.Errorf("retryable job finished_at = %v, want NULL", pending.FinishedAt)
+	}
+	if pending.LastError != nil {
+		t.Errorf("retryable job last_error = %q, want NULL", *pending.LastError)
+	}
+	if pending.LockedBy != nil || pending.LockedAt != nil {
+		t.Errorf("retryable job lock not cleared: locked_by=%v locked_at=%v", pending.LockedBy, pending.LockedAt)
+	}
+
+	// The dead job must not be claimable; the retryable one must be.
+	if job, err := db.ClaimJob(ctx, "exhausted", "worker-2"); err != nil {
+		t.Fatalf("ClaimJob(exhausted): %v", err)
+	} else if job != nil {
+		t.Error("dead job should not be claimable")
+	}
+	if job, err := db.ClaimJob(ctx, "retryable", "worker-2"); err != nil {
+		t.Fatalf("ClaimJob(retryable): %v", err)
+	} else if job == nil {
+		t.Error("retryable job should be claimable")
+	}
+}
+
 func TestRecoverStaleJobs_NoStaleJobs(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

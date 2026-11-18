@@ -52,7 +52,7 @@ func TestAdminPatchOrg_AtomicTierAndSuspend(t *testing.T) {
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: test server URL
 	if err != nil {
@@ -118,7 +118,7 @@ func TestAdminListOrgs_ResponseShape_MatchesPatch(t *testing.T) {
 
 	// GET /admin/orgs — capture response field keys from first item.
 	listReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/admin/orgs", nil)
-	listReq.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	listReq.AddCookie(requestCookie("access_token", token))
 	listResp, err := ts.Client().Do(listReq) //nolint:gosec // G704 false positive: test server URL
 	if err != nil {
 		t.Fatalf("list request: %v", err)
@@ -151,7 +151,7 @@ func TestAdminListOrgs_ResponseShape_MatchesPatch(t *testing.T) {
 		bytes.NewBufferString(patchBody))
 	patchReq.Header.Set("Content-Type", "application/json")
 	patchReq.Header.Set("X-Requested-By", "CVErt-Ops")
-	patchReq.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	patchReq.AddCookie(requestCookie("access_token", token))
 
 	patchResp, err := ts.Client().Do(patchReq) //nolint:gosec // G704 false positive: test server URL
 	if err != nil {

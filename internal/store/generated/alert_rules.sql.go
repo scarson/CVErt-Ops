@@ -18,23 +18,22 @@ const createAlertRule = `-- name: CreateAlertRule :one
 
 INSERT INTO alert_rules (
     org_id, name, logic, conditions, watchlist_ids, dsl_version,
-    has_epss_condition, is_epss_only, status, fire_on_non_material_changes
+    has_epss_condition, is_epss_only, status
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-RETURNING id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, fire_on_non_material_changes, created_at, updated_at, deleted_at
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, created_at, updated_at, deleted_at
 `
 
 type CreateAlertRuleParams struct {
-	OrgID                    uuid.UUID
-	Name                     string
-	Logic                    string
-	Conditions               json.RawMessage
-	WatchlistIds             []uuid.UUID
-	DslVersion               int32
-	HasEpssCondition         bool
-	IsEpssOnly               bool
-	Status                   string
-	FireOnNonMaterialChanges bool
+	OrgID            uuid.UUID
+	Name             string
+	Logic            string
+	Conditions       json.RawMessage
+	WatchlistIds     []uuid.UUID
+	DslVersion       int32
+	HasEpssCondition bool
+	IsEpssOnly       bool
+	Status           string
 }
 
 // ABOUTME: sqlc queries for alert rule, run, and event management.
@@ -50,7 +49,6 @@ func (q *Queries) CreateAlertRule(ctx context.Context, arg CreateAlertRuleParams
 		arg.HasEpssCondition,
 		arg.IsEpssOnly,
 		arg.Status,
-		arg.FireOnNonMaterialChanges,
 	)
 	var i AlertRule
 	err := row.Scan(
@@ -64,7 +62,6 @@ func (q *Queries) CreateAlertRule(ctx context.Context, arg CreateAlertRuleParams
 		&i.HasEpssCondition,
 		&i.IsEpssOnly,
 		&i.Status,
-		&i.FireOnNonMaterialChanges,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
@@ -73,7 +70,7 @@ func (q *Queries) CreateAlertRule(ctx context.Context, arg CreateAlertRuleParams
 }
 
 const getAlertRule = `-- name: GetAlertRule :one
-SELECT id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, fire_on_non_material_changes, created_at, updated_at, deleted_at FROM alert_rules
+SELECT id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, created_at, updated_at, deleted_at FROM alert_rules
 WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
 LIMIT 1
 `
@@ -97,7 +94,6 @@ func (q *Queries) GetAlertRule(ctx context.Context, arg GetAlertRuleParams) (Ale
 		&i.HasEpssCondition,
 		&i.IsEpssOnly,
 		&i.Status,
-		&i.FireOnNonMaterialChanges,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
@@ -139,9 +135,47 @@ func (q *Queries) GetUnresolvedAlertEventCVEs(ctx context.Context, arg GetUnreso
 	return items, nil
 }
 
+const insertActivationAlertEvents = `-- name: InsertActivationAlertEvents :execrows
+INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, feed_seq)
+SELECT $1::uuid, $2::uuid, m.cve_id, m.material_hash, true, true,
+       nextval('alert_event_feed_seq')
+FROM (
+    SELECT unnest($3::text[])         AS cve_id,
+           unnest($4::text[]) AS material_hash
+) m
+WHERE EXISTS (SELECT 1 FROM cves c WHERE c.cve_id = m.cve_id)
+ON CONFLICT (org_id, rule_id, cve_id, material_hash) DO NOTHING
+`
+
+type InsertActivationAlertEventsParams struct {
+	OrgID          uuid.UUID
+	RuleID         uuid.UUID
+	CveIds         []string
+	MaterialHashes []string
+}
+
+// Inserts an activation-scan page of matches as events with suppress_delivery = true,
+// pairing cve_ids and material_hashes by position. A pair whose event exists is skipped
+// (ON CONFLICT DO NOTHING), and so is a pair repeated in the page after its first row.
+// A CVE no longer in cves is skipped: a late-binding merge can rename a CVE after the
+// candidate query returned it, and an event under the old ID could never resolve.
+// The caller holds the org's feed lock (LockAlertEventFeed).
+func (q *Queries) InsertActivationAlertEvents(ctx context.Context, arg InsertActivationAlertEventsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertActivationAlertEvents,
+		arg.OrgID,
+		arg.RuleID,
+		pq.Array(arg.CveIds),
+		pq.Array(arg.MaterialHashes),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const insertAlertEvent = `-- name: InsertAlertEvent :one
-INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery)
-VALUES ($1, $2, $3, $4, true, $5)
+INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, feed_seq)
+VALUES ($1, $2, $3, $4, true, $5, nextval('alert_event_feed_seq'))
 ON CONFLICT (org_id, rule_id, cve_id, material_hash) DO NOTHING
 RETURNING id
 `
@@ -156,6 +190,7 @@ type InsertAlertEventParams struct {
 
 // Exactly-once insert: fan-out only when a new row is created.
 // Returns the new row id; empty result means the event already existed (DO NOTHING).
+// The caller holds the org's feed lock (LockAlertEventFeed).
 func (q *Queries) InsertAlertEvent(ctx context.Context, arg InsertAlertEventParams) (uuid.UUID, error) {
 	row := q.db.QueryRowContext(ctx, insertAlertEvent,
 		arg.OrgID,
@@ -200,7 +235,7 @@ func (q *Queries) InsertAlertRuleRun(ctx context.Context, arg InsertAlertRuleRun
 }
 
 const listActiveRulesForEPSS = `-- name: ListActiveRulesForEPSS :many
-SELECT id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, fire_on_non_material_changes, created_at, updated_at, deleted_at FROM alert_rules
+SELECT id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, created_at, updated_at, deleted_at FROM alert_rules
 WHERE status = 'active' AND has_epss_condition = true AND deleted_at IS NULL
 ORDER BY id
 `
@@ -227,7 +262,6 @@ func (q *Queries) ListActiveRulesForEPSS(ctx context.Context) ([]AlertRule, erro
 			&i.HasEpssCondition,
 			&i.IsEpssOnly,
 			&i.Status,
-			&i.FireOnNonMaterialChanges,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
@@ -246,7 +280,7 @@ func (q *Queries) ListActiveRulesForEPSS(ctx context.Context) ([]AlertRule, erro
 }
 
 const listActiveRulesForEvaluation = `-- name: ListActiveRulesForEvaluation :many
-SELECT id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, fire_on_non_material_changes, created_at, updated_at, deleted_at FROM alert_rules
+SELECT id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, created_at, updated_at, deleted_at FROM alert_rules
 WHERE status = 'active' AND is_epss_only = false AND deleted_at IS NULL
 ORDER BY id
 `
@@ -273,7 +307,6 @@ func (q *Queries) ListActiveRulesForEvaluation(ctx context.Context) ([]AlertRule
 			&i.HasEpssCondition,
 			&i.IsEpssOnly,
 			&i.Status,
-			&i.FireOnNonMaterialChanges,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
@@ -291,10 +324,109 @@ func (q *Queries) ListActiveRulesForEvaluation(ctx context.Context) ([]AlertRule
 	return items, nil
 }
 
-const resolveAlertEvent = `-- name: ResolveAlertEvent :exec
+const lockAlertEventFeed = `-- name: LockAlertEventFeed :exec
+SELECT pg_advisory_xact_lock(1178944836, hashtext($1::uuid::text))
+`
+
+// Takes the org's alert-event feed lock until the transaction ends. Run it before any
+// statement that draws a feed_seq, so positions become visible in position order.
+func (q *Queries) LockAlertEventFeed(ctx context.Context, orgID uuid.UUID) error {
+	_, err := q.db.ExecContext(ctx, lockAlertEventFeed, orgID)
+	return err
+}
+
+const reopenActivationAlertEvents = `-- name: ReopenActivationAlertEvents :execrows
+UPDATE alert_events ae
+SET last_match_state  = true,
+    suppress_delivery = true,
+    last_fired_at     = now(),
+    times_fired       = ae.times_fired + 1,
+    feed_seq          = nextval('alert_event_feed_seq')
+FROM (
+    SELECT unnest($3::text[])         AS cve_id,
+           unnest($4::text[]) AS material_hash
+) m
+WHERE ae.org_id = $1::uuid
+  AND ae.rule_id = $2::uuid
+  AND ae.cve_id = m.cve_id
+  AND ae.material_hash = m.material_hash
+  AND ae.last_match_state = false
+  AND EXISTS (SELECT 1 FROM cves c WHERE c.cve_id = m.cve_id)
+`
+
+type ReopenActivationAlertEventsParams struct {
+	OrgID          uuid.UUID
+	RuleID         uuid.UUID
+	CveIds         []string
+	MaterialHashes []string
+}
+
+// Reopens the resolved events of an activation-scan page, the set-based form of
+// ReopenAlertEvent with suppress_delivery = true. Pairs are matched by position as in
+// InsertActivationAlertEvents, with the same skip of CVEs no longer in cves. A pair
+// repeated in the page updates its event once. The caller holds the org's feed lock
+// (LockAlertEventFeed), taken before this statement locks the rows.
+func (q *Queries) ReopenActivationAlertEvents(ctx context.Context, arg ReopenActivationAlertEventsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, reopenActivationAlertEvents,
+		arg.OrgID,
+		arg.RuleID,
+		pq.Array(arg.CveIds),
+		pq.Array(arg.MaterialHashes),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const reopenAlertEvent = `-- name: ReopenAlertEvent :one
 UPDATE alert_events
-SET last_match_state = false
-WHERE rule_id = $1 AND org_id = $2 AND cve_id = $3
+SET last_match_state  = true,
+    suppress_delivery = $5,
+    last_fired_at     = now(),
+    times_fired       = times_fired + 1,
+    feed_seq          = nextval('alert_event_feed_seq')
+WHERE org_id = $1
+  AND rule_id = $2
+  AND cve_id = $3
+  AND material_hash = $4
+  AND last_match_state = false
+RETURNING id
+`
+
+type ReopenAlertEventParams struct {
+	OrgID            uuid.UUID
+	RuleID           uuid.UUID
+	CveID            string
+	MaterialHash     string
+	SuppressDelivery bool
+}
+
+// Reopens a resolved event when its CVE matches the rule again at the same material_hash.
+// Returns the id only when this statement changed the state, so fan-out stays exactly-once.
+// An empty result means the event is already open or does not exist.
+// The reopened event moves to a new feed position, so a feed poller sees the fire.
+// The caller holds the org's feed lock (LockAlertEventFeed), taken before this
+// statement locks the row.
+func (q *Queries) ReopenAlertEvent(ctx context.Context, arg ReopenAlertEventParams) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, reopenAlertEvent,
+		arg.OrgID,
+		arg.RuleID,
+		arg.CveID,
+		arg.MaterialHash,
+		arg.SuppressDelivery,
+	)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const resolveAlertEvent = `-- name: ResolveAlertEvent :many
+UPDATE alert_events
+SET last_match_state = false,
+    feed_seq         = nextval('alert_event_feed_seq')
+WHERE rule_id = $1 AND org_id = $2 AND cve_id = $3 AND last_match_state = true
+RETURNING suppress_delivery
 `
 
 type ResolveAlertEventParams struct {
@@ -303,10 +435,33 @@ type ResolveAlertEventParams struct {
 	CveID  string
 }
 
-// Marks a previously-matched event as no longer matching.
-func (q *Queries) ResolveAlertEvent(ctx context.Context, arg ResolveAlertEventParams) error {
-	_, err := q.db.ExecContext(ctx, resolveAlertEvent, arg.RuleID, arg.OrgID, arg.CveID)
-	return err
+// Marks the CVE's still-matching events as no longer matching and returns the
+// suppress_delivery flag of each one it changed. A row already resolved is left out,
+// and a concurrent resolver waits on the row lock and then finds nothing to change.
+// A resolved event moves to a new feed position, so a feed poller sees it close. The
+// caller holds the org's feed lock (LockAlertEventFeed), taken before this statement
+// locks the rows.
+func (q *Queries) ResolveAlertEvent(ctx context.Context, arg ResolveAlertEventParams) ([]bool, error) {
+	rows, err := q.db.QueryContext(ctx, resolveAlertEvent, arg.RuleID, arg.OrgID, arg.CveID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []bool
+	for rows.Next() {
+		var suppress_delivery bool
+		if err := rows.Scan(&suppress_delivery); err != nil {
+			return nil, err
+		}
+		items = append(items, suppress_delivery)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const setAlertRuleStatus = `-- name: SetAlertRuleStatus :exec
@@ -351,24 +506,22 @@ SET name                       = $3,
     watchlist_ids              = $6,
     has_epss_condition         = $7,
     is_epss_only               = $8,
-    fire_on_non_material_changes = $9,
-    status                     = $10,
+    status                     = $9,
     updated_at                 = now()
 WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
-RETURNING id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, fire_on_non_material_changes, created_at, updated_at, deleted_at
+RETURNING id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, created_at, updated_at, deleted_at
 `
 
 type UpdateAlertRuleParams struct {
-	ID                       uuid.UUID
-	OrgID                    uuid.UUID
-	Name                     string
-	Logic                    string
-	Conditions               json.RawMessage
-	WatchlistIds             []uuid.UUID
-	HasEpssCondition         bool
-	IsEpssOnly               bool
-	FireOnNonMaterialChanges bool
-	Status                   string
+	ID               uuid.UUID
+	OrgID            uuid.UUID
+	Name             string
+	Logic            string
+	Conditions       json.RawMessage
+	WatchlistIds     []uuid.UUID
+	HasEpssCondition bool
+	IsEpssOnly       bool
+	Status           string
 }
 
 // Updates mutable rule fields. has_epss_condition and is_epss_only are
@@ -384,7 +537,6 @@ func (q *Queries) UpdateAlertRule(ctx context.Context, arg UpdateAlertRuleParams
 		pq.Array(arg.WatchlistIds),
 		arg.HasEpssCondition,
 		arg.IsEpssOnly,
-		arg.FireOnNonMaterialChanges,
 		arg.Status,
 	)
 	var i AlertRule
@@ -399,7 +551,6 @@ func (q *Queries) UpdateAlertRule(ctx context.Context, arg UpdateAlertRuleParams
 		&i.HasEpssCondition,
 		&i.IsEpssOnly,
 		&i.Status,
-		&i.FireOnNonMaterialChanges,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,

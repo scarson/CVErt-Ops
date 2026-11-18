@@ -11,9 +11,11 @@ WHERE id = $1;
 -- Retry a single delivery: reset to pending only if currently failed.
 UPDATE notification_deliveries
 SET status        = 'pending',
+    batch_open    = false,
     attempt_count = 0,
     send_after    = now(),
     last_error    = NULL,
+    last_error_for_org = NULL,
     updated_at    = now()
 WHERE id = $1 AND status IN ('failed');
 
@@ -21,9 +23,11 @@ WHERE id = $1 AND status IN ('failed');
 -- Bulk retry: reset up to $1 failed deliveries back to pending.
 UPDATE notification_deliveries
 SET status        = 'pending',
+    batch_open    = false,
     attempt_count = 0,
     send_after    = now(),
     last_error    = NULL,
+    last_error_for_org = NULL,
     updated_at    = now()
 WHERE id IN (
     SELECT id FROM notification_deliveries

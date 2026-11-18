@@ -14,6 +14,25 @@ import (
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
+// DefaultQueryExecMode is how a deployment sends queries unless DB_QUERY_EXEC_MODE
+// says otherwise. pgx learns each statement's parameter types once per connection,
+// so a []byte reaches a jsonb column as JSON and a bytea column as bytes. Every
+// execution re-sends the SQL as an unnamed statement, so no statement outlives a
+// PgBouncer transaction-mode server assignment.
+const DefaultQueryExecMode = pgx.QueryExecModeCacheDescribe
+
+// ParseQueryExecMode returns the pgx mode a DB_QUERY_EXEC_MODE value names.
+func ParseQueryExecMode(name string) (pgx.QueryExecMode, error) {
+	switch name {
+	case "cache_describe":
+		return pgx.QueryExecModeCacheDescribe, nil
+	case "extended_protocol":
+		return pgx.QueryExecModeCacheStatement, nil
+	default:
+		return 0, fmt.Errorf("DB_QUERY_EXEC_MODE %q: must be cache_describe or extended_protocol", name)
+	}
+}
+
 // Store is the central data access object. Callers should use the domain
 // methods on the embedded sub-types (CVEStore, FeedStore, JobStore) rather
 // than the raw queries or pool directly.
@@ -99,7 +118,31 @@ func (s *Store) withBypassRawTx(ctx context.Context, fn func(*sql.Tx) error) err
 // values; formatting is safe because orgID is a typed uuid.UUID, not
 // user-supplied text.
 func (s *Store) withOrgRawTx(ctx context.Context, orgID uuid.UUID, fn func(*sql.Tx) error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	return s.withOrgRawTxOptions(ctx, orgID, nil, fn)
+}
+
+// withOrgSnapshotTx is withOrgRawTx in one read-only REPEATABLE READ snapshot, for
+// reads that must not mix states from before and after a concurrent merge.
+//
+// JIT compilation is off inside it. Its statements are the version check
+// lookups, whose estimated cost passes PostgreSQL's JIT thresholds once a
+// request has a few keys, and compiling them costs more than it saves
+// (measurements in section 9 of
+// dev/plans/2026-11-08-version-check-endpoint-design.md).
+func (s *Store) withOrgSnapshotTx(ctx context.Context, orgID uuid.UUID, fn func(*sql.Tx) error) error {
+	opts := &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}
+	return s.withOrgRawTxOptions(ctx, orgID, opts, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "SET LOCAL jit = off"); err != nil {
+			return fmt.Errorf("set jit off: %w", err)
+		}
+		return fn(tx)
+	})
+}
+
+// withOrgRawTxOptions is withOrgRawTx with the transaction begun with opts; nil
+// gives the default isolation level, read-write.
+func (s *Store) withOrgRawTxOptions(ctx context.Context, orgID uuid.UUID, opts *sql.TxOptions, fn func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, opts)
 	if err != nil {
 		return fmt.Errorf("begin org tx: %w", err)
 	}

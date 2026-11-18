@@ -7,7 +7,8 @@
 Always back up before upgrading:
 
 ```bash
-pg_dump -Fc -h localhost -U cvert cvert_ops > backup_pre_upgrade_$(date +%Y%m%d_%H%M%S).dump
+docker compose -f docker/compose.yml -f docker/compose.prod.yml --env-file .env \
+  exec -T postgres pg_dump -Fc -U cvert_ops cvert_ops > backup_pre_upgrade_$(date +%Y%m%d_%H%M%S).dump
 ```
 
 ### 2. Pull the Latest Image
@@ -76,6 +77,18 @@ docker compose run --rm migrate \
 
 Repeat until you reach the pre-upgrade migration version.
 
+If you rolled back migration 55 on a Docker Compose install, restore the table privileges it revoked. Compose installs held these before migration 55 through the default privileges in `docker/init-app-role.sh`. Without them, `/readyz` returns 503, and security events, retention and CVE alias promotion fail with `permission denied`:
+
+```bash
+docker compose -f docker/compose.yml -f docker/compose.prod.yml --env-file .env \
+  exec -T postgres psql -U cvert_ops -d cvert_ops -v ON_ERROR_STOP=1 -c "
+    GRANT SELECT ON schema_migrations TO cvert_ops_app;
+    GRANT SELECT, INSERT, DELETE ON security_events TO cvert_ops_app;
+    GRANT DELETE ON ai_usage_counters, cves, cve_search_index TO cvert_ops_app;"
+```
+
+Other installs did not hold these privileges before migration 55 and can skip this step.
+
 ### 3. Restore the Previous Image
 
 ```bash
@@ -89,12 +102,15 @@ docker compose -f docker/compose.yml -f docker/compose.prod.yml \
 If migration rollback doesn't cleanly restore the schema:
 
 ```bash
-# Drop and recreate the database
-psql -h localhost -U postgres -c "DROP DATABASE cvert_ops;"
-psql -h localhost -U postgres -c "CREATE DATABASE cvert_ops OWNER cvert;"
+COMPOSE="docker compose -f docker/compose.yml -f docker/compose.prod.yml --env-file .env"
+
+# Start only Postgres, then drop and recreate the database
+$COMPOSE up -d postgres
+$COMPOSE exec -T postgres psql -U cvert_ops -d postgres -c "DROP DATABASE cvert_ops;"
+$COMPOSE exec -T postgres psql -U cvert_ops -d postgres -c "CREATE DATABASE cvert_ops OWNER cvert_ops;"
 
 # Restore from backup
-pg_restore -h localhost -U cvert -d cvert_ops backup_pre_upgrade.dump
+$COMPOSE exec -T postgres pg_restore -U cvert_ops -d cvert_ops < backup_pre_upgrade.dump
 
 # Restart the previous version
 docker compose -f docker/compose.yml -f docker/compose.prod.yml \

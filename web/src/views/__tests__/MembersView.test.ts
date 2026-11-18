@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mount, flushPromises, VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import MembersView from '@/views/MembersView.vue'
 
 const mockPush = vi.fn<(...args: unknown[]) => unknown>()
 
@@ -132,7 +133,6 @@ async function openRoleSelectAndGetOptions(): Promise<string[]> {
 let wrapper: VueWrapper
 
 async function mountView() {
-  const { default: MembersView } = await import('@/views/MembersView.vue')
   wrapper = mount(MembersView, {
     attachTo: document.body,
   })

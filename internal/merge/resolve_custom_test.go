@@ -3,6 +3,7 @@
 package merge
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/scarson/cvert-ops/internal/feed"
@@ -117,27 +118,17 @@ func TestResolve_CustomSourcePackagesInUnion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	// Expect 2 packages: lodash (from NVD, wins dedup) and express (unique from custom).
-	if len(r.AffectedPackages) != 2 {
-		t.Fatalf("AffectedPackages count = %d, want 2", len(r.AffectedPackages))
+	// Both lodash ranges survive because their fixes differ, and express is unique to custom.
+	want := [][3]string{
+		{"express", "4.0.0", "4.18.2"},
+		{"lodash", "4.0.0", "4.17.20"},
+		{"lodash", "4.0.0", "4.17.21"},
 	}
-
-	pkgMap := map[string]feed.AffectedPackage{}
+	var got [][3]string
 	for _, pkg := range r.AffectedPackages {
-		pkgMap[pkg.PackageName] = pkg
+		got = append(got, [3]string{pkg.PackageName, pkg.Introduced, pkg.Fixed})
 	}
-
-	// NVD wins the lodash dedup because NVD is higher in pkgPriority than custom.
-	lodash, ok := pkgMap["lodash"]
-	if !ok {
-		t.Fatal("missing lodash in AffectedPackages")
-	}
-	if lodash.Fixed != "4.17.21" {
-		t.Errorf("lodash.Fixed = %q, want %q (NVD should win over custom source)", lodash.Fixed, "4.17.21")
-	}
-
-	// express is unique to custom source, so it should be present.
-	if _, ok := pkgMap["express"]; !ok {
-		t.Error("missing express in AffectedPackages (custom source unique package)")
+	if !slices.Equal(got, want) {
+		t.Errorf("AffectedPackages = %v, want %v", got, want)
 	}
 }

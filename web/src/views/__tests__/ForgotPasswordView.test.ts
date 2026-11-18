@@ -26,12 +26,12 @@ vi.mock('@/lib/api/client', () => ({
 }))
 
 import { useAuthStore } from '@/stores/auth'
+import ForgotPasswordView from '@/views/ForgotPasswordView.vue'
 
 const mockFetch = vi.fn<(...args: unknown[]) => unknown>()
 vi.stubGlobal('fetch', mockFetch)
 
 async function mountForgotPassword() {
-  const { default: ForgotPasswordView } = await import('@/views/ForgotPasswordView.vue')
   return mount(ForgotPasswordView)
 }
 

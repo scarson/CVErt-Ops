@@ -5,11 +5,14 @@ package store_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/store"
+	generated "github.com/scarson/cvert-ops/internal/store/generated"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -188,6 +191,83 @@ func TestInsertAlertEvent_DeduplicatesOnConflict(t *testing.T) {
 	}
 }
 
+func TestReopenAlertEvent(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org := s.MustCreateOrg(t, ctx, "ARReopen")
+	r := mustCreateAlertRule(t, s, ctx, org.ID, "ReopenRule")
+	const cveID, hash = "CVE-2024-0200", "reopen-hash"
+
+	eventID, err := s.InsertAlertEvent(ctx, org.ID, r.ID, cveID, hash, true)
+	if err != nil {
+		t.Fatalf("setup: InsertAlertEvent: %v", err)
+	}
+
+	getEvent := func() generated.AlertEvent {
+		t.Helper()
+		events, err := s.ListAlertEvents(ctx, org.ID, store.ListAlertEventsParams{Limit: 10})
+		if err != nil {
+			t.Fatalf("ListAlertEvents: %v", err)
+		}
+		if len(events) != 1 {
+			t.Fatalf("events = %d, want 1", len(events))
+		}
+		return events[0].AlertEvent
+	}
+	reopen := func(materialHash string, suppressDelivery bool) uuid.UUID {
+		t.Helper()
+		id, err := s.ReopenAlertEvent(ctx, org.ID, r.ID, cveID, materialHash, suppressDelivery)
+		if err != nil {
+			t.Fatalf("ReopenAlertEvent: %v", err)
+		}
+		return id
+	}
+
+	if id := reopen(hash, false); id != uuid.Nil {
+		t.Errorf("reopen of an open event returned %v, want uuid.Nil", id)
+	}
+	if e := getEvent(); e.TimesFired != 1 || !e.SuppressDelivery {
+		t.Errorf("open event changed: times_fired=%d suppress_delivery=%v", e.TimesFired, e.SuppressDelivery)
+	}
+
+	if _, err := s.ResolveAlertEvent(ctx, r.ID, org.ID, cveID); err != nil {
+		t.Fatalf("ResolveAlertEvent: %v", err)
+	}
+
+	if id := reopen("other-hash", false); id != uuid.Nil {
+		t.Errorf("reopen at another material_hash returned %v, want uuid.Nil", id)
+	}
+	if e := getEvent(); e.LastMatchState {
+		t.Error("reopen at another material_hash changed the event")
+	}
+
+	if id := reopen(hash, false); id != eventID {
+		t.Errorf("reopen returned %v, want %v", id, eventID)
+	}
+	e := getEvent()
+	if !e.LastMatchState {
+		t.Error("last_match_state = false after reopen, want true")
+	}
+	if e.SuppressDelivery {
+		t.Error("suppress_delivery = true after a delivered reopen, want false")
+	}
+	if e.TimesFired != 2 {
+		t.Errorf("times_fired = %d, want 2", e.TimesFired)
+	}
+	if !e.LastFiredAt.After(e.FirstFiredAt) {
+		t.Errorf("last_fired_at = %v, want after first_fired_at %v", e.LastFiredAt, e.FirstFiredAt)
+	}
+
+	if id := reopen(hash, false); id != uuid.Nil {
+		t.Errorf("second reopen returned %v, want uuid.Nil", id)
+	}
+	if e := getEvent(); e.TimesFired != 2 {
+		t.Errorf("times_fired after second reopen = %d, want 2", e.TimesFired)
+	}
+}
+
 func TestResolveAlertEvent(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
@@ -209,7 +289,7 @@ func TestResolveAlertEvent(t *testing.T) {
 		t.Errorf("unresolved before = %v, want [CVE-2024-0002]", unresolvedBefore)
 	}
 
-	if err := s.ResolveAlertEvent(ctx, r.ID, org.ID, "CVE-2024-0002"); err != nil {
+	if _, err := s.ResolveAlertEvent(ctx, r.ID, org.ID, "CVE-2024-0002"); err != nil {
 		t.Fatalf("ResolveAlertEvent: %v", err)
 	}
 
@@ -219,6 +299,100 @@ func TestResolveAlertEvent(t *testing.T) {
 	}
 	if len(unresolvedAfter) != 0 {
 		t.Errorf("unresolved after = %v, want []", unresolvedAfter)
+	}
+}
+
+func TestResolveAlertEvent_ReportsNotifiableTransition(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	org := s.MustCreateOrg(t, ctx, "ResolveNotifyOrg")
+
+	tests := []struct {
+		name       string
+		suppressed []bool // one alert_events row per entry, each with its own material_hash
+		wantNotify bool
+	}{
+		{name: "delivered event", suppressed: []bool{false}, wantNotify: true},
+		{name: "several delivered events for one CVE", suppressed: []bool{false, false}, wantNotify: true},
+		{name: "activation baseline only", suppressed: []bool{true}, wantNotify: false},
+		{name: "activation baseline then a delivered event", suppressed: []bool{true, false}, wantNotify: true},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := mustCreateAlertRule(t, s, ctx, org.ID, "ResolveNotifyRule "+tc.name)
+			cveID := fmt.Sprintf("CVE-2024-%04d", 7000+i)
+			for j, suppressed := range tc.suppressed {
+				if _, err := s.InsertAlertEvent(ctx, org.ID, r.ID, cveID, fmt.Sprintf("hash%d", j), suppressed); err != nil {
+					t.Fatalf("setup: InsertAlertEvent: %v", err)
+				}
+			}
+
+			notify, err := s.ResolveAlertEvent(ctx, r.ID, org.ID, cveID)
+			if err != nil {
+				t.Fatalf("ResolveAlertEvent: %v", err)
+			}
+			if notify != tc.wantNotify {
+				t.Errorf("first resolve notify = %v, want %v", notify, tc.wantNotify)
+			}
+			unresolved, err := s.GetUnresolvedAlertEventCVEs(ctx, r.ID, org.ID)
+			if err != nil {
+				t.Fatalf("GetUnresolvedAlertEventCVEs: %v", err)
+			}
+			if len(unresolved) != 0 {
+				t.Errorf("unresolved after resolve = %v, want []", unresolved)
+			}
+
+			notify, err = s.ResolveAlertEvent(ctx, r.ID, org.ID, cveID)
+			if err != nil {
+				t.Fatalf("second ResolveAlertEvent: %v", err)
+			}
+			if notify {
+				t.Error("second resolve notify = true, want false: the transition already happened")
+			}
+		})
+	}
+}
+
+// TestResolveAlertEvent_ConcurrentResolversNotifyOnce covers the realtime and batch paths
+// resolving the same event at the same moment.
+func TestResolveAlertEvent_ConcurrentResolversNotifyOnce(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	org := s.MustCreateOrg(t, ctx, "ResolveRaceOrg")
+	r := mustCreateAlertRule(t, s, ctx, org.ID, "ResolveRaceRule")
+
+	const cveID = "CVE-2024-7100"
+	if _, err := s.InsertAlertEvent(ctx, org.ID, r.ID, cveID, "hash", false); err != nil {
+		t.Fatalf("setup: InsertAlertEvent: %v", err)
+	}
+
+	const resolvers = 8
+	results := make(chan bool, resolvers)
+	var wg sync.WaitGroup
+	for range resolvers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			notify, err := s.ResolveAlertEvent(ctx, r.ID, org.ID, cveID)
+			if err != nil {
+				t.Errorf("ResolveAlertEvent: %v", err)
+			}
+			results <- notify
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	var notified int
+	for notify := range results {
+		if notify {
+			notified++
+		}
+	}
+	if notified != 1 {
+		t.Errorf("resolvers told to notify = %d, want 1", notified)
 	}
 }
 
@@ -577,7 +751,7 @@ func TestListAlertEvents_LastMatchStateFilter(t *testing.T) {
 	}
 
 	// Resolve one event.
-	_ = s.ResolveAlertEvent(ctx, r.ID, org.ID, "CVE-2024-0030")
+	_, _ = s.ResolveAlertEvent(ctx, r.ID, org.ID, "CVE-2024-0030")
 
 	// Filter for unresolved (last_match_state = true).
 	matchTrue := true
@@ -635,6 +809,50 @@ func TestListAlertEvents_SinceFilter(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Errorf("since filter: got %d events, want 0", len(events))
+	}
+}
+
+// TestListAlertEvents_SinceCountsMostRecentFire returns an event that first fired before
+// since but reopened after it, and leaves out one whose most recent fire is before since.
+func TestListAlertEvents_SinceCountsMostRecentFire(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org := s.MustCreateOrg(t, ctx, "ARSinceReopenOrg")
+	r := mustCreateAlertRule(t, s, ctx, org.ID, "SinceReopenRule")
+
+	now := time.Now().UTC()
+	firstFired := now.Add(-48 * time.Hour)
+	for _, e := range []struct {
+		cveID     string
+		lastFired time.Time
+	}{
+		{"CVE-2024-0041", now},
+		{"CVE-2024-0042", firstFired},
+	} {
+		if _, err := s.Pool().Exec(ctx,
+			`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at, feed_seq)
+			 VALUES ($1, $2, $3, 'h', $4, $5, nextval('alert_event_feed_seq'))`,
+			org.ID, r.ID, e.cveID, firstFired, e.lastFired,
+		); err != nil {
+			t.Fatalf("seed alert_events: %v", err)
+		}
+	}
+
+	since := now.Add(-time.Hour)
+	events, err := s.ListAlertEvents(ctx, org.ID, store.ListAlertEventsParams{
+		Since: &since,
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("ListAlertEvents(since): %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("since filter: got %d events, want 1 (the event reopened after since)", len(events))
+	}
+	if events[0].CveID != "CVE-2024-0041" {
+		t.Errorf("since filter: cve = %s, want CVE-2024-0041", events[0].CveID)
 	}
 }
 

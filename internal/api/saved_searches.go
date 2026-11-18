@@ -4,11 +4,14 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/validation"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
@@ -37,7 +40,7 @@ type savedSearchEntry struct {
 	ID        string          `json:"id"`
 	Name      string          `json:"name"`
 	QueryJSON json.RawMessage `json:"query_json"`
-	NlQuery   *string         `json:"nl_query,omitempty"`
+	NlQuery   *string         `json:"nl_query,omitzero" nullable:"false"`
 	IsShared  bool            `json:"is_shared"`
 	CreatedAt string          `json:"created_at"`
 	UpdatedAt string          `json:"updated_at"`
@@ -59,18 +62,28 @@ func savedSearchToEntry(row *store.SavedSearchRow) savedSearchEntry {
 	return entry
 }
 
-// validateDSL parses and validates a DSL query JSON blob.
-// Returns an error message and HTTP status code if invalid.
-func validateDSL(queryJSON json.RawMessage) (string, int) {
+// validateDSL parses and validates a DSL query JSON blob. It returns the 422
+// error detail for an invalid query, or nil. A key the DSL does not define is
+// located like the request body's own unknown members: at
+// body.query_json.conditions[i].<key>, or body.query_json.<key> for a key of
+// the query object.
+func validateDSL(queryJSON json.RawMessage) *huma.ErrorDetail {
 	rule, err := dsl.Parse(queryJSON)
+	if unknown, ok := errors.AsType[*dsl.UnknownKeyError](err); ok {
+		loc := "body.query_json." + unknown.Key
+		if unknown.Index >= 0 {
+			loc = "body.query_json.conditions[" + strconv.Itoa(unknown.Index) + "]." + unknown.Key
+		}
+		return &huma.ErrorDetail{Message: validation.MsgUnexpectedProperty, Location: loc}
+	}
 	if err != nil {
-		return "invalid query_json: " + err.Error(), http.StatusUnprocessableEntity
+		return &huma.ErrorDetail{Message: "invalid query_json: " + err.Error(), Location: "body.query_json"}
 	}
 	valErrs, _, _ := dsl.Validate(rule, false)
 	if hasBlockingErrors(valErrs) {
-		return "query_json validation failed", http.StatusUnprocessableEntity
+		return &huma.ErrorDetail{Message: "query_json validation failed", Location: "body.query_json"}
 	}
-	return "", 0
+	return nil
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────────────
@@ -85,8 +98,7 @@ func (srv *Server) createSavedSearchHandler(w http.ResponseWriter, r *http.Reque
 	userID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
 
 	var req createSavedSearchRequest
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -112,9 +124,8 @@ func (srv *Server) createSavedSearchHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if errMsg, status := validateDSL(req.QueryJSON); errMsg != "" {
-		writeProblemWithErrors(w, status, "validation failed",
-			&huma.ErrorDetail{Message: errMsg, Location: "body.query_json"})
+	if detail := validateDSL(req.QueryJSON); detail != nil {
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", detail)
 		return
 	}
 
@@ -256,8 +267,7 @@ func (srv *Server) patchSavedSearchHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	var req patchSavedSearchRequest
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -292,9 +302,8 @@ func (srv *Server) patchSavedSearchHandler(w http.ResponseWriter, r *http.Reques
 	}
 	if req.QueryJSON != nil {
 		// Validate the provided DSL.
-		if errMsg, status := validateDSL(*req.QueryJSON); errMsg != "" {
-			writeProblemWithErrors(w, status, "validation failed",
-				&huma.ErrorDetail{Message: errMsg, Location: "body.query_json"})
+		if detail := validateDSL(*req.QueryJSON); detail != nil {
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", detail)
 			return
 		}
 		params.QueryJSON = *req.QueryJSON
@@ -418,6 +427,10 @@ func (srv *Server) executeSavedSearchHandler(w http.ResponseWriter, r *http.Requ
 
 	// Parse pagination params from query string.
 	cursor := r.URL.Query().Get("cursor")
+	if store.ValidateDSLCursor(cursor) != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid cursor")
+		return
+	}
 	limit, ok2 := parseLimitParam(w, r, 25, 100)
 	if !ok2 {
 		return
@@ -446,6 +459,12 @@ func (srv *Server) executeSavedSearchHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	results, nextCursor, execErr := srv.store.ExecuteDSLQuery(r.Context(), compiled, cursor, limit)
+	if errors.Is(execErr, store.ErrInvalidCursor) {
+		// Backstop: ValidateDSLCursor has already refused any cursor that
+		// ExecuteDSLQuery cannot decode.
+		writeProblem(w, http.StatusBadRequest, "invalid cursor")
+		return
+	}
 	if execErr != nil {
 		slog.ErrorContext(r.Context(), "saved search: execute dsl query", "error", execErr)
 		writeProblem(w, http.StatusInternalServerError, "internal error")

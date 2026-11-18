@@ -5,8 +5,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
+	"io"
 	"net/http"
+	"reflect"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
@@ -23,17 +26,98 @@ func noopHandler[I, O any]() func(context.Context, *I) (*O, error) {
 	}
 }
 
+// huma's schema validation and the request body decoder must agree on member
+// names. The decoder (newHumaConfig's request format) matches names exactly and
+// ignores a name the schema does not define, so validation must match exactly
+// too. Otherwise a case-variant name such as "Password" passes validation in
+// place of "password" and the decoder drops it, handing the operation an empty
+// value that validation never checked. ValidateStrictCasing is a huma package
+// variable read on every request, so it is set once for the process here rather
+// than in a constructor.
+//
+// Responses encode nil slices as [] (responseJSONOptions and writeJSON), so the
+// spec documents arrays as non-nullable and generated clients type them without
+// null. DefaultArrayNullable is read while huma builds schemas, so it must be
+// set before any operation is registered.
+//
+// huma.NewError builds every problem response huma writes, and is wrapped by
+// problemWithoutValues so that no response echoes request data.
+func init() {
+	huma.ValidateStrictCasing = true
+	huma.DefaultArrayNullable = false
+	huma.NewError = problemWithoutValues(huma.NewError)
+}
+
+// problemWithoutValues wraps a huma error constructor so that the problem it
+// returns has no errors[].value. huma fills that member with the request data it
+// refused: the raw body when the body does not decode, the refused object or
+// member when schema validation fails, and the parameter value for a refused
+// path, query or header parameter. For auth bodies and invitation paths that is
+// a password or token, which any proxy, APM agent or log that captures problem
+// responses would then store. Each error keeps its location and message, which
+// name the defect; the sender already has the data it sent.
+func problemWithoutValues(newError func(int, string, ...error) huma.StatusError) func(int, string, ...error) huma.StatusError {
+	return func(status int, msg string, errs ...error) huma.StatusError {
+		err := newError(status, msg, errs...)
+		if model, ok := err.(*huma.ErrorModel); ok {
+			for _, detail := range model.Errors {
+				if detail != nil {
+					detail.Value = nil
+				}
+			}
+		}
+		return err
+	}
+}
+
+// newHumaConfig returns the configuration shared by the production and spec-only
+// Huma APIs. Huma derives schema examples from it, so mergeSpecPaths would see
+// differing schemas if the two APIs were configured differently.
+func newHumaConfig() huma.Config {
+	cfg := huma.DefaultConfig("CVErt Ops API", "0.1.0")
+	cfg.Info.Description = "Vulnerability intelligence and alerting API"
+	// Spec paths are relative to where the API router is mounted. Clients and the
+	// documentation page read the prefix from here.
+	cfg.Servers = []*huma.Server{{URL: "/api/v1"}}
+	// Request bodies decode with encoding/json/v2's defaults, as chi bodies do in
+	// decodeJSON: duplicate names and invalid UTF-8 are refused, and names match
+	// exactly. Unknown members, case variants of a defined name among them, are
+	// left to huma's schema validation, which matches names exactly because init
+	// sets huma.ValidateStrictCasing, and reports them with huma's locations.
+	// Responses encode with responseJSONOptions, as writeJSON does: nil slices
+	// and maps as [] and {}, sorted map keys, invalid UTF-8 replaced, and a
+	// trailing newline. The value is encoded in full before any byte is written,
+	// so a failed encoding writes nothing and the body holds only huma's error
+	// text. huma has already sent the operation's status by then.
+	// huma looks a format up by its media type, or by the suffix of a "+json"
+	// media type, so these two keys cover every JSON body huma reads or writes.
+	jsonFormat := huma.Format{
+		Marshal: func(w io.Writer, v any) error {
+			body, err := jsonv2.Marshal(v, responseJSONOptions)
+			if err != nil {
+				return err
+			}
+			_, err = w.Write(append(body, '\n'))
+			return err
+		},
+		Unmarshal: func(data []byte, v any) error { return jsonv2.Unmarshal(data, v) },
+	}
+	cfg.Formats = map[string]huma.Format{"application/json": jsonFormat, "json": jsonFormat}
+	return cfg
+}
+
 // newSpecOnlyAPI creates a throwaway Huma API instance for spec generation.
 func newSpecOnlyAPI() huma.API {
 	r := chi.NewMux()
-	return humachi.New(r, huma.DefaultConfig("CVErt Ops Spec-Only", "0.0.0"))
+	return humachi.New(r, newHumaConfig())
 }
 
 // registerAllSpecOps registers spec-only declarations for all Chi-backed
-// route families. Called during OpenAPI spec generation to produce a merged spec.
+// route families, which Handler merges into the served spec.
 func registerAllSpecOps(api huma.API) {
 	registerGroupsSpecOps(api)
 	registerOrgsSpecOps(api)
+	registerOrgMFASpecOps(api)
 	registerAPIKeysSpecOps(api)
 	registerWatchlistsSpecOps(api)
 	registerAlertRulesSpecOps(api)
@@ -43,10 +127,13 @@ func registerAllSpecOps(api huma.API) {
 	registerReportsSpecOps(api)
 	registerSavedSearchesSpecOps(api)
 	registerSSOSpecOps(api)
+	registerSCIMConfigSpecOps(api)
 	registerAuditLogSpecOps(api)
 	registerAISpecOps(api)
 	registerIngestSpecOps(api)
+	registerCheckSpecOps(api)
 	registerOrgTierSpecOps(api)
+	registerWhoamiSpecOps(api)
 	registerAdminFeedsSpecOps(api)
 	registerAdminSystemSpecOps(api)
 	registerAdminReloadSpecOps(api)
@@ -168,11 +255,12 @@ type specRemoveGroupMemberInput struct {
 
 func registerGroupsSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
-		OperationID: "create-group",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/groups",
-		Summary:     "Create a group",
-		Tags:        []string{"Groups"},
+		OperationID:   "create-group",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/groups",
+		Summary:       "Create a group",
+		Tags:          []string{"Groups"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateGroupInput, specCreateGroupOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -285,7 +373,8 @@ type specCreateInvitationInput struct {
 	Body  createInvitationBody `json:"body"`
 }
 type specCreateInvitationOutput struct {
-	Body invitationEntry
+	Location string `header:"Location"`
+	Body     invitationEntry
 }
 
 type specListInvitationsInput struct {
@@ -312,11 +401,12 @@ type specResendInvitationOutput struct {
 
 func registerOrgsSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
-		OperationID: "create-org",
-		Method:      http.MethodPost,
-		Path:        "/orgs",
-		Summary:     "Create an organization",
-		Tags:        []string{"Organizations"},
+		OperationID:   "create-org",
+		Method:        http.MethodPost,
+		Path:          "/orgs",
+		Summary:       "Create an organization",
+		Tags:          []string{"Organizations"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateOrgInput, specCreateOrgOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -360,11 +450,12 @@ func registerOrgsSpecOps(api huma.API) {
 	}, noopHandler[specRemoveMemberInput, struct{}]())
 
 	huma.Register(api, huma.Operation{
-		OperationID: "create-invitation",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/invitations",
-		Summary:     "Create an invitation",
-		Tags:        []string{"Invitations"},
+		OperationID:   "create-invitation",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/invitations",
+		Summary:       "Create an invitation",
+		Tags:          []string{"Invitations"},
+		DefaultStatus: http.StatusAccepted,
 	}, noopHandler[specCreateInvitationInput, specCreateInvitationOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -390,6 +481,74 @@ func registerOrgsSpecOps(api huma.API) {
 		Summary:     "Resend an invitation email",
 		Tags:        []string{"Invitations"},
 	}, noopHandler[specResendInvitationInput, specResendInvitationOutput]())
+}
+
+// ── Org MFA administration spec-only declarations ────────────────────────────
+
+type specMemberActionInput struct {
+	OrgID  string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	UserID string `path:"user_id" format:"uuid" doc:"Target member's user ID"`
+}
+type specMemberActionOutput struct {
+	Body struct {
+		Status string `json:"status"`
+		UserID string `json:"user_id"`
+	}
+}
+
+type specUpdateOrgMFASettingsInput struct {
+	OrgID string                   `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Body  updateOrgMFASettingsBody `json:"body"`
+}
+type specUpdateOrgMFASettingsOutput struct {
+	Body struct {
+		MFARequiredAll           bool  `json:"mfa_required_all"`
+		MFARememberDeviceAllowed bool  `json:"mfa_remember_device_allowed"`
+		MFARememberDeviceDays    int32 `json:"mfa_remember_device_days"`
+	}
+}
+
+func registerOrgMFASpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "reset-member-mfa",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/members/{user_id}/reset-mfa",
+		Summary:     "Reset a member's MFA",
+		Tags:        []string{"Members"},
+	}, noopHandler[specMemberActionInput, specMemberActionOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "force-member-password-reset",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/members/{user_id}/force-password-reset",
+		Summary:     "Force a member to reset their password",
+		Tags:        []string{"Members"},
+	}, noopHandler[specMemberActionInput, specMemberActionOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "require-member-mfa",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/members/{user_id}/require-mfa",
+		Summary:       "Require MFA for a member",
+		Tags:          []string{"Members"},
+		DefaultStatus: http.StatusCreated,
+	}, noopHandler[specMemberActionInput, specMemberActionOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "unrequire-member-mfa",
+		Method:      http.MethodDelete,
+		Path:        "/orgs/{org_id}/members/{user_id}/require-mfa",
+		Summary:     "Remove a member's MFA requirement",
+		Tags:        []string{"Members"},
+	}, noopHandler[specMemberActionInput, struct{}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "update-org-mfa-settings",
+		Method:      http.MethodPatch,
+		Path:        "/orgs/{org_id}/mfa-settings",
+		Summary:     "Update organization MFA settings",
+		Tags:        []string{"Organizations"},
+	}, noopHandler[specUpdateOrgMFASettingsInput, specUpdateOrgMFASettingsOutput]())
 }
 
 // ── API Keys spec-only declarations ───────────────────────────────────────
@@ -419,11 +578,12 @@ type specRevokeAPIKeyInput struct {
 
 func registerAPIKeysSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
-		OperationID: "create-api-key",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/api-keys",
-		Summary:     "Create an API key",
-		Tags:        []string{"API Keys"},
+		OperationID:   "create-api-key",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/api-keys",
+		Summary:       "Create an API key",
+		Tags:          []string{"API Keys"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateAPIKeyInput, specCreateAPIKeyOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -510,6 +670,15 @@ type specListWatchlistItemsOutput struct {
 	}
 }
 
+type specReplaceWatchlistItemsInput struct {
+	OrgID       string                    `path:"org_id" format:"uuid" doc:"Organization ID"`
+	WatchlistID string                    `path:"id" format:"uuid" doc:"Watchlist ID"`
+	Body        replaceWatchlistItemsBody `json:"body"`
+}
+type specReplaceWatchlistItemsOutput struct {
+	Body watchlistItemsReplaced
+}
+
 type specDeleteWatchlistItemInput struct {
 	OrgID       string `path:"org_id" format:"uuid" doc:"Organization ID"`
 	WatchlistID string `path:"id" format:"uuid" doc:"Watchlist ID"`
@@ -518,11 +687,12 @@ type specDeleteWatchlistItemInput struct {
 
 func registerWatchlistsSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
-		OperationID: "create-watchlist",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/watchlists",
-		Summary:     "Create a watchlist",
-		Tags:        []string{"Watchlists"},
+		OperationID:   "create-watchlist",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/watchlists",
+		Summary:       "Create a watchlist",
+		Tags:          []string{"Watchlists"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateWatchlistInput, specCreateWatchlistOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -558,11 +728,12 @@ func registerWatchlistsSpecOps(api huma.API) {
 	}, noopHandler[specDeleteWatchlistInput, struct{}]())
 
 	huma.Register(api, huma.Operation{
-		OperationID: "create-watchlist-item",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/watchlists/{id}/items",
-		Summary:     "Add an item to a watchlist",
-		Tags:        []string{"Watchlists"},
+		OperationID:   "create-watchlist-item",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/watchlists/{id}/items",
+		Summary:       "Add an item to a watchlist",
+		Tags:          []string{"Watchlists"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateWatchlistItemInput, specCreateWatchlistItemOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -572,6 +743,18 @@ func registerWatchlistsSpecOps(api huma.API) {
 		Summary:     "List watchlist items",
 		Tags:        []string{"Watchlists"},
 	}, noopHandler[specListWatchlistItemsInput, specListWatchlistItemsOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "replace-watchlist-items",
+		Method:      http.MethodPut,
+		Path:        "/orgs/{org_id}/watchlists/{id}/items",
+		Summary:     "Replace all items in a watchlist",
+		Description: "Makes the watchlist hold exactly the items in the request, in one transaction, " +
+			"and returns how many were added, removed and left unchanged. Repeating a request changes nothing. " +
+			"Takes at most 10000 items within the 1 MiB request limit. Rules bound to the watchlist stay active and " +
+			"are not re-activated: their next evaluation run alerts on an added CVE item that already matches them.",
+		Tags: []string{"Watchlists"},
+	}, noopHandler[specReplaceWatchlistItemsInput, specReplaceWatchlistItemsOutput]())
 
 	huma.Register(api, huma.Operation{
 		OperationID: "delete-watchlist-item",
@@ -649,7 +832,7 @@ type specListRuleChannelsInput struct {
 }
 type specListRuleChannelsOutput struct {
 	Body struct {
-		Items []channelEntry `json:"items"`
+		Items []ChannelEntry `json:"items"`
 	}
 }
 
@@ -666,12 +849,31 @@ type specUnbindRuleChannelInput struct {
 }
 
 func registerAlertRulesSpecOps(api huma.API) {
+	// The handler answers 201 for a rule that is ready at creation and 202 for
+	// one that needs an activation scan first; both carry the rule and Location.
+	// huma adds its default error response only to operations with a single
+	// response, so this operation declares it explicitly.
+	schemas := api.OpenAPI().Components.Schemas
+	ruleSchema := schemas.Schema(reflect.TypeFor[alertRuleEntry](), true, "")
+	errSchema := schemas.Schema(reflect.TypeFor[huma.ErrorModel](), true, "")
 	huma.Register(api, huma.Operation{
-		OperationID: "create-alert-rule",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/alert-rules",
-		Summary:     "Create an alert rule",
-		Tags:        []string{"Alert Rules"},
+		OperationID:   "create-alert-rule",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/alert-rules",
+		Summary:       "Create an alert rule",
+		Tags:          []string{"Alert Rules"},
+		DefaultStatus: http.StatusCreated,
+		Responses: map[string]*huma.Response{
+			"202": {
+				Description: "Accepted: the rule is activating while its initial scan runs",
+				Headers:     map[string]*huma.Param{"Location": {Schema: &huma.Schema{Type: huma.TypeString}}},
+				Content:     map[string]*huma.MediaType{"application/json": {Schema: ruleSchema}},
+			},
+			"default": {
+				Description: "Error",
+				Content:     map[string]*huma.MediaType{"application/problem+json": {Schema: errSchema}},
+			},
+		},
 	}, noopHandler[specCreateAlertRuleInput, specCreateAlertRuleOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -755,7 +957,11 @@ type specListAlertEventsInput struct {
 	CveID          string `query:"cve_id" doc:"Filter by CVE ID"`
 	LastMatchState string `query:"last_match_state" doc:"Filter by last match state"`
 	Since          string `query:"since" doc:"Filter events since timestamp (RFC3339)"`
-	Cursor         string `query:"cursor" doc:"Pagination cursor"`
+	Cursor         string `query:"cursor" doc:"Pagination cursor for the default, descending order: the next_cursor of the previous page."`
+	Order          string `query:"order" enum:"desc,asc" default:"desc" doc:"desc (default): newest first by first fire, paged with cursor. asc: feed order, for polling, paged with after."`
+	After          string `query:"after" doc:"With order=asc: the next_cursor of the previous response. Omit to start from the oldest event."`
+	Limit          int    `query:"limit" minimum:"1" maximum:"1000" default:"100" doc:"Events per page; at most 100 with expand=rule."`
+	Expand         string `query:"expand" doc:"Comma-separated context to embed in each event, read in the same query: cve (severity, CVSS, KEV, EPSS, status) and rule (name and the watchlist items that match the CVE). Example: cve,rule."`
 }
 type specListAlertEventsOutput struct {
 	Body struct {
@@ -770,7 +976,12 @@ func registerAlertEventsSpecOps(api huma.API) {
 		Method:      http.MethodGet,
 		Path:        "/orgs/{org_id}/alert-events",
 		Summary:     "List alert events",
-		Tags:        []string{"Alert Events"},
+		Description: "With order=asc the list is a feed for pollers: store next_cursor, which is present once a position exists, and pass it as after on the next poll. " +
+			"Each change to an event (its first fire, a reopen, a resolve, or a move to a new CVE ID when an advisory is renamed) gives it a new position, " +
+			"and a poller sees each change exactly once, with no overlap between polls. Each entry shows the event's current state: last_match_state " +
+			"says whether it is open, times_fired counts fires, and changes not yet read collapse into one entry. Filters apply to that state. " +
+			"A page shorter than limit means the poller has caught up. With expand=rule, limit is at most 100.",
+		Tags: []string{"Alert Events"},
 	}, noopHandler[specListAlertEventsInput, specListAlertEventsOutput]())
 }
 
@@ -790,7 +1001,7 @@ type specListChannelsInput struct {
 }
 type specListChannelsOutput struct {
 	Body struct {
-		Items []channelEntry `json:"items"`
+		Items []ChannelEntry `json:"items"`
 	}
 }
 
@@ -799,7 +1010,7 @@ type specGetChannelInput struct {
 	ID    string `path:"id" format:"uuid" doc:"Channel ID"`
 }
 type specGetChannelOutput struct {
-	Body channelEntry
+	Body ChannelEntry
 }
 
 type specUpdateChannelInput struct {
@@ -808,7 +1019,7 @@ type specUpdateChannelInput struct {
 	Body  patchChannelBody `json:"body"`
 }
 type specUpdateChannelOutput struct {
-	Body channelEntry
+	Body ChannelEntry
 }
 
 type specDeleteChannelInput struct {
@@ -834,16 +1045,17 @@ type specTestChannelInput struct {
 	ID    string `path:"id" format:"uuid" doc:"Channel ID"`
 }
 type specTestChannelOutput struct {
-	Body testChannelResponse
+	Body testChannelResult
 }
 
 func registerChannelsSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
-		OperationID: "create-channel",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/channels",
-		Summary:     "Create a notification channel",
-		Tags:        []string{"Channels"},
+		OperationID:   "create-channel",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/channels",
+		Summary:       "Create a notification channel",
+		Tags:          []string{"Channels"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateChannelInput, specCreateChannelOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -915,7 +1127,7 @@ type specListDeliveriesInput struct {
 }
 type specListDeliveriesOutput struct {
 	Body struct {
-		Items      []deliveryEntry `json:"items"`
+		Items      []DeliveryEntry `json:"items"`
 		NextCursor string          `json:"next_cursor,omitempty"`
 	}
 }
@@ -1007,7 +1219,7 @@ type specListReportChannelsInput struct {
 }
 type specListReportChannelsOutput struct {
 	Body struct {
-		Items []channelEntry `json:"items"`
+		Items []ChannelEntry `json:"items"`
 	}
 }
 
@@ -1033,11 +1245,12 @@ func registerReportsSpecOps(api huma.API) {
 	}, noopHandler[specListReportsInput, specListReportsOutput]())
 
 	huma.Register(api, huma.Operation{
-		OperationID: "create-report",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/reports",
-		Summary:     "Create a scheduled report",
-		Tags:        []string{"Reports"},
+		OperationID:   "create-report",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/reports",
+		Summary:       "Create a scheduled report",
+		Tags:          []string{"Reports"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateReportInput, specCreateReportOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -1153,11 +1366,12 @@ func registerSavedSearchesSpecOps(api huma.API) {
 	}, noopHandler[specListSavedSearchesInput, specListSavedSearchesOutput]())
 
 	huma.Register(api, huma.Operation{
-		OperationID: "create-saved-search",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/saved-searches",
-		Summary:     "Create a saved search",
-		Tags:        []string{"Saved Searches"},
+		OperationID:   "create-saved-search",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/saved-searches",
+		Summary:       "Create a saved search",
+		Tags:          []string{"Saved Searches"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateSavedSearchInput, specCreateSavedSearchOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -1240,13 +1454,21 @@ type specDiscoverOutput struct {
 	Body discoverResponse
 }
 
+type specSSOLinkInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+}
+type specSSOLinkOutput struct {
+	Location string `header:"Location" doc:"Identity provider authorization URL"`
+}
+
 func registerSSOSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
-		OperationID: "create-sso",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/sso",
-		Summary:     "Create an SSO connection",
-		Tags:        []string{"SSO"},
+		OperationID:   "create-sso",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/sso",
+		Summary:       "Create an SSO connection",
+		Tags:          []string{"SSO"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateSSOInput, specCreateSSOOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -1288,6 +1510,116 @@ func registerSSOSpecOps(api huma.API) {
 		Summary:     "Discover SSO for email",
 		Tags:        []string{"SSO"},
 	}, noopHandler[specDiscoverInput, specDiscoverOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "link-sso-identity",
+		Method:        http.MethodGet,
+		Path:          "/orgs/{org_id}/sso/link",
+		Summary:       "Start linking the caller's account to the org's SSO identity",
+		Description:   "Redirects the browser to the identity provider. The provider returns to /auth/oidc/link-callback.",
+		Tags:          []string{"SSO"},
+		DefaultStatus: http.StatusFound,
+		// http.Redirect writes a short HTML body linking to the target for GET requests.
+		Responses: map[string]*huma.Response{
+			"302": {
+				Description: "Found",
+				Content: map[string]*huma.MediaType{
+					"text/html": {Schema: &huma.Schema{Type: huma.TypeString}},
+				},
+			},
+		},
+	}, noopHandler[specSSOLinkInput, specSSOLinkOutput]())
+}
+
+// ── SCIM config spec-only declarations ───────────────────────────────────────
+
+type specSCIMConfigInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+}
+type specSCIMConfigOutput struct {
+	Body scimConfigResponse
+}
+
+type specPatchSCIMConfigInput struct {
+	OrgID string              `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Body  patchSCIMConfigBody `json:"body"`
+}
+
+type specRotateSCIMTokenOutput struct {
+	Body rotateTokenResponse
+}
+
+type specListSCIMGroupsOutput struct {
+	Body listSCIMGroupsResponse
+}
+
+type specPatchSCIMGroupMappingInput struct {
+	OrgID string                    `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string                    `path:"id" format:"uuid" doc:"SCIM group ID"`
+	Body  patchSCIMGroupMappingBody `json:"body"`
+}
+type specPatchSCIMGroupMappingOutput struct {
+	Body scimGroupResponse
+}
+
+func registerSCIMConfigSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID:   "create-scim-config",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/sso/scim",
+		Summary:       "Create SCIM configuration",
+		Description:   "The response carries the SCIM bearer token; it is not shown again.",
+		Tags:          []string{"SCIM"},
+		DefaultStatus: http.StatusCreated,
+	}, noopHandler[specSCIMConfigInput, specSCIMConfigOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-scim-config",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/sso/scim",
+		Summary:     "Get SCIM configuration",
+		Tags:        []string{"SCIM"},
+	}, noopHandler[specSCIMConfigInput, specSCIMConfigOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "patch-scim-config",
+		Method:      http.MethodPatch,
+		Path:        "/orgs/{org_id}/sso/scim",
+		Summary:     "Update SCIM configuration",
+		Tags:        []string{"SCIM"},
+	}, noopHandler[specPatchSCIMConfigInput, specSCIMConfigOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "delete-scim-config",
+		Method:      http.MethodDelete,
+		Path:        "/orgs/{org_id}/sso/scim",
+		Summary:     "Delete SCIM configuration",
+		Tags:        []string{"SCIM"},
+	}, noopHandler[specSCIMConfigInput, struct{}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "rotate-scim-token",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/sso/scim/rotate-token",
+		Summary:     "Rotate the SCIM bearer token",
+		Tags:        []string{"SCIM"},
+	}, noopHandler[specSCIMConfigInput, specRotateSCIMTokenOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-scim-groups",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/sso/scim/groups",
+		Summary:     "List SCIM-provisioned groups",
+		Tags:        []string{"SCIM"},
+	}, noopHandler[specSCIMConfigInput, specListSCIMGroupsOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "patch-scim-group-mapping",
+		Method:      http.MethodPatch,
+		Path:        "/orgs/{org_id}/sso/scim/groups/{id}/mapping",
+		Summary:     "Map a SCIM group to a role or notification group",
+		Tags:        []string{"SCIM"},
+	}, noopHandler[specPatchSCIMGroupMappingInput, specPatchSCIMGroupMappingOutput]())
 }
 
 // ── Audit Log spec-only declarations ─────────────────────────────────────────
@@ -1334,7 +1666,7 @@ func registerAISpecOps(api huma.API) {
 		Limit  int    `query:"limit,omitempty" doc:"Results per page (1-100, default 25)"`
 		Body   nlSearchRequest
 	}, struct {
-		Body nlSearchResponse
+		Body nlSearchResult
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1355,16 +1687,44 @@ func registerAISpecOps(api huma.API) {
 
 func registerIngestSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
-		OperationID: "ingest-cves",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/ingest",
-		Summary:     "Ingest CVE patches",
-		Tags:        []string{"Ingest"},
+		OperationID:   "ingest-cves",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/ingest",
+		Summary:       "Ingest CVE patches",
+		Tags:          []string{"Ingest"},
+		DefaultStatus: http.StatusAccepted,
 	}, noopHandler[struct {
 		OrgID string `path:"org_id" format:"uuid"`
 		Body  ingestRequest
 	}, struct {
 		Body ingestResponse
+	}]())
+}
+
+// ── Version check spec-only declarations ──────────────────────────────────
+
+func registerCheckSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID:   "check-components",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/check",
+		Summary:       "Check component versions against known advisories",
+		DefaultStatus: http.StatusOK,
+		Description: "For each listed component version, says which advisories affect it, which range matched, " +
+			"and the lowest version the advisory data no longer reports as affected. Takes 1 to 500 items within " +
+			"the 1 MiB request limit, and reads only the global CVE corpus. An item that cannot be read is answered " +
+			"with status invalid, and the others are still answered. Only not_affected clears a version: it means the " +
+			"version is not in any analysed or CNA-named advisory held. unresolved means no advisory was established as " +
+			"affected and the data leaves some unresolved; cannot_evaluate means the check could not be completed for " +
+			"the item; no_advisory_found means no matching advisory was found, not that the component is safe. Answers 422 with problem type urn:cvert:error:candidate_limit_exceeded when the request " +
+			"reads more candidate rows than one request may (split the request), and 503 when no check slot is " +
+			"free (with Retry-After) or the check did not finish within 30 seconds. Item values are not stored or logged.",
+		Tags: []string{"Version Check"},
+	}, noopHandler[struct {
+		OrgID string `path:"org_id" format:"uuid"`
+		Body  CheckRequest
+	}, struct {
+		Body CheckResults
 	}]())
 }
 
@@ -1386,6 +1746,50 @@ func registerOrgTierSpecOps(api huma.API) {
 
 // ── Admin Feeds spec ops ────────────────────────────────────────────────────
 
+// Bodies of admin operations. A named type sets the schema's name; an anonymous
+// body would take <OperationID>Response, the name oapi-codegen gives its own
+// wrapper type for that operation, and the generated client would not compile.
+type adminJobResponse struct {
+	JobID string `json:"job_id"`
+}
+
+type adminFeedStateResponse struct {
+	Status string `json:"status"`
+	Feed   string `json:"feed"`
+}
+
+type adminUserStatusResponse struct {
+	Status string `json:"status"`
+	UserID string `json:"user_id"`
+}
+
+type adminVersionInfo struct {
+	Version   string `json:"version"`
+	Commit    string `json:"commit"`
+	BuildTime string `json:"build_time"`
+	GoVersion string `json:"go_version"`
+}
+
+type adminReloadResult struct {
+	Message string `json:"message"`
+}
+
+type adminPatchOrgBody struct {
+	Tier    *string `json:"tier,omitempty"`
+	Suspend *bool   `json:"suspend,omitempty"`
+}
+
+type adminDeliveryRetryResult struct {
+	Status       string `json:"status"`
+	DeliveryID   string `json:"delivery_id"`
+	RowsAffected int64  `json:"rows_affected"`
+}
+
+type adminBulkRetryResult struct {
+	Status       string `json:"status"`
+	RowsAffected int64  `json:"rows_affected"`
+}
+
 func registerAdminFeedsSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "list-feeds",
@@ -1398,17 +1802,16 @@ func registerAdminFeedsSpecOps(api huma.API) {
 	}]())
 
 	huma.Register(api, huma.Operation{
-		OperationID: "trigger-feed",
-		Method:      http.MethodPost,
-		Path:        "/admin/feeds/{feed}/run",
-		Summary:     "Trigger feed sync",
-		Tags:        []string{"Admin Feeds"},
+		OperationID:   "trigger-feed",
+		Method:        http.MethodPost,
+		Path:          "/admin/feeds/{feed}/run",
+		Summary:       "Trigger feed sync",
+		Tags:          []string{"Admin Feeds"},
+		DefaultStatus: http.StatusAccepted,
 	}, noopHandler[struct {
 		Feed string `path:"feed"`
 	}, struct {
-		Body struct {
-			JobID string `json:"job_id"`
-		}
+		Body adminJobResponse
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1420,10 +1823,7 @@ func registerAdminFeedsSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		Feed string `path:"feed"`
 	}, struct {
-		Body struct {
-			Status string `json:"status"`
-			Feed   string `json:"feed"`
-		}
+		Body adminFeedStateResponse
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1435,10 +1835,7 @@ func registerAdminFeedsSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		Feed string `path:"feed"`
 	}, struct {
-		Body struct {
-			Status string `json:"status"`
-			Feed   string `json:"feed"`
-		}
+		Body adminFeedStateResponse
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1460,15 +1857,14 @@ func registerAdminFeedsSpecOps(api huma.API) {
 
 func registerAdminSystemSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
-		OperationID: "admin-reindex",
-		Method:      http.MethodPost,
-		Path:        "/admin/reindex",
-		Summary:     "Trigger search reindex",
-		Tags:        []string{"Admin System"},
+		OperationID:   "admin-reindex",
+		Method:        http.MethodPost,
+		Path:          "/admin/reindex",
+		Summary:       "Trigger search reindex",
+		Tags:          []string{"Admin System"},
+		DefaultStatus: http.StatusAccepted,
 	}, noopHandler[struct{}, struct {
-		Body struct {
-			JobID string `json:"job_id"`
-		}
+		Body adminJobResponse
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1505,12 +1901,7 @@ func registerAdminSystemSpecOps(api huma.API) {
 		Summary:     "Build version and metadata",
 		Tags:        []string{"Admin System"},
 	}, noopHandler[struct{}, struct {
-		Body struct {
-			Version   string `json:"version"`
-			Commit    string `json:"commit"`
-			BuildTime string `json:"build_time"`
-			GoVersion string `json:"go_version"`
-		}
+		Body adminVersionInfo
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1534,9 +1925,7 @@ func registerAdminReloadSpecOps(api huma.API) {
 		Summary:     "Reload configuration from secrets file",
 		Tags:        []string{"Admin System"},
 	}, noopHandler[struct{}, struct {
-		Body struct {
-			Message string `json:"message"`
-		}
+		Body adminReloadResult
 	}]())
 }
 
@@ -1564,10 +1953,7 @@ func registerAdminOrgsSpecOps(api huma.API) {
 		Tags:        []string{"Admin Orgs"},
 	}, noopHandler[struct {
 		OrgID string `path:"org_id" format:"uuid"`
-		Body  struct {
-			Tier    *string `json:"tier,omitempty"`
-			Suspend *bool   `json:"suspend,omitempty"`
-		}
+		Body  adminPatchOrgBody
 	}, struct {
 		Body adminOrgResponse
 	}]())
@@ -1610,10 +1996,7 @@ func registerAdminUsersSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		UserID string `path:"user_id" format:"uuid"`
 	}, struct {
-		Body struct {
-			Status string `json:"status"`
-			UserID string `json:"user_id"`
-		}
+		Body adminUserStatusResponse
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1625,10 +2008,7 @@ func registerAdminUsersSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		UserID string `path:"user_id" format:"uuid"`
 	}, struct {
-		Body struct {
-			Status string `json:"status"`
-			UserID string `json:"user_id"`
-		}
+		Body adminUserStatusResponse
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1640,10 +2020,7 @@ func registerAdminUsersSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		UserID string `path:"user_id" format:"uuid"`
 	}, struct {
-		Body struct {
-			Status string `json:"status"`
-			UserID string `json:"user_id"`
-		}
+		Body adminUserStatusResponse
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1655,10 +2032,7 @@ func registerAdminUsersSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		UserID string `path:"user_id" format:"uuid"`
 	}, struct {
-		Body struct {
-			Status string `json:"status"`
-			UserID string `json:"user_id"`
-		}
+		Body adminUserStatusResponse
 	}]())
 }
 
@@ -1688,11 +2062,7 @@ func registerAdminDeliveriesSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		ID string `path:"id" format:"uuid"`
 	}, struct {
-		Body struct {
-			Status       string `json:"status"`
-			DeliveryID   string `json:"delivery_id"`
-			RowsAffected int64  `json:"rows_affected"`
-		}
+		Body adminDeliveryRetryResult
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1704,10 +2074,7 @@ func registerAdminDeliveriesSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		Limit int `query:"limit,omitempty"`
 	}, struct {
-		Body struct {
-			Status       string `json:"status"`
-			RowsAffected int64  `json:"rows_affected"`
-		}
+		Body adminBulkRetryResult
 	}]())
 }
 
@@ -1730,5 +2097,24 @@ func registerAdminSecurityEventsSpecOps(api huma.API) {
 		Limit      int    `query:"limit,omitempty" doc:"Max items per page (1-100, default 50)"`
 	}, struct {
 		Body listResponse[store.SecurityEventRow]
+	}]())
+}
+
+// ── Credential self-description spec-only declarations ───────────────────
+
+func registerWhoamiSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID:   "whoami",
+		Method:        http.MethodGet,
+		Path:          "/whoami",
+		Summary:       "Describe the calling credential",
+		DefaultStatus: http.StatusOK,
+		Description: "For an API key: the key's ID, name, role and expiry, and its org with the role the key acts with, " +
+			"the org's tier and its rate limit. A key's request counts against its org's rate limit. For a browser " +
+			"session: the user and each org where the membership is active. Answers 403 for a key whose creator is " +
+			"no longer an active member of the key's org.",
+		Tags: []string{"Auth"},
+	}, noopHandler[struct{}, struct {
+		Body callerIdentity
 	}]())
 }

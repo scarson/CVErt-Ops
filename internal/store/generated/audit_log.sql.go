@@ -16,13 +16,14 @@ import (
 
 const insertAuditEntry = `-- name: InsertAuditEntry :exec
 
-INSERT INTO audit_log (org_id, actor_id, actor_email, action, entity_type, entity_id, entity_name, success, old_state, new_state, metadata)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+INSERT INTO audit_log (org_id, actor_id, api_key_id, actor_email, action, entity_type, entity_id, entity_name, success, old_state, new_state, metadata)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 `
 
 type InsertAuditEntryParams struct {
 	OrgID      uuid.UUID
 	ActorID    uuid.NullUUID
+	ApiKeyID   uuid.NullUUID
 	ActorEmail sql.NullString
 	Action     string
 	EntityType string
@@ -40,6 +41,7 @@ func (q *Queries) InsertAuditEntry(ctx context.Context, arg InsertAuditEntryPara
 	_, err := q.db.ExecContext(ctx, insertAuditEntry,
 		arg.OrgID,
 		arg.ActorID,
+		arg.ApiKeyID,
 		arg.ActorEmail,
 		arg.Action,
 		arg.EntityType,
@@ -54,7 +56,7 @@ func (q *Queries) InsertAuditEntry(ctx context.Context, arg InsertAuditEntryPara
 }
 
 const listAuditEntries = `-- name: ListAuditEntries :many
-SELECT id, org_id, actor_id, actor_email, action, entity_type, entity_id, entity_name, success, old_state, new_state, metadata, created_at FROM audit_log
+SELECT id, org_id, actor_id, actor_email, action, entity_type, entity_id, entity_name, success, old_state, new_state, metadata, created_at, api_key_id FROM audit_log
 WHERE org_id = $1::uuid
   AND ($2::text = '' OR entity_type = $2::text)
   AND ($3::text = '' OR action = $3::text)
@@ -114,6 +116,7 @@ func (q *Queries) ListAuditEntries(ctx context.Context, arg ListAuditEntriesPara
 			&i.NewState,
 			&i.Metadata,
 			&i.CreatedAt,
+			&i.ApiKeyID,
 		); err != nil {
 			return nil, err
 		}

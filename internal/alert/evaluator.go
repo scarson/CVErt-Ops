@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -26,13 +27,24 @@ const (
 	activationQueue = "alert_activation"
 	activationBatch = 1000
 	candidateCap    = 5000
+
+	// activationLockKeyPrefix starts the lock_key of a rule's activation job; the
+	// rule ID follows it. The lock key allows one pending or running job per rule.
+	activationLockKeyPrefix = "activation:"
 )
+
+// ActivationLockKey returns the job_queue lock_key of the activation job for ruleID.
+func ActivationLockKey(ruleID uuid.UUID) string {
+	return activationLockKeyPrefix + ruleID.String()
+}
 
 // cveSummary is a lightweight CVE record produced by the candidate query.
 type cveSummary struct {
 	CVEID        string
 	MaterialHash string
-	Description  string // pre-lowercased for PostFilter matching
+	// Description is matched as stored: regex PostFilters ignore case unless
+	// their pattern turns that off (dsl.compileRegex).
+	Description string
 }
 
 // PostFilterField implements dsl.PostFilterTarget for cveSummary.
@@ -43,10 +55,11 @@ func (c cveSummary) PostFilterField(field string) string {
 	return c.Description
 }
 
-// Dispatcher triggers notification delivery for a newly created alert event.
-// A nil dispatcher disables delivery (tests, startup).
+// Dispatcher triggers notification delivery for a newly created alert event and for a
+// CVE that stopped matching a rule. A nil dispatcher disables delivery (tests, startup).
 type Dispatcher interface {
 	Fanout(ctx context.Context, orgID, ruleID uuid.UUID, cveID string) error
+	FanoutResolution(ctx context.Context, orgID, ruleID uuid.UUID, cveID string) error
 }
 
 // Evaluator runs alert DSL rules against the CVE corpus across three evaluation paths.
@@ -97,7 +110,7 @@ func (e *Evaluator) EvaluateRealtime(ctx context.Context, cveID string) error {
 		rule := &rules[i]
 		compiled, compErr := e.loadAndCompileRule(rule)
 		if compErr != nil {
-			e.log.Error("compile rule for realtime", "rule_id", rule.ID, "err", compErr)
+			e.failUncompilableRule(ctx, rule, "realtime", compErr)
 			continue
 		}
 		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false, 0)
@@ -127,6 +140,7 @@ func (e *Evaluator) EvaluateBatch(ctx context.Context) error {
 		metricsLabel:  "batch",
 		getCandidates: e.getCVEsModifiedSince,
 		listRules:     e.rules.ListActiveRulesForEvaluation,
+		maxHeldRuns:   batchMaxHeldRuns,
 	})
 }
 
@@ -138,22 +152,60 @@ func (e *Evaluator) EvaluateEPSS(ctx context.Context) error {
 		metricsLabel:  "epss",
 		getCandidates: e.getCVEsEPSSUpdatedSince,
 		listRules:     e.rules.ListActiveRulesForEPSS,
+		maxHeldRuns:   epssMaxHeldRuns,
 	})
 }
 
 const candidatePageSize = 1000
 
+// cursorRescanWindow is how far behind the stored cursor each batch/EPSS run starts its
+// candidate scan. The cursor is the evaluator's Go clock at the start of the previous run,
+// while the timestamps it is compared with come from other clocks and are taken before
+// their writer commits: date_epss_updated is Postgres now() (transaction start), and
+// date_modified_canonical is the merge worker's Go clock, read before its upsert. A row
+// stamped before the cursor but committed after the previous run's scan would otherwise
+// never be evaluated. Re-evaluating a CVE is idempotent: alert_events inserts are
+// ON CONFLICT DO NOTHING, reopens apply only to resolved events, resolves apply only to
+// open events, and fan-out runs only for events that a run inserted, reopened or resolved.
+//
+// The window must exceed clock skew between the app and database hosts plus the longest
+// gap between a writer taking its timestamp and committing. Both are normally well under
+// a second; two minutes leaves a wide margin while at most doubling the candidate set of
+// a batch run, which is scheduled every two minutes.
+const cursorRescanWindow = 2 * time.Minute
+
+// A run in which any rule fails to evaluate (an error, or a partial candidate set) keeps
+// the cursor where it was, so the next run re-evaluates the same CVEs for every rule.
+// Re-evaluation is idempotent (see cursorRescanWindow). The cursor is held for at most
+// this many consecutive runs, so a rule that fails on every run cannot stall the cursor
+// and grow every rule's candidate set without bound; the run after the last held run
+// advances the cursor and logs the rules whose CVEs were not evaluated. The batch job runs
+// every 2 minutes (about an hour of retries) and the EPSS job daily (three days).
+const (
+	batchMaxHeldRuns = 30
+	epssMaxHeldRuns  = 3
+)
+
 // batchConfig parameterizes the shared batch/EPSS evaluation loop.
 type batchConfig struct {
 	feedName      string
 	metricsLabel  string
-	getCandidates func(ctx context.Context, since time.Time, afterID string, limit int) ([]string, error)
+	getCandidates func(ctx context.Context, since, until time.Time, pageSize int) ([]string, error)
 	listRules     func(ctx context.Context) ([]store.AlertRuleRow, error)
+	maxHeldRuns   int
+}
+
+// evalCursor is the batch/EPSS cursor stored in feed_sync_state.cursor_json. HeldRuns
+// counts consecutive runs that kept Since because a rule failed to evaluate.
+type evalCursor struct {
+	Since    time.Time `json:"since"`
+	HeldRuns int       `json:"held_runs,omitempty"`
 }
 
 // evaluateBatchPath implements the shared evaluation loop for both EvaluateBatch and
 // EvaluateEPSS. Reads cursor, fetches paginated candidates, runs all rules against
-// each page, records metrics, then advances the cursor only after all pages complete.
+// each page, records metrics, then advances the cursor only after all pages complete
+// and every rule evaluated (see batchMaxHeldRuns).
 func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) error {
 	start := time.Now()
 	cursor, err := e.readCursor(ctx, cfg.feedName)
@@ -162,6 +214,12 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 	}
 	batchTime := time.Now().UTC()
 
+	// A zero cursor means no previous run: scan everything.
+	since := cursor.Since
+	if !since.IsZero() {
+		since = since.Add(-cursorRescanWindow)
+	}
+
 	rules, err := cfg.listRules(ctx)
 	if err != nil {
 		return fmt.Errorf("list rules for %s: %w", cfg.feedName, err)
@@ -169,45 +227,45 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 
 	// Collect all candidate IDs across pages before evaluating rules.
 	// This avoids creating duplicate rule run records per page (one run per rule per batch).
-	var allCandidateIDs []string
-	var afterID string
+	// The scan reads changes stamped up to cursorRescanWindow after batchTime, so a
+	// stamping clock that runs ahead of this one by less than the window delays nothing.
+	// Later changes are left to the next run, whose scan starts before batchTime (see
+	// changeScan).
+	until := batchTime.Add(cursorRescanWindow)
+	allCandidateIDs, err := cfg.getCandidates(ctx, since, until, candidatePageSize)
+	if err != nil {
+		return fmt.Errorf("get %s candidates: %w", cfg.feedName, err)
+	}
 
-	for {
-		candidateIDs, pageErr := cfg.getCandidates(ctx, cursor, afterID, candidatePageSize)
-		if pageErr != nil {
-			return fmt.Errorf("get %s candidates: %w", cfg.feedName, pageErr)
-		}
-		if len(candidateIDs) == 0 {
-			break
-		}
-
-		allCandidateIDs = append(allCandidateIDs, candidateIDs...)
-
-		// Advance keyset cursor to last ID in this page.
-		afterID = candidateIDs[len(candidateIDs)-1]
-
-		// If this page was smaller than the page size, we've reached the end.
-		if len(candidateIDs) < candidatePageSize {
-			break
-		}
+	listChanges, err := e.getWatchlistCVEChangesSince(ctx, since)
+	if err != nil {
+		return fmt.Errorf("get watchlist changes for %s: %w", cfg.feedName, err)
 	}
 
 	// Short-circuit if no candidates — still write cursor to advance past this window.
-	if len(allCandidateIDs) == 0 {
-		return e.writeCursor(ctx, cfg.feedName, batchTime)
+	if len(allCandidateIDs) == 0 && len(listChanges) == 0 {
+		return e.writeCursor(ctx, cfg.feedName, evalCursor{Since: batchTime})
 	}
 
 	var totalMatches int
+	var failedRuleIDs []uuid.UUID
 	for i := range rules {
 		rule := &rules[i]
-		compiled, compErr := e.loadAndCompileRule(rule)
-		if compErr != nil {
-			e.log.Error("compile rule for "+cfg.metricsLabel, "rule_id", rule.ID, "err", compErr)
+		ruleCandidateIDs := candidatesForRule(allCandidateIDs, rule.WatchlistIds, listChanges)
+		if len(ruleCandidateIDs) == 0 {
 			continue
 		}
-		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, allCandidateIDs, rule.OrgID, false, false, 0)
+		compiled, compErr := e.loadAndCompileRule(rule)
+		if compErr != nil {
+			e.failUncompilableRule(ctx, rule, cfg.metricsLabel, compErr)
+			continue
+		}
+		matchCount, partial, candidatesEval, evalErr := e.evaluateRuleInChunks(ctx, compiled, ruleCandidateIDs, rule.OrgID)
 		if evalErr != nil {
 			e.log.Error("evaluate rule "+cfg.metricsLabel, "rule_id", rule.ID, "err", evalErr)
+		}
+		if evalErr != nil || partial {
+			failedRuleIDs = append(failedRuleIDs, rule.ID)
 		}
 		totalMatches += matchCount
 		status, errMsg := runStatus(partial, evalErr)
@@ -220,12 +278,24 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 	metrics.AlertMatchesTotal.WithLabelValues(cfg.metricsLabel).Add(float64(totalMatches))
 	metrics.AlertEvaluationDuration.WithLabelValues(cfg.metricsLabel).Observe(time.Since(start).Seconds())
 
+	if len(failedRuleIDs) > 0 {
+		if cursor.HeldRuns < cfg.maxHeldRuns {
+			held := evalCursor{Since: cursor.Since, HeldRuns: cursor.HeldRuns + 1}
+			e.log.Warn("holding "+cfg.metricsLabel+" cursor: rules failed to evaluate",
+				"rule_ids", failedRuleIDs, "held_runs", held.HeldRuns, "max_held_runs", cfg.maxHeldRuns)
+			return e.writeCursor(ctx, cfg.feedName, held)
+		}
+		e.log.Error("advancing "+cfg.metricsLabel+" cursor past CVEs that failing rules did not evaluate",
+			"rule_ids", failedRuleIDs, "since", cursor.Since, "held_runs", cursor.HeldRuns)
+	}
+
 	// Cursor is written only after ALL pages have been processed.
-	return e.writeCursor(ctx, cfg.feedName, batchTime)
+	return e.writeCursor(ctx, cfg.feedName, evalCursor{Since: batchTime})
 }
 
 // EvaluateActivation runs the activation scan for a newly created rule. Iterates the full
-// CVE corpus in 1,000-row keyset pages, writes events with suppress_delivery=true, then
+// CVE corpus in 1,000-row keyset pages, writes each page's events with
+// suppress_delivery=true in one transaction, then
 // transitions the rule to 'active'. Called by the worker processing 'alert_activation' jobs.
 func (e *Evaluator) EvaluateActivation(ctx context.Context, ruleID, orgID uuid.UUID) error {
 	rule, err := e.rules.GetAlertRule(ctx, orgID, ruleID)
@@ -288,51 +358,56 @@ func (e *Evaluator) EvaluateActivation(ctx context.Context, ruleID, orgID uuid.U
 	return nil
 }
 
-// SweepZombieActivations finds activation jobs stuck in 'running' for more than 15 minutes,
-// marks the associated rule as 'error', and marks the job as 'failed'. Does not auto-retry.
+// SweepZombieActivations moves to 'error' every rule left in 'activating' with no
+// activation job that could still finish it: no pending or running alert_activation
+// job holds the rule's lock key. A rule updated within the last 15 minutes is skipped,
+// which covers the gap between saving the rule and enqueueing its job. The sweep does
+// not change job rows: the worker pool's stale recovery re-queues a job whose worker
+// stopped responding until its attempts are used up, then marks it 'dead', and the
+// next sweep finds the rule. Users retry by PATCHing the rule, which enqueues a new job.
 func (e *Evaluator) SweepZombieActivations(ctx context.Context) error {
 	type zombie struct {
-		JobID  uuid.UUID
 		RuleID uuid.UUID
 		OrgID  uuid.UUID
 	}
 
 	var zombies []zombie
-	rows, err := e.db.QueryContext(ctx, `
-		SELECT jq.id,
-		       (jq.payload->>'rule_id')::uuid,
-		       (jq.payload->>'org_id')::uuid
-		FROM job_queue jq
-		WHERE jq.queue     = $1
-		  AND jq.status    = 'running'
-		  AND jq.locked_at < now() - interval '15 minutes'
-	`, activationQueue)
-	if err != nil {
-		return fmt.Errorf("query zombie jobs: %w", err)
-	}
-	defer rows.Close() //nolint:errcheck
-	for rows.Next() {
-		var z zombie
-		if err := rows.Scan(&z.JobID, &z.RuleID, &z.OrgID); err != nil {
-			return fmt.Errorf("scan zombie: %w", err)
+	err := e.bypassTx(ctx, 0, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT r.id, r.org_id
+			FROM alert_rules r
+			WHERE r.status     = 'activating'
+			  AND r.deleted_at IS NULL
+			  AND r.updated_at < now() - interval '15 minutes'
+			  AND NOT EXISTS (
+			      SELECT 1 FROM job_queue jq
+			      WHERE jq.lock_key = $2 || r.id::text
+			        AND jq.queue    = $1
+			        AND jq.status   IN ('pending', 'running')
+			  )
+		`, activationQueue, activationLockKeyPrefix)
+		if err != nil {
+			return fmt.Errorf("query zombie rules: %w", err)
 		}
-		zombies = append(zombies, z)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate zombies: %w", err)
+		defer rows.Close() //nolint:errcheck
+		for rows.Next() {
+			var z zombie
+			if err := rows.Scan(&z.RuleID, &z.OrgID); err != nil {
+				return fmt.Errorf("scan zombie rule: %w", err)
+			}
+			zombies = append(zombies, z)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return fmt.Errorf("find zombie activating rules: %w", err)
 	}
 
 	for _, z := range zombies {
-		e.log.Warn("zombie activation job detected", "job_id", z.JobID, "rule_id", z.RuleID)
-
+		e.log.Warn("rule stuck in activating with no pending or running activation job; setting status to error",
+			"rule_id", z.RuleID, "org_id", z.OrgID)
 		if _, err := e.rules.SetAlertRuleStatusIf(ctx, z.OrgID, z.RuleID, "error", "activating"); err != nil {
 			e.log.Error("set zombie rule to error", "rule_id", z.RuleID, "err", err)
-		}
-		if _, err := e.db.ExecContext(ctx,
-			`UPDATE job_queue SET status = 'failed', finished_at = now() WHERE id = $1 AND status = 'running'`,
-			z.JobID,
-		); err != nil {
-			e.log.Error("fail zombie job", "job_id", z.JobID, "err", err)
 		}
 	}
 	return nil
@@ -392,7 +467,8 @@ func (e *Evaluator) DryRun(ctx context.Context, ruleID, orgID uuid.UUID) (*DryRu
 
 // evaluateRule runs the DSL query against candidateIDs, applies PostFilters, inserts
 // alert_events, and detects resolutions. suppressDelivery=true marks events from the
-// activation scan baseline. suppressResolution=true skips resolution detection (activation).
+// activation scan baseline and writes all of them in one transaction, since none is
+// fanned out. suppressResolution=true skips resolution detection (activation).
 // statementTimeoutMS overrides the connection-level statement_timeout when > 0.
 // Returns (matchCount, partial, candidatesEval, err).
 func (e *Evaluator) evaluateRule(
@@ -429,18 +505,48 @@ func (e *Evaluator) evaluateRule(
 		}
 	}
 
-	// Insert alert_events for new matches.
 	matchedIDs := make(map[string]bool, len(matched))
 	for _, m := range matched {
 		matchedIDs[m.CVEID] = true
-		eventID, err := e.rules.InsertAlertEvent(ctx, orgID, compiled.RuleID, m.CVEID, m.MaterialHash, suppressDelivery)
-		if err != nil {
-			return len(matched), false, len(candidateIDs), fmt.Errorf("insert alert event %s: %w", m.CVEID, err)
+	}
+
+	// Record alert_events for matches that are new or have returned after resolving.
+	if suppressDelivery {
+		// Suppressed events are not fanned out, so the page's events are written in one
+		// transaction. The store skips CVEs renamed since the candidate query, as
+		// cveExists does for the per-event path.
+		page := make([]store.AlertEventMatch, len(matched))
+		for i, m := range matched {
+			page[i] = store.AlertEventMatch{CVEID: m.CVEID, MaterialHash: m.MaterialHash}
 		}
-		if e.dispatcher != nil && !suppressDelivery && eventID != uuid.Nil {
-			if fErr := e.dispatcher.Fanout(ctx, orgID, compiled.RuleID, m.CVEID); fErr != nil {
-				e.log.Error("fanout notification", "rule_id", compiled.RuleID, "cve_id", m.CVEID, "err", fErr)
-				// Do not return: alert_event is committed; log and continue.
+		if _, err := e.rules.RecordActivationAlertEvents(ctx, orgID, compiled.RuleID, page); err != nil {
+			return len(matched), false, len(candidateIDs), fmt.Errorf("record alert events: %w", err)
+		}
+	} else {
+		for _, m := range matched {
+			exists, err := e.cveExists(ctx, m.CVEID)
+			if err != nil {
+				return len(matched), false, len(candidateIDs), fmt.Errorf("check CVE %s: %w", m.CVEID, err)
+			}
+			if !exists {
+				continue
+			}
+			eventID, err := e.rules.InsertAlertEvent(ctx, orgID, compiled.RuleID, m.CVEID, m.MaterialHash, false)
+			if err != nil {
+				return len(matched), false, len(candidateIDs), fmt.Errorf("insert alert event %s: %w", m.CVEID, err)
+			}
+			if eventID == uuid.Nil {
+				// The rule already fired at this hash. It fires again only if the event was resolved.
+				eventID, err = e.rules.ReopenAlertEvent(ctx, orgID, compiled.RuleID, m.CVEID, m.MaterialHash, false)
+				if err != nil {
+					return len(matched), false, len(candidateIDs), fmt.Errorf("reopen alert event %s: %w", m.CVEID, err)
+				}
+			}
+			if e.dispatcher != nil && eventID != uuid.Nil {
+				if fErr := e.dispatcher.Fanout(ctx, orgID, compiled.RuleID, m.CVEID); fErr != nil {
+					e.log.Error("fanout notification", "rule_id", compiled.RuleID, "cve_id", m.CVEID, "err", fErr)
+					// Do not return: alert_event is committed; log and continue.
+				}
 			}
 		}
 	}
@@ -453,8 +559,16 @@ func (e *Evaluator) evaluateRule(
 		}
 		for _, prevID := range prevMatched {
 			if candidateSet[prevID] && !matchedIDs[prevID] {
-				if err := e.rules.ResolveAlertEvent(ctx, compiled.RuleID, orgID, prevID); err != nil {
+				shouldNotify, err := e.rules.ResolveAlertEvent(ctx, compiled.RuleID, orgID, prevID)
+				if err != nil {
 					e.log.Error("resolve alert event", "rule_id", compiled.RuleID, "cve_id", prevID, "err", err)
+					continue
+				}
+				if e.dispatcher != nil && shouldNotify {
+					if fErr := e.dispatcher.FanoutResolution(ctx, orgID, compiled.RuleID, prevID); fErr != nil {
+						e.log.Error("fanout resolution notification", "rule_id", compiled.RuleID, "cve_id", prevID, "err", fErr)
+						// Do not return: the resolve is committed; log and continue.
+					}
 				}
 			}
 		}
@@ -463,35 +577,55 @@ func (e *Evaluator) evaluateRule(
 	return len(matched), false, len(candidateIDs), nil
 }
 
+// cveExists reports whether a CVE row still exists. A late-binding merge can rename a
+// CVE after the candidate query that returned it, and an event recorded under the old
+// ID could never resolve. A rename that commits between this check and the insert that
+// follows it still leaves one such event; that gap is accepted, because closing it would
+// mean holding the merge pipeline's CVE lock on every event insert.
+func (e *Evaluator) cveExists(ctx context.Context, cveID string) (bool, error) {
+	var exists bool
+	err := e.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM cves WHERE cve_id = $1)", cveID).Scan(&exists)
+	return exists, err
+}
+
+// evaluateRuleInChunks runs evaluateRule over candidateIDs in chunks of at most candidateCap
+// IDs. The batch and EPSS paths advance their cursor past every candidate once the run ends,
+// so a rule that hit the cap on the whole change set would never evaluate those CVEs. The
+// candidate query returns at most one row per candidate ID (the only join is the 1:1
+// cve_search_index), so no chunk can exceed the cap. Resolution detection stays correct per
+// chunk because chunks are disjoint. Stops at the first error or partial chunk.
+// Returns (matchCount, partial, candidatesEval, err) summed over the evaluated chunks.
+func (e *Evaluator) evaluateRuleInChunks(
+	ctx context.Context,
+	compiled *dsl.CompiledRule,
+	candidateIDs []string,
+	orgID uuid.UUID,
+) (int, bool, int, error) {
+	var totalMatches, totalEvaluated int
+	for start := 0; start < len(candidateIDs); start += candidateCap {
+		end := min(start+candidateCap, len(candidateIDs))
+		matchCount, partial, candidatesEval, err := e.evaluateRule(ctx, compiled, candidateIDs[start:end], orgID, false, false, 0)
+		totalMatches += matchCount
+		totalEvaluated += candidatesEval
+		if err != nil || partial {
+			return totalMatches, partial, totalEvaluated, err
+		}
+	}
+	return totalMatches, false, totalEvaluated, nil
+}
+
 // queryCandidates runs the compiled DSL query against CVEs. If candidateIDs is
 // non-nil, only those CVE IDs are considered; otherwise all CVEs are scanned.
 // Returns (candidates, partial, error). partial=true means > candidateCap
-// rows matched, which triggers fail-closed behavior.
+// rows matched, which triggers fail-closed behavior. The query runs under
+// dsl.RuleQuerySettings, which last until tx ends.
 func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *dsl.CompiledRule, candidateIDs []string) ([]cveSummary, bool, error) {
-	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
-	combined := sq.And{
-		compiled.SQL,
-		sq.Expr("lower(cves.status) NOT IN ('rejected', 'withdrawn')"),
-	}
-	if len(candidateIDs) > 0 {
-		combined = append(combined, sq.Expr("cves.cve_id = ANY(?)", pq.Array(candidateIDs)))
-	}
-	sb := psql.
-		Select(
-			"cves.cve_id",
-			"COALESCE(cves.material_hash, '')",
-			"COALESCE(lower(cves.description_primary), '')",
-		).
-		From("cves")
-	for _, j := range compiled.Joins {
-		sb = sb.Join(j)
-	}
-	query, args, err := sb.
-		Where(combined).
-		Limit(uint64(candidateCap + 1)). //nolint:gosec // G115: constant, not user input
-		ToSql()
+	query, args, err := candidateQuery(compiled, candidateIDs)
 	if err != nil {
-		return nil, false, fmt.Errorf("build candidate query: %w", err)
+		return nil, false, err
+	}
+	if err := dsl.PrepareRuleQueryTx(ctx, tx); err != nil {
+		return nil, false, err
 	}
 
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -512,9 +646,55 @@ func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *d
 		return nil, false, fmt.Errorf("iterate candidates: %w", err)
 	}
 	if len(candidates) > candidateCap {
+		metrics.AlertCandidateCapExceededTotal.Inc()
+		e.log.Warn("alert rule candidate query exceeded the candidate cap; the run matches nothing",
+			"rule_id", compiled.RuleID, "cap", candidateCap)
 		return nil, true, nil
 	}
 	return candidates, false, nil
+}
+
+// candidateQuery builds the statement queryCandidates runs: the rule's WHERE
+// predicate for candidateIDs, the rejected/withdrawn filter, the outer filter on
+// candidateIDs when there are any, and a LIMIT one past candidateCap.
+func candidateQuery(compiled *dsl.CompiledRule, candidateIDs []string) (string, []any, error) {
+	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
+	combined := sq.And{
+		compiled.Where(candidateIDs),
+		// COALESCE keeps CVEs with no status: NULL NOT IN (...) is NULL, which drops the row.
+		sq.Expr("COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')"),
+	}
+	if len(candidateIDs) > 0 {
+		combined = append(combined, sq.Expr("cves.cve_id = ANY(?)", pq.Array(candidateIDs)))
+	}
+	sb := psql.
+		Select(
+			"cves.cve_id",
+			"COALESCE(cves.material_hash, '')",
+			"COALESCE(cves.description_primary, '')",
+		).
+		From("cves")
+	for _, j := range compiled.Joins {
+		sb = sb.Join(j)
+	}
+	query, args, err := sb.
+		Where(combined).
+		Limit(uint64(candidateCap + 1)). //nolint:gosec // G115: constant, not user input
+		ToSql()
+	if err != nil {
+		return "", nil, fmt.Errorf("build candidate query: %w", err)
+	}
+	return query, args, nil
+}
+
+// failUncompilableRule logs a rule whose stored conditions do not compile and marks it
+// status=error, so it fails closed visibly instead of being skipped on every run
+// (PLAN §10.5). Re-enabling the rule runs a new activation scan.
+func (e *Evaluator) failUncompilableRule(ctx context.Context, rule *store.AlertRuleRow, path string, compErr error) {
+	e.log.Error("compile rule for "+path, "rule_id", rule.ID, "err", compErr)
+	if _, err := e.rules.SetAlertRuleStatusIf(ctx, rule.OrgID, rule.ID, "error", "active"); err != nil {
+		e.log.Error("set uncompilable rule to error", "rule_id", rule.ID, "err", err)
+	}
 }
 
 // loadAndCompileRule returns the CompiledRule from cache, or compiles it from the rule's
@@ -524,8 +704,8 @@ func (e *Evaluator) loadAndCompileRule(rule *store.AlertRuleRow) (*dsl.CompiledR
 	if compiled, ok := e.cache.Get(rule.ID, int(rule.DslVersion)); ok {
 		return compiled, nil
 	}
-	var conditions []dsl.Condition
-	if err := json.Unmarshal(rule.Conditions, &conditions); err != nil {
+	conditions, err := dsl.ParseConditions(rule.Conditions)
+	if err != nil {
 		return nil, fmt.Errorf("parse conditions for rule %s: %w", rule.ID, err)
 	}
 	r := dsl.Rule{
@@ -574,79 +754,221 @@ func (e *Evaluator) bypassTx(ctx context.Context, statementTimeoutMS int, fn fun
 	return tx.Commit()
 }
 
-// getCVEsModifiedSince returns a page of non-rejected CVE IDs modified after since,
-// ordered by cve_id ASC for keyset pagination. afterID is the last CVE ID from
-// the previous page (empty string for the first page).
-func (e *Evaluator) getCVEsModifiedSince(ctx context.Context, since time.Time, afterID string, limit int) ([]string, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	switch {
-	case since.IsZero() && afterID == "":
-		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE lower(status) NOT IN ('rejected', 'withdrawn')
-			 ORDER BY cve_id ASC LIMIT $1`, limit)
-	case since.IsZero():
-		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE cve_id > $1
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')
-			 ORDER BY cve_id ASC LIMIT $2`, afterID, limit)
-	case afterID == "":
-		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE date_modified_canonical > $1
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')
-			 ORDER BY cve_id ASC LIMIT $2`, since, limit)
-	default:
-		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE date_modified_canonical > $1
-			   AND cve_id > $2
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')
-			 ORDER BY cve_id ASC LIMIT $3`, since, afterID, limit)
-	}
-	return scanCVEIDs(rows, err)
+// changeScan selects the CVEs whose change-date column dateCol lies in (since, until]
+// and that satisfy filter (an SQL predicate on cves, or empty). It reads them page by
+// page in (dateCol, cve_id) order with a keyset on that pair, which an index on
+// (dateCol, cve_id) serves (migration 000065), so each page starts where the previous
+// one ended however the changed CVEs are spread over the cve_id order.
+//
+// Each page is its own statement, so a merge can move a CVE's date while the scan runs.
+// A CVE whose date moves forward to a time at or before until is read at its new
+// position, a second time if the scan had already read it; changedCVEs removes the
+// duplicate. A CVE whose date moves past until is not read; the next run's scan starts
+// before this run's until, so that run reads it. A CVE
+// whose date moves backward behind the scan's position is stamped by a writer that
+// committed during this run, which is the case cursorRescanWindow exists for: the next
+// run reads it. until also ends the scan: every page holds keys after the previous
+// page's last key and at or before (until, the largest cve_id), and only a writer whose
+// clock reads at or before until can add a key to that range.
+type changeScan struct {
+	dateCol string
+	filter  string
 }
 
-// getCVEsEPSSUpdatedSince returns a page of non-rejected CVE IDs whose EPSS score was
-// updated after since, ordered by cve_id ASC for keyset pagination.
-func (e *Evaluator) getCVEsEPSSUpdatedSince(ctx context.Context, since time.Time, afterID string, limit int) ([]string, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	switch {
-	case since.IsZero() && afterID == "":
-		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE epss_score IS NOT NULL
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')
-			 ORDER BY cve_id ASC LIMIT $1`, limit)
-	case since.IsZero():
-		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE cve_id > $1
-			   AND epss_score IS NOT NULL
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')
-			 ORDER BY cve_id ASC LIMIT $2`, afterID, limit)
-	case afterID == "":
-		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE date_epss_updated > $1
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')
-			 ORDER BY cve_id ASC LIMIT $2`, since, limit)
-	default:
-		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE date_epss_updated > $1
-			   AND cve_id > $2
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')
-			 ORDER BY cve_id ASC LIMIT $3`, since, afterID, limit)
+var (
+	modifiedScan    = changeScan{dateCol: "date_modified_canonical"}
+	matchInputsScan = changeScan{dateCol: "date_match_inputs_changed"}
+	epssScan        = changeScan{dateCol: "date_epss_updated"}
+	retractedScan   = changeScan{dateCol: "date_modified_canonical", filter: retractedCVE}
+)
+
+// changeKey is one CVE's position in a scan: its change date (zero in a scan by ID
+// alone) and its ID.
+type changeKey struct {
+	date  time.Time
+	cveID string
+}
+
+// changePageFunc reads the page of a scan that follows after, or the first page when
+// after is nil.
+type changePageFunc func(ctx context.Context, after *changeKey) ([]changeKey, error)
+
+// collectChanges reads every page of a scan and returns the CVE IDs in scan order. A
+// page shorter than pageSize is the last.
+func collectChanges(ctx context.Context, pageSize int, page changePageFunc) ([]string, error) {
+	var ids []string
+	var after *changeKey
+	for {
+		keys, err := page(ctx, after)
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range keys {
+			ids = append(ids, k.cveID)
+		}
+		if len(keys) < pageSize {
+			return ids, nil
+		}
+		after = &keys[len(keys)-1]
 	}
-	return scanCVEIDs(rows, err)
+}
+
+// changePage returns the page reader of scan s over (since, until].
+func (e *Evaluator) changePage(s changeScan, since, until time.Time, pageSize int) changePageFunc {
+	filter := ""
+	if s.filter != "" {
+		filter = " AND (" + s.filter + ")"
+	}
+	order := ` ORDER BY ` + s.dateCol + `, cve_id`
+	// The later pages need no lower bound on since: the previous page's last date is after it.
+	//nolint:gosec // G202: the column names and filters come from the changeScan values above, never from input.
+	first := `SELECT ` + s.dateCol + `, cve_id FROM cves
+		WHERE ` + s.dateCol + ` > $1 AND ` + s.dateCol + ` <= $2` + filter + order + ` LIMIT $3`
+	//nolint:gosec // G202: as above.
+	next := `SELECT ` + s.dateCol + `, cve_id FROM cves
+		WHERE (` + s.dateCol + `, cve_id) > ($1, $2) AND ` + s.dateCol + ` <= $3` + filter + order + ` LIMIT $4`
+	return func(ctx context.Context, after *changeKey) ([]changeKey, error) {
+		var (
+			rows *sql.Rows
+			err  error
+		)
+		if after == nil {
+			rows, err = e.db.QueryContext(ctx, first, since, until, pageSize)
+		} else {
+			rows, err = e.db.QueryContext(ctx, next, after.date, after.cveID, until, pageSize)
+		}
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close() //nolint:errcheck
+		var keys []changeKey
+		for rows.Next() {
+			var k changeKey
+			if err := rows.Scan(&k.date, &k.cveID); err != nil {
+				return nil, err
+			}
+			keys = append(keys, k)
+		}
+		return keys, rows.Err()
+	}
+}
+
+// idPage returns the page reader of a scan of every CVE that satisfies filter (an SQL
+// predicate on cves, or empty), in cve_id order.
+func (e *Evaluator) idPage(filter string, pageSize int) changePageFunc {
+	if filter != "" {
+		filter = " AND (" + filter + ")"
+	}
+	query := `SELECT cve_id FROM cves WHERE cve_id > $1` + filter + ` ORDER BY cve_id LIMIT $2`
+	return func(ctx context.Context, after *changeKey) ([]changeKey, error) {
+		afterID := ""
+		if after != nil {
+			afterID = after.cveID
+		}
+		ids, err := scanCVEIDs(e.db.QueryContext(ctx, query, afterID, pageSize))
+		if err != nil {
+			return nil, err
+		}
+		keys := make([]changeKey, len(ids))
+		for i, id := range ids {
+			keys[i].cveID = id
+		}
+		return keys, nil
+	}
+}
+
+// changedCVEs runs each scan over (since, until] and returns the IDs they read, sorted,
+// each once: evaluateRuleInChunks relies on disjoint chunks.
+func (e *Evaluator) changedCVEs(ctx context.Context, since, until time.Time, pageSize int, scans ...changeScan) ([]string, error) {
+	var ids []string
+	for _, s := range scans {
+		got, err := collectChanges(ctx, pageSize, e.changePage(s, since, until, pageSize))
+		if err != nil {
+			return nil, fmt.Errorf("scan %s: %w", s.dateCol, err)
+		}
+		ids = append(ids, got...)
+	}
+	slices.Sort(ids)
+	return slices.Compact(ids), nil
+}
+
+// getCVEsModifiedSince returns the IDs of the CVEs whose date_modified_canonical or
+// date_match_inputs_changed lies in (since, until], sorted, each once.
+// date_match_inputs_changed moves when a rule match input outside material_hash changes
+// (a CNA product name, an NVD vulnerable flag), so a CVE whose realtime evaluation of such
+// a change failed is evaluated here. Both dates are stamped from the merge worker's clock
+// or the database clock, so cursorRescanWindow covers both. Each date is its own scan
+// (see changeScan). A zero since returns every CVE, in cve_id order. Rejected and
+// withdrawn CVEs are included: evaluateRule resolves open events only for CVEs in its
+// candidate list, and queryCandidates keeps them from matching.
+func (e *Evaluator) getCVEsModifiedSince(ctx context.Context, since, until time.Time, pageSize int) ([]string, error) {
+	if since.IsZero() {
+		return collectChanges(ctx, pageSize, e.idPage("", pageSize))
+	}
+	return e.changedCVEs(ctx, since, until, pageSize, modifiedScan, matchInputsScan)
+}
+
+// retractedCVE is the SQL predicate for a CVE that a feed has rejected or withdrawn.
+const retractedCVE = `COALESCE(lower(status), '') IN ('rejected', 'withdrawn')`
+
+// getCVEsEPSSUpdatedSince returns the IDs of the CVEs whose EPSS score was updated in
+// (since, until], and of the CVEs retracted in that window, sorted, each once:
+// EPSS-only rules are evaluated on this path alone, and a tombstone clears epss_score
+// without touching date_epss_updated, so their open events would otherwise never
+// resolve. Each is its own scan (see changeScan). A zero since returns every CVE that
+// has a score or is retracted, in cve_id order.
+func (e *Evaluator) getCVEsEPSSUpdatedSince(ctx context.Context, since, until time.Time, pageSize int) ([]string, error) {
+	if since.IsZero() {
+		return collectChanges(ctx, pageSize, e.idPage("epss_score IS NOT NULL OR "+retractedCVE, pageSize))
+	}
+	return e.changedCVEs(ctx, since, until, pageSize, epssScan, retractedScan)
+}
+
+// getWatchlistCVEChangesSince returns, per watchlist, the CVE IDs added to or removed from
+// it after since. A CVE already in the corpus when it is listed has no reason to appear in
+// the modified-date or EPSS scans, so a rule bound to the watchlist would not see it until
+// the CVE next changed. A removed CVE is included so the rule resolves its event.
+// Re-evaluating an unchanged CVE is idempotent (see cursorRescanWindow).
+func (e *Evaluator) getWatchlistCVEChangesSince(ctx context.Context, since time.Time) (map[uuid.UUID][]string, error) {
+	changes := make(map[uuid.UUID][]string)
+	err := e.bypassTx(ctx, 0, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT watchlist_id, cve_id FROM watchlist_items
+			WHERE item_type = 'cve' AND GREATEST(created_at, deleted_at) > $1`, since)
+		if err != nil {
+			return err
+		}
+		defer rows.Close() //nolint:errcheck
+		for rows.Next() {
+			var watchlistID uuid.UUID
+			var cveID string
+			if err := rows.Scan(&watchlistID, &cveID); err != nil {
+				return err
+			}
+			changes[watchlistID] = append(changes[watchlistID], cveID)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return changes, nil
+}
+
+// candidatesForRule returns the CVE IDs a rule evaluates in one batch or EPSS run: the
+// run's change set plus the CVEs added to or removed from the watchlists the rule is bound
+// to. Each ID appears once, because evaluateRuleInChunks relies on disjoint chunks.
+func candidatesForRule(changeSet []string, watchlistIDs []uuid.UUID, listChanges map[uuid.UUID][]string) []string {
+	var listed []string
+	for _, id := range watchlistIDs {
+		listed = append(listed, listChanges[id]...)
+	}
+	if len(listed) == 0 {
+		return changeSet
+	}
+	merged := slices.Concat(changeSet, listed)
+	slices.Sort(merged)
+	return slices.Compact(merged)
 }
 
 // getCVEsBatch fetches the next page of non-rejected CVE IDs ordered by cve_id ASC,
@@ -659,13 +981,13 @@ func (e *Evaluator) getCVEsBatch(ctx context.Context, afterID string, limit int)
 	if afterID == "" {
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
-			 WHERE lower(status) NOT IN ('rejected', 'withdrawn')
+			 WHERE COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $1`, limit)
 	} else {
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
 			 WHERE cve_id > $1
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')
+			   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $2`, afterID, limit)
 	}
 	return scanCVEIDs(rows, err)
@@ -688,32 +1010,30 @@ func scanCVEIDs(rows *sql.Rows, err error) ([]string, error) {
 	return ids, rows.Err()
 }
 
-// readCursor reads the batch/EPSS cursor from feed_sync_state. Returns zero time if no row.
-func (e *Evaluator) readCursor(ctx context.Context, feedName string) (time.Time, error) {
+// readCursor reads the batch/EPSS cursor from feed_sync_state. Returns a zero cursor if no row.
+func (e *Evaluator) readCursor(ctx context.Context, feedName string) (evalCursor, error) {
 	var raw []byte
 	err := e.db.QueryRowContext(ctx,
 		`SELECT cursor_json FROM feed_sync_state WHERE feed_name = $1`, feedName,
 	).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		return time.Time{}, nil
+		return evalCursor{}, nil
 	}
 	if err != nil {
-		return time.Time{}, fmt.Errorf("read cursor %s: %w", feedName, err)
+		return evalCursor{}, fmt.Errorf("read cursor %s: %w", feedName, err)
 	}
-	var cur struct {
-		Since time.Time `json:"since"`
-	}
+	var cur evalCursor
 	if err := json.Unmarshal(raw, &cur); err != nil {
-		return time.Time{}, fmt.Errorf("parse cursor %s: %w", feedName, err)
+		return evalCursor{}, fmt.Errorf("parse cursor %s: %w", feedName, err)
 	}
-	return cur.Since, nil
+	return cur, nil
 }
 
-// writeCursor upserts the batch/EPSS cursor in feed_sync_state.
-func (e *Evaluator) writeCursor(ctx context.Context, feedName string, t time.Time) error {
-	raw, err := json.Marshal(struct {
-		Since time.Time `json:"since"`
-	}{t})
+// writeCursor upserts the batch/EPSS cursor in feed_sync_state. It sets last_success_at
+// for held runs too: the scheduler enqueues the next run from last_success_at, and a held
+// run has completed; the hold itself is recorded in cursor_json.
+func (e *Evaluator) writeCursor(ctx context.Context, feedName string, cur evalCursor) error {
+	raw, err := json.Marshal(cur)
 	if err != nil {
 		return err
 	}

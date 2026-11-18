@@ -78,9 +78,9 @@ async function fetchDeliveries(cursor?: string) {
     }
 
     if (cursor) {
-      deliveries.value = [...deliveries.value, ...(data.items ?? [])]
+      deliveries.value = [...deliveries.value, ...data.items]
     } else {
-      deliveries.value = data.items ?? []
+      deliveries.value = data.items
     }
     nextCursor.value = data.next_cursor
   } catch {

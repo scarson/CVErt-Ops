@@ -6,8 +6,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,6 +35,64 @@ func plainHTTPClient() *http.Client {
 // newTestWorker creates a Worker with default test SmtpConfig and empty externalURL.
 func newTestWorker(s *testutil.TestDB, client *http.Client, cfg notify.WorkerConfig) *notify.Worker {
 	return notify.NewWorker(s.Store, client, cfg, notify.SmtpConfig{}, "")
+}
+
+// runClaimUntilAttempted runs the worker's claim tick until every delivery written
+// to be sent now has been attempted.
+func runClaimUntilAttempted(t *testing.T, s *testutil.TestDB, ctx context.Context, w *notify.Worker) {
+	t.Helper()
+	s.ClaimUntilDeliveriesAttempted(t, ctx, func() { w.RunOnce(ctx) })
+}
+
+// TestRunClaimUntilAttempted_DeliveryAheadOfDatabaseClock covers a delivery whose
+// send_after is later than the next transaction's now(), the state left by the
+// database clock stepping backward between the two transactions.
+func TestRunClaimUntilAttempted_DeliveryAheadOfDatabaseClock(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	org := s.MustCreateOrg(t, ctx, "WorkerClockAheadOrg")
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerClockAheadRule")
+	cfg, _ := json.Marshal(map[string]string{"url": srv.URL})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "WorkerClockAheadChan", "webhook", json.RawMessage(cfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+	if err := s.BindChannelToRule(ctx, rule.ID, chanRow.ID, org.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+	payload, _ := json.Marshal(map[string]string{"cve_id": "CVE-2025-9011"})
+	if err := s.UpsertDelivery(ctx, org.ID, rule.ID, chanRow.ID, payload, 0); err != nil {
+		t.Fatalf("UpsertDelivery: %v", err)
+	}
+	if _, err := s.DB().ExecContext(ctx,
+		"UPDATE notification_deliveries SET send_after = now() + interval '300 milliseconds' WHERE channel_id = $1",
+		chanRow.ID); err != nil {
+		t.Fatalf("move send_after ahead of the database clock: %v", err)
+	}
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	runClaimUntilAttempted(t, s, ctx, w)
+
+	var status string
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT status FROM notification_deliveries WHERE channel_id=$1", chanRow.ID).Scan(&status); err != nil {
+		t.Fatalf("scan delivery row: %v", err)
+	}
+	if status != "succeeded" {
+		t.Errorf("delivery status = %q, want %q", status, "succeeded")
+	}
 }
 
 func TestWorker_ClaimsAndDeliversPendingRow(t *testing.T) {
@@ -73,7 +134,7 @@ func TestWorker_ClaimsAndDeliversPendingRow(t *testing.T) {
 		BackoffBaseSeconds:  1,
 		MaxConcurrentPerOrg: 4,
 	})
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	// The test server must have received exactly one call.
 	if n := called.Load(); n != 1 {
@@ -128,7 +189,7 @@ func TestWorker_RetryOnNon2xx(t *testing.T) {
 		BackoffBaseSeconds:  1,
 		MaxConcurrentPerOrg: 4,
 	})
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	// After one failed attempt the row should be requeued (pending) with attempt_count=1.
 	var status string
@@ -143,6 +204,73 @@ func TestWorker_RetryOnNon2xx(t *testing.T) {
 	}
 	if attemptCount != 1 {
 		t.Errorf("attempt_count = %d, want 1", attemptCount)
+	}
+
+	// The receiver answered, so org members see the same text as site admins.
+	lastError, lastErrorForOrg := scanDeliveryErrors(t, s, ctx, chanID)
+	if !strings.Contains(lastError, "unexpected status 500") || lastErrorForOrg != lastError {
+		t.Errorf("last_error = %q, last_error_for_org = %q, want both to report status 500", lastError, lastErrorForOrg)
+	}
+}
+
+// scanDeliveryErrors returns last_error and last_error_for_org for the channel's delivery.
+func scanDeliveryErrors(t *testing.T, s *testutil.TestDB, ctx context.Context, chanID uuid.UUID) (string, string) {
+	t.Helper()
+	var lastError, lastErrorForOrg sql.NullString
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT last_error, last_error_for_org FROM notification_deliveries WHERE channel_id=$1",
+		chanID).Scan(&lastError, &lastErrorForOrg); err != nil {
+		t.Fatalf("scan delivery errors: %v", err)
+	}
+	return lastError.String, lastErrorForOrg.String
+}
+
+// TestWorker_RefusedDestinationWithheldFromOrg verifies that the address in a
+// refused dial reaches last_error (site admins) but not last_error_for_org.
+func TestWorker_RefusedDestinationWithheldFromOrg(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	org := s.MustCreateOrg(t, ctx, "WorkerRefusedOrg")
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerRefusedRule")
+	cfg, _ := json.Marshal(map[string]string{"url": srv.URL})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "WorkerRefusedChan", "webhook", json.RawMessage(cfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+	if err := s.BindChannelToRule(ctx, rule.ID, chanRow.ID, org.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+	payload, _ := json.Marshal(map[string]string{"cve_id": "CVE-2025-9010"})
+	if err := s.UpsertDelivery(ctx, org.ID, rule.ID, chanRow.ID, payload, 0); err != nil {
+		t.Fatalf("UpsertDelivery: %v", err)
+	}
+
+	// The production client refuses the loopback receiver at dial time.
+	client, err := notify.BuildSafeClient(notify.PrivateDestinations{})
+	if err != nil {
+		t.Fatalf("BuildSafeClient: %v", err)
+	}
+	w := newTestWorker(s, client, notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	runClaimUntilAttempted(t, s, ctx, w)
+
+	lastError, lastErrorForOrg := scanDeliveryErrors(t, s, ctx, chanRow.ID)
+	if !strings.Contains(lastError, "127.0.0.1") {
+		t.Errorf("last_error = %q, want the refused address for site admins", lastError)
+	}
+	if lastErrorForOrg != notify.ErrCauseWithheld.Error() {
+		t.Errorf("last_error_for_org = %q, want %q", lastErrorForOrg, notify.ErrCauseWithheld.Error())
 	}
 }
 
@@ -188,7 +316,7 @@ func TestWorker_ExhaustsAfterMaxAttempts(t *testing.T) {
 		BackoffBaseSeconds:  1,
 		MaxConcurrentPerOrg: 4,
 	})
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	// With attempt_count starting at 3, nextAttempt=4 >= MaxAttempts=4, so must be exhausted.
 	var status string
@@ -229,7 +357,7 @@ func TestWorker_ExhaustsIfChannelDeleted(t *testing.T) {
 		BackoffBaseSeconds:  1,
 		MaxConcurrentPerOrg: 5,
 	})
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	var status string
 	if err := s.DB().QueryRowContext(ctx,
@@ -281,7 +409,7 @@ func TestWorker_ExhaustsUnknownChannelType(t *testing.T) {
 		BackoffBaseSeconds:  1,
 		MaxConcurrentPerOrg: 4,
 	})
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	// Unknown channel type should be exhausted immediately.
 	var status string
@@ -296,6 +424,10 @@ func TestWorker_ExhaustsUnknownChannelType(t *testing.T) {
 	}
 	if lastError == nil || *lastError == "" {
 		t.Error("expected last_error to contain unsupported channel type message")
+	}
+	// The message names only the channel's own type, so org members see it too.
+	if _, forOrg := scanDeliveryErrors(t, s, ctx, chanID); forOrg != *lastError {
+		t.Errorf("last_error_for_org = %q, want %q", forOrg, *lastError)
 	}
 }
 
@@ -345,7 +477,7 @@ func TestWorker_EmailChannel_InvalidSMTP(t *testing.T) {
 		Port: 25,
 		From: "test@example.com",
 	}, "https://cvert.example.com")
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	// Connection failure is transient — should be retried (pending with attempt_count=1).
 	var status string
@@ -360,6 +492,232 @@ func TestWorker_EmailChannel_InvalidSMTP(t *testing.T) {
 	}
 	if attemptCount != 1 {
 		t.Errorf("attempt_count = %d, want 1", attemptCount)
+	}
+}
+
+// queueDeliveryForStoredConfig stores a channel with config exactly as given (no API
+// validation, as for a row written before validation existed), binds it to a new
+// rule, and queues one alert delivery to it. It returns the channel ID.
+func queueDeliveryForStoredConfig(t *testing.T, s *testutil.TestDB, ctx context.Context, name, chanType, config string) uuid.UUID {
+	t.Helper()
+	org := s.MustCreateOrg(t, ctx, name+"Org")
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, name+"Rule")
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, name+"Chan", chanType, json.RawMessage(config))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+	if err := s.BindChannelToRule(ctx, rule.ID, chanRow.ID, org.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+	payload := json.RawMessage(`{"cve_id":"CVE-2025-9012","severity":"HIGH","description_primary":"Test vulnerability"}`)
+	if err := s.UpsertDelivery(ctx, org.ID, rule.ID, chanRow.ID, payload, 0); err != nil {
+		t.Fatalf("UpsertDelivery: %v", err)
+	}
+	return chanRow.ID
+}
+
+// assertConfigFailure checks that the channel's delivery failed permanently on its
+// first attempt with a reason containing wantReason, shown to org members as well.
+func assertConfigFailure(t *testing.T, s *testutil.TestDB, ctx context.Context, chanID uuid.UUID, wantReason string) {
+	t.Helper()
+	var status string
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT status FROM notification_deliveries WHERE channel_id=$1",
+		chanID).Scan(&status); err != nil {
+		t.Fatalf("scan delivery row: %v", err)
+	}
+	if status != "failed" {
+		t.Errorf("delivery status = %q, want %q (config errors are permanent)", status, "failed")
+	}
+	lastError, lastErrorForOrg := scanDeliveryErrors(t, s, ctx, chanID)
+	if !strings.Contains(lastError, wantReason) {
+		t.Errorf("last_error = %q, want it to contain %q", lastError, wantReason)
+	}
+	// A config error describes the org's own channel, so org members see it too.
+	if lastErrorForOrg != lastError {
+		t.Errorf("last_error_for_org = %q, want %q", lastErrorForOrg, lastError)
+	}
+}
+
+// TestWorker_EmailConfigCaseVariantFailsPermanently covers a stored email config whose
+// recipients key differs only in case: delivery refuses it instead of sending to it.
+func TestWorker_EmailConfigCaseVariantFailsPermanently(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// A local listener stands in for the SMTP server and counts connection attempts.
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close() //nolint:errcheck
+	var smtpConns atomic.Int32
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			smtpConns.Add(1)
+			conn.Close() //nolint:errcheck,gosec // G104: test listener only counts connections
+		}
+	}()
+
+	chanID := queueDeliveryForStoredConfig(t, s, ctx, "WorkerEmailCaseVariant", "email",
+		`{"Recipients":["a@example.com"]}`)
+
+	w := notify.NewWorker(s.Store, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	}, notify.SmtpConfig{
+		Host: "127.0.0.1",
+		Port: ln.Addr().(*net.TCPAddr).Port,
+		From: "test@example.com",
+	}, "https://cvert.example.com")
+	runClaimUntilAttempted(t, s, ctx, w)
+
+	if n := smtpConns.Load(); n != 0 {
+		t.Errorf("SMTP connections = %d, want 0", n)
+	}
+	assertConfigFailure(t, s, ctx, chanID, "parse email config")
+}
+
+// TestWorker_WebhookHeaderNotStringFailsPermanently covers a stored webhook config with a
+// custom header value that is not a string: delivery refuses it instead of sending the
+// header empty.
+func TestWorker_WebhookHeaderNotStringFailsPermanently(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	var called atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	chanID := queueDeliveryForStoredConfig(t, s, ctx, "WorkerWebhookHeaderType", "webhook",
+		`{"url":"`+srv.URL+`","custom_headers":{"X-A":1}}`)
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	runClaimUntilAttempted(t, s, ctx, w)
+
+	if n := called.Load(); n != 0 {
+		t.Errorf("webhook calls = %d, want 0", n)
+	}
+	assertConfigFailure(t, s, ctx, chanID, "parse webhook config")
+}
+
+// TestWorker_WebhookBlankURLFailsPermanently covers a stored webhook config whose url is
+// blank: delivery fails at once instead of retrying a request that cannot be built.
+func TestWorker_WebhookBlankURLFailsPermanently(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	chanID := queueDeliveryForStoredConfig(t, s, ctx, "WorkerWebhookBlankURL", "webhook", `{"url":"  "}`)
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	runClaimUntilAttempted(t, s, ctx, w)
+
+	assertConfigFailure(t, s, ctx, chanID, "webhook config must include a non-empty url")
+}
+
+// TestWorker_WebhookReservedHeaderFailsPermanently covers a stored webhook config that
+// sets a header delivery computes itself: delivery refuses it and sends nothing.
+func TestWorker_WebhookReservedHeaderFailsPermanently(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	var called atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	chanID := queueDeliveryForStoredConfig(t, s, ctx, "WorkerWebhookReservedHeader", "webhook",
+		`{"url":"`+srv.URL+`","custom_headers":{"X-CVErt-Timestamp":"0"}}`)
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	runClaimUntilAttempted(t, s, ctx, w)
+
+	if n := called.Load(); n != 0 {
+		t.Errorf("webhook calls = %d, want 0", n)
+	}
+	assertConfigFailure(t, s, ctx, chanID, "custom_headers cannot set X-Cvert-Timestamp")
+}
+
+// TestWorker_EmailRecipientInvalidFailsPermanently covers a stored email config whose
+// recipient is not an RFC 5322 address: delivery refuses it without an SMTP connection.
+func TestWorker_EmailRecipientInvalidFailsPermanently(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close() //nolint:errcheck
+	var smtpConns atomic.Int32
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			smtpConns.Add(1)
+			conn.Close() //nolint:errcheck,gosec // G104: test listener only counts connections
+		}
+	}()
+
+	chanID := queueDeliveryForStoredConfig(t, s, ctx, "WorkerEmailRecipientInvalid", "email",
+		`{"recipients":["not-an-email"]}`)
+
+	w := notify.NewWorker(s.Store, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	}, notify.SmtpConfig{
+		Host: "127.0.0.1",
+		Port: ln.Addr().(*net.TCPAddr).Port,
+		From: "test@example.com",
+	}, "https://cvert.example.com")
+	runClaimUntilAttempted(t, s, ctx, w)
+
+	if n := smtpConns.Load(); n != 0 {
+		t.Errorf("SMTP connections = %d, want 0", n)
+	}
+	assertConfigFailure(t, s, ctx, chanID, "invalid email recipient")
+	// Org viewers read last_error_for_org, and audit masking hides a recipient
+	// without '@', so neither error may name the stored recipient.
+	lastError, lastErrorForOrg := scanDeliveryErrors(t, s, ctx, chanID)
+	for _, recorded := range []string{lastError, lastErrorForOrg} {
+		if strings.Contains(recorded, "not-an-email") {
+			t.Errorf("delivery error %q names the stored recipient", recorded)
+		}
 	}
 }
 
@@ -451,30 +809,25 @@ func TestWorker_BackoffSeconds_ReflectedInSendAfter(t *testing.T) {
 		t.Fatalf("UpsertDelivery: %v", err)
 	}
 
-	beforeRetry := time.Now()
 	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
 		ClaimBatchSize:      10,
 		MaxAttempts:         5,
 		BackoffBaseSeconds:  10,
 		MaxConcurrentPerOrg: 4,
 	})
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	// After first failure (attempt=1), backoff = 10 * 2^0 * [0.5,1.5) = [5,15) seconds.
-	var sendAfter time.Time
+	// The retry sets send_after and updated_at from one now(), so their difference is the backoff.
+	var backoffSeconds float64
 	if err := s.DB().QueryRowContext(ctx,
-		"SELECT send_after FROM notification_deliveries WHERE channel_id=$1",
-		chanID).Scan(&sendAfter); err != nil {
-		t.Fatalf("scan send_after: %v", err)
+		"SELECT EXTRACT(EPOCH FROM send_after - updated_at) FROM notification_deliveries WHERE channel_id=$1",
+		chanID).Scan(&backoffSeconds); err != nil {
+		t.Fatalf("scan backoff: %v", err)
 	}
 
-	minExpected := beforeRetry.Add(5 * time.Second)
-	maxExpected := beforeRetry.Add(16 * time.Second) // 15s + 1s tolerance
-	if sendAfter.Before(minExpected) {
-		t.Errorf("send_after %v is before minimum expected %v", sendAfter, minExpected)
-	}
-	if sendAfter.After(maxExpected) {
-		t.Errorf("send_after %v is after maximum expected %v", sendAfter, maxExpected)
+	if backoffSeconds < 5 || backoffSeconds >= 15 {
+		t.Errorf("backoff = %.3fs, want within [5s, 15s)", backoffSeconds)
 	}
 }
 
@@ -542,8 +895,8 @@ func TestWorker_Recovery_OrphanedEvents(t *testing.T) {
 
 	// Create an orphaned alert event: fired > 1 minute ago, no delivery exists.
 	if _, err := s.DB().ExecContext(ctx, `
-		INSERT INTO alert_events (id, org_id, rule_id, cve_id, material_hash, first_fired_at, last_match_state, suppress_delivery)
-		VALUES ($1, $2, $3, $4, $5, NOW() - INTERVAL '5 minutes', true, false)`,
+		INSERT INTO alert_events (id, org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at, last_match_state, suppress_delivery, feed_seq)
+		VALUES ($1, $2, $3, $4, $5, NOW() - INTERVAL '5 minutes', NOW() - INTERVAL '5 minutes', true, false, nextval('alert_event_feed_seq'))`,
 		uuid.New(), org.ID, rule.ID, "CVE-2025-ORPHAN", uuid.New()); err != nil {
 		t.Fatalf("insert orphaned alert event: %v", err)
 	}
@@ -645,14 +998,17 @@ func TestWorker_EmailDigestBranch(t *testing.T) {
 	}
 
 	// Insert a digest delivery (simulates what executeDigestReport does).
-	payload, _ := json.Marshal([]map[string]any{{
-		"cve_id":              "CVE-2025-9020",
-		"severity":            "CRITICAL",
-		"cvss_v3_score":       9.8,
-		"description_primary": "Test digest vulnerability",
-		"exploit_available":   true,
-		"in_cisa_kev":         false,
-	}})
+	payload, _ := json.Marshal(map[string]any{
+		"total_count": 1,
+		"cves": []map[string]any{{
+			"cve_id":              "CVE-2025-9020",
+			"severity":            "CRITICAL",
+			"cvss_v3_score":       9.8,
+			"description_primary": "Test digest vulnerability",
+			"exploit_available":   true,
+			"in_cisa_kev":         false,
+		}},
+	})
 	if err := s.InsertDigestDelivery(ctx, org.ID, report.ID, chanID, payload); err != nil {
 		t.Fatalf("InsertDigestDelivery: %v", err)
 	}
@@ -668,7 +1024,7 @@ func TestWorker_EmailDigestBranch(t *testing.T) {
 		Port: 25,
 		From: "test@example.com",
 	}, "https://cvert.example.com")
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	// Digest delivery should retry on SMTP failure (pending with attempt_count=1).
 	var status string
@@ -712,7 +1068,7 @@ func TestWorker_DigestPipeline_EndToEnd(t *testing.T) {
 		t.Fatalf("CreateNotificationChannel (2): %v", err)
 	}
 
-	// Report with next_run_at in the past so ClaimDueReports picks it up.
+	// Report with next_run_at in the past so RunDueDigest claims it.
 	report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
 		Name:          "DigestE2EReport",
 		ScheduledTime: "10:00:00",
@@ -734,13 +1090,15 @@ func TestWorker_DigestPipeline_EndToEnd(t *testing.T) {
 	}
 
 	// Insert a CVE modified after the report's created_at (so DigestCVEs returns it).
+	// Stamped with the database clock, which also set created_at; the test
+	// host's clock can run behind the container's.
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO cves (cve_id, status, severity, description_primary, cvss_v3_score, material_hash, date_modified_canonical)
-		VALUES ($1, 'published', 'critical', 'Digest E2E vuln', 9.8, $2, $3)
+		VALUES ($1, 'published', 'critical', 'Digest E2E vuln', 9.8, $2, now())
 		ON CONFLICT (cve_id) DO UPDATE SET
 			severity = EXCLUDED.severity,
 			date_modified_canonical = EXCLUDED.date_modified_canonical`,
-		"CVE-2025-DIGEST-E2E", uuid.New().String(), time.Now()); err != nil {
+		"CVE-2025-DIGEST-E2E", uuid.New().String()); err != nil {
 		t.Fatalf("insert CVE: %v", err)
 	}
 
@@ -774,12 +1132,19 @@ func TestWorker_DigestPipeline_EndToEnd(t *testing.T) {
 		report.ID).Scan(&payload); err != nil {
 		t.Fatalf("scan payload: %v", err)
 	}
-	var snaps []map[string]any
-	if err := json.Unmarshal(payload, &snaps); err != nil {
+	var digest struct {
+		TotalCount int              `json:"total_count"`
+		CVEs       []map[string]any `json:"cves"`
+	}
+	if err := json.Unmarshal(payload, &digest); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
+	snaps := digest.CVEs
 	if len(snaps) == 0 {
 		t.Fatal("payload contains no CVE snapshots")
+	}
+	if digest.TotalCount != len(snaps) {
+		t.Errorf("payload total_count = %d, want %d (the CVEs it carries)", digest.TotalCount, len(snaps))
 	}
 	if id, _ := snaps[0]["cve_id"].(string); id != "CVE-2025-DIGEST-E2E" {
 		t.Errorf("payload cve_id = %q, want %q", id, "CVE-2025-DIGEST-E2E")
@@ -799,6 +1164,344 @@ func TestWorker_DigestPipeline_EndToEnd(t *testing.T) {
 	if lastRunAt.IsZero() {
 		t.Error("last_run_at should be set after digest execution")
 	}
+}
+
+// TestWorker_Digest_IncludesCVECommittedAfterQuery covers a CVE whose
+// date_modified_canonical is earlier than the last_run_at a digest run records,
+// but which became visible only after that run's CVE query: a merge whose clock
+// lags the digest worker's, or whose transaction commits while the run is in
+// progress. The CVE must appear in a later digest.
+func TestWorker_Digest_IncludesCVECommittedAfterQuery(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	db := s.DB()
+
+	org := s.MustCreateOrg(t, ctx, "DigestLateCommitOrg")
+	emailCfg, _ := json.Marshal(map[string]any{
+		"recipients": []string{"late-commit@example.com"},
+	})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "DigestLateCommitChan", "email", json.RawMessage(emailCfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+	report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
+		Name:          "DigestLateCommitReport",
+		ScheduledTime: "10:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     time.Now().Add(-1 * time.Hour),
+		SendOnEmpty:   true,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledReport: %v", err)
+	}
+	if err := s.BindChannelToReport(ctx, org.ID, report.ID, chanRow.ID); err != nil {
+		t.Fatalf("BindChannelToReport: %v", err)
+	}
+	// Backdate created_at so the first run's window certainly contains the
+	// timestamp given to the late CVE below.
+	if _, err := db.ExecContext(ctx,
+		"UPDATE scheduled_reports SET created_at = now() - interval '1 hour' WHERE id = $1",
+		report.ID); err != nil {
+		t.Fatalf("backdate created_at: %v", err)
+	}
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+
+	// First run: the corpus is empty, so the digest is empty.
+	w.RunDigestOnce(ctx)
+
+	var lastRunAt time.Time
+	if err := db.QueryRowContext(ctx,
+		"SELECT last_run_at FROM scheduled_reports WHERE id = $1", report.ID).Scan(&lastRunAt); err != nil {
+		t.Fatalf("scan last_run_at: %v", err)
+	}
+
+	// The CVE is committed after the first run, stamped 1ms before the
+	// last_run_at that run recorded.
+	stamp := lastRunAt.Add(-time.Millisecond)
+	cvss := 9.8
+	s.SeedTestCVE(t, "CVE-2025-DIGEST-LATE", "critical", &testutil.SeedCVEOpts{
+		CvssV3Score:           &cvss,
+		DateModifiedCanonical: &stamp,
+	})
+
+	// Second run.
+	if _, err := db.ExecContext(ctx,
+		"UPDATE scheduled_reports SET next_run_at = now() - interval '1 minute' WHERE id = $1",
+		report.ID); err != nil {
+		t.Fatalf("make report due again: %v", err)
+	}
+	w.RunDigestOnce(ctx)
+
+	counts := digestCVECounts(t, ctx, db, report.ID)
+	if counts["CVE-2025-DIGEST-LATE"] != 1 {
+		t.Errorf("CVE-2025-DIGEST-LATE appeared in %d digests, want 1 (all CVE counts: %v)",
+			counts["CVE-2025-DIGEST-LATE"], counts)
+	}
+}
+
+// TestWorker_Digest_RescanWindowSkipsSentVersions covers CVEs a digest sent whose
+// date_modified_canonical lies within the re-scan window the next digest scans
+// again. A version already sent must not repeat; a CVE modified again since must.
+func TestWorker_Digest_RescanWindowSkipsSentVersions(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	db := s.DB()
+
+	org := s.MustCreateOrg(t, ctx, "DigestRescanOrg")
+	emailCfg, _ := json.Marshal(map[string]any{
+		"recipients": []string{"rescan@example.com"},
+	})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "DigestRescanChan", "email", json.RawMessage(emailCfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+	report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
+		Name:          "DigestRescanReport",
+		ScheduledTime: "10:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     time.Now().Add(-1 * time.Hour),
+		SendOnEmpty:   true,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledReport: %v", err)
+	}
+	if err := s.BindChannelToReport(ctx, org.ID, report.ID, chanRow.ID); err != nil {
+		t.Fatalf("BindChannelToReport: %v", err)
+	}
+
+	// Both CVEs are stamped just after report creation, so the first run sends them
+	// and their stamps lie within the window the second run scans again.
+	stamp := report.CreatedAt.Add(time.Millisecond)
+	s.SeedTestCVE(t, "CVE-2025-RESCAN-SAME", "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
+	s.SeedTestCVE(t, "CVE-2025-RESCAN-CHANGED", "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	w.RunDigestOnce(ctx)
+
+	// A material change to one CVE after the first run.
+	if _, err := db.ExecContext(ctx,
+		"UPDATE cves SET date_modified_canonical = date_modified_canonical + interval '1 millisecond' WHERE cve_id = $1",
+		"CVE-2025-RESCAN-CHANGED"); err != nil {
+		t.Fatalf("modify CVE-2025-RESCAN-CHANGED: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"UPDATE scheduled_reports SET next_run_at = now() - interval '1 minute' WHERE id = $1",
+		report.ID); err != nil {
+		t.Fatalf("make report due again: %v", err)
+	}
+	w.RunDigestOnce(ctx)
+
+	counts := digestCVECounts(t, ctx, db, report.ID)
+	if counts["CVE-2025-RESCAN-SAME"] != 1 {
+		t.Errorf("CVE-2025-RESCAN-SAME appeared in %d digests, want 1 (all CVE counts: %v)",
+			counts["CVE-2025-RESCAN-SAME"], counts)
+	}
+	if counts["CVE-2025-RESCAN-CHANGED"] != 2 {
+		t.Errorf("CVE-2025-RESCAN-CHANGED appeared in %d digests, want 2 (all CVE counts: %v)",
+			counts["CVE-2025-RESCAN-CHANGED"], counts)
+	}
+}
+
+// TestWorker_Digest_MoreCVEsThanQueryLimit covers a digest window holding more
+// matching CVEs than one digest query returns, as after an NVD enrichment burst.
+// 500 high-severity CVEs fill the digest, so the low-severity CVE stamped in the
+// same window is not in it. The payload must report the true total of 501 so
+// renderers and webhook consumers can tell the digest is incomplete.
+func TestWorker_Digest_MoreCVEsThanQueryLimit(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	db := s.DB()
+
+	org := s.MustCreateOrg(t, ctx, "DigestOverflowOrg")
+	emailCfg, _ := json.Marshal(map[string]any{
+		"recipients": []string{"overflow@example.com"},
+	})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "DigestOverflowChan", "email", json.RawMessage(emailCfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+	report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
+		Name:          "DigestOverflowReport",
+		ScheduledTime: "10:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     time.Now().Add(-1 * time.Hour),
+		SendOnEmpty:   true,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledReport: %v", err)
+	}
+	if err := s.BindChannelToReport(ctx, org.ID, report.ID, chanRow.ID); err != nil {
+		t.Fatalf("BindChannelToReport: %v", err)
+	}
+
+	stamp := report.CreatedAt.Add(time.Millisecond)
+	for i := range 500 {
+		s.SeedTestCVE(t, fmt.Sprintf("CVE-2025-OVERFLOW-%04d", i), "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
+	}
+	s.SeedTestCVE(t, "CVE-2025-OVERFLOW-LOW", "low", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	w.RunDigestOnce(ctx)
+
+	payloads := digestPayloads(t, ctx, db, report.ID)
+	if len(payloads) != 1 {
+		t.Fatalf("got %d digest deliveries, want 1", len(payloads))
+	}
+	p := payloads[0]
+	if p.TotalCount != 501 {
+		t.Errorf("payload total_count = %d, want 501", p.TotalCount)
+	}
+	if len(p.CVEs) != 500 {
+		t.Errorf("payload carries %d CVEs, want 500", len(p.CVEs))
+	}
+	for _, c := range p.CVEs {
+		if c.CVEID == "CVE-2025-OVERFLOW-LOW" {
+			t.Error("payload carries CVE-2025-OVERFLOW-LOW, want the 500 high-severity CVEs ahead of it")
+		}
+	}
+}
+
+// digestPayloadJSON is the JSON shape of a digest delivery payload.
+type digestPayloadJSON struct {
+	TotalCount int `json:"total_count"`
+	CVEs       []struct {
+		CVEID string `json:"cve_id"`
+	} `json:"cves"`
+}
+
+// digestPayloads returns the payloads of the report's digest deliveries.
+func digestPayloads(t *testing.T, ctx context.Context, db *sql.DB, reportID uuid.UUID) []digestPayloadJSON {
+	t.Helper()
+	rows, err := db.QueryContext(ctx,
+		"SELECT payload FROM notification_deliveries WHERE report_id = $1", reportID)
+	if err != nil {
+		t.Fatalf("query digest deliveries: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var payloads []digestPayloadJSON
+	for rows.Next() {
+		var raw json.RawMessage
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatalf("scan digest payload: %v", err)
+		}
+		var p digestPayloadJSON
+		if err := json.Unmarshal(raw, &p); err != nil {
+			t.Fatalf("unmarshal digest payload %s: %v", raw, err)
+		}
+		payloads = append(payloads, p)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate digest deliveries: %v", err)
+	}
+	return payloads
+}
+
+// TestWorker_Digest_PreviousDeliveryPending covers a digest that runs while the
+// previous digest for the same report and channel is still pending, for example
+// waiting out a retry backoff after an SMTP failure. The CVEs of both digests must
+// reach the channel.
+func TestWorker_Digest_PreviousDeliveryPending(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	db := s.DB()
+
+	org := s.MustCreateOrg(t, ctx, "DigestPendingOrg")
+	emailCfg, _ := json.Marshal(map[string]any{
+		"recipients": []string{"pending@example.com"},
+	})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "DigestPendingChan", "email", json.RawMessage(emailCfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+	report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
+		Name:          "DigestPendingReport",
+		ScheduledTime: "10:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     time.Now().Add(-1 * time.Hour),
+		SendOnEmpty:   true,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledReport: %v", err)
+	}
+	if err := s.BindChannelToReport(ctx, org.ID, report.ID, chanRow.ID); err != nil {
+		t.Fatalf("BindChannelToReport: %v", err)
+	}
+
+	stamp := report.CreatedAt.Add(time.Millisecond)
+	s.SeedTestCVE(t, "CVE-2025-PENDING-FIRST", "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	w.RunDigestOnce(ctx)
+
+	// The first digest failed once and waits out its retry backoff.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE notification_deliveries
+		 SET attempt_count = 1, send_after = now() + interval '1 hour',
+		     last_error = 'smtp unavailable', last_error_for_org = 'smtp unavailable'
+		 WHERE report_id = $1 AND status = 'pending'`,
+		report.ID); err != nil {
+		t.Fatalf("put first digest into retry backoff: %v", err)
+	}
+
+	// A CVE that arrives after the first digest.
+	later := time.Now().UTC()
+	s.SeedTestCVE(t, "CVE-2025-PENDING-SECOND", "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &later})
+
+	if _, err := db.ExecContext(ctx,
+		"UPDATE scheduled_reports SET next_run_at = now() - interval '1 minute' WHERE id = $1",
+		report.ID); err != nil {
+		t.Fatalf("make report due again: %v", err)
+	}
+	w.RunDigestOnce(ctx)
+
+	counts := digestCVECounts(t, ctx, db, report.ID)
+	for _, id := range []string{"CVE-2025-PENDING-FIRST", "CVE-2025-PENDING-SECOND"} {
+		if counts[id] != 1 {
+			t.Errorf("%s appeared in %d digests, want 1 (all CVE counts: %v)", id, counts[id], counts)
+		}
+	}
+}
+
+// digestCVECounts returns, for each CVE ID, the number of digest deliveries for
+// the report whose payload contains it.
+func digestCVECounts(t *testing.T, ctx context.Context, db *sql.DB, reportID uuid.UUID) map[string]int {
+	t.Helper()
+	counts := map[string]int{}
+	for _, p := range digestPayloads(t, ctx, db, reportID) {
+		for _, c := range p.CVEs {
+			counts[c.CVEID]++
+		}
+	}
+	return counts
 }
 
 func TestWorker_DigestPipeline_SendOnEmptyFalse_NoCVEs(t *testing.T) {
@@ -901,18 +1604,20 @@ func TestWorker_DigestPipeline_SeverityThresholdFiltering(t *testing.T) {
 	}
 
 	// Insert CVEs: one critical (should match), one low (should NOT match).
+	// Stamped with the database clock, which also set the report's created_at;
+	// the test host's clock can run behind the container's.
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO cves (cve_id, status, severity, description_primary, material_hash, date_modified_canonical)
-		VALUES ($1, 'published', 'critical', 'Critical sev test', $2, $3)
+		VALUES ($1, 'published', 'critical', 'Critical sev test', $2, now())
 		ON CONFLICT (cve_id) DO UPDATE SET severity = EXCLUDED.severity, date_modified_canonical = EXCLUDED.date_modified_canonical`,
-		"CVE-2025-SEV-CRIT", uuid.New().String(), time.Now()); err != nil {
+		"CVE-2025-SEV-CRIT", uuid.New().String()); err != nil {
 		t.Fatalf("insert critical CVE: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO cves (cve_id, status, severity, description_primary, material_hash, date_modified_canonical)
-		VALUES ($1, 'published', 'low', 'Low sev test', $2, $3)
+		VALUES ($1, 'published', 'low', 'Low sev test', $2, now())
 		ON CONFLICT (cve_id) DO UPDATE SET severity = EXCLUDED.severity, date_modified_canonical = EXCLUDED.date_modified_canonical`,
-		"CVE-2025-SEV-LOW", uuid.New().String(), time.Now()); err != nil {
+		"CVE-2025-SEV-LOW", uuid.New().String()); err != nil {
 		t.Fatalf("insert low CVE: %v", err)
 	}
 
@@ -931,10 +1636,13 @@ func TestWorker_DigestPipeline_SeverityThresholdFiltering(t *testing.T) {
 		report.ID).Scan(&payload); err != nil {
 		t.Fatalf("scan payload: %v", err)
 	}
-	var snaps []map[string]any
-	if err := json.Unmarshal(payload, &snaps); err != nil {
+	var digest struct {
+		CVEs []map[string]any `json:"cves"`
+	}
+	if err := json.Unmarshal(payload, &digest); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
+	snaps := digest.CVEs
 	// Should have exactly the critical CVE (not the low one).
 	for _, snap := range snaps {
 		sev, _ := snap["severity"].(string)
@@ -951,5 +1659,180 @@ func TestWorker_DigestPipeline_SeverityThresholdFiltering(t *testing.T) {
 	}
 	if !found {
 		t.Error("payload should contain CVE-2025-SEV-CRIT (critical severity >= high threshold)")
+	}
+}
+
+// TestWorker_Digest_OverlappingRunsSendOneDigest covers two notify workers (the
+// serve and worker subcommands each run one) whose digest ticks overlap. The
+// second tick runs while the first is between claiming a report and advancing
+// it, and must not send the report's digest a second time.
+func TestWorker_Digest_OverlappingRunsSendOneDigest(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	db := s.DB()
+
+	org := s.MustCreateOrg(t, ctx, "DigestOverlapOrg")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "DigestOverlapChan")
+	report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
+		Name:          "DigestOverlapReport",
+		ScheduledTime: "10:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     time.Now().Add(-1 * time.Hour),
+		SendOnEmpty:   true,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledReport: %v", err)
+	}
+	if err := s.BindChannelToReport(ctx, org.ID, report.ID, chanID); err != nil {
+		t.Fatalf("BindChannelToReport: %v", err)
+	}
+
+	// A SHARE lock on notification_deliveries stops each digest run at its
+	// delivery insert, after the run has claimed the report.
+	blocker, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin blocker tx: %v", err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			_ = blocker.Rollback()
+		}
+	}()
+	if _, err := blocker.ExecContext(ctx, "LOCK TABLE notification_deliveries IN SHARE MODE"); err != nil {
+		t.Fatalf("lock notification_deliveries: %v", err)
+	}
+
+	cfg := notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	}
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		newTestWorker(s, plainHTTPClient(), cfg).RunDigestOnce(ctx)
+	}()
+	waitForDeliveryInsertWaiters(t, ctx, db, 1, nil)
+
+	// The second run either finds the report not due and returns, or claims it
+	// again and stops at its own delivery insert.
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		newTestWorker(s, plainHTTPClient(), cfg).RunDigestOnce(ctx)
+	}()
+	waitForDeliveryInsertWaiters(t, ctx, db, 2, secondDone)
+
+	if err := blocker.Commit(); err != nil {
+		t.Fatalf("release notification_deliveries lock: %v", err)
+	}
+	released = true
+	for _, done := range []chan struct{}{firstDone, secondDone} {
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Fatal("digest run did not finish after the lock was released")
+		}
+	}
+
+	var deliveryCount int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM notification_deliveries WHERE report_id=$1",
+		report.ID).Scan(&deliveryCount); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	if deliveryCount != 1 {
+		t.Errorf("digest delivery count = %d, want 1 (one digest for the one channel)", deliveryCount)
+	}
+}
+
+// TestWorker_Digest_RunsEveryDueReportInOneTick covers a tick with more than
+// one due report: each report runs in its own transaction, and one tick runs
+// them all.
+func TestWorker_Digest_RunsEveryDueReportInOneTick(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	db := s.DB()
+
+	org := s.MustCreateOrg(t, ctx, "DigestManyOrg")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "DigestManyChan")
+	var reportIDs []uuid.UUID
+	for _, name := range []string{"DigestManyReport1", "DigestManyReport2"} {
+		report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
+			Name:          name,
+			ScheduledTime: "10:00:00",
+			Timezone:      "UTC",
+			NextRunAt:     time.Now().Add(-1 * time.Hour),
+			SendOnEmpty:   true,
+			Status:        "active",
+		})
+		if err != nil {
+			t.Fatalf("CreateScheduledReport(%q): %v", name, err)
+		}
+		if err := s.BindChannelToReport(ctx, org.ID, report.ID, chanID); err != nil {
+			t.Fatalf("BindChannelToReport(%q): %v", name, err)
+		}
+		reportIDs = append(reportIDs, report.ID)
+	}
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	w.RunDigestOnce(ctx)
+
+	for _, id := range reportIDs {
+		var deliveries int
+		var lastRunSet bool
+		if err := db.QueryRowContext(ctx, `
+			SELECT (SELECT COUNT(*) FROM notification_deliveries WHERE report_id = $1),
+			       last_run_at IS NOT NULL
+			FROM scheduled_reports WHERE id = $1`, id).Scan(&deliveries, &lastRunSet); err != nil {
+			t.Fatalf("read report %v state: %v", id, err)
+		}
+		if deliveries != 1 {
+			t.Errorf("report %v delivery count = %d, want 1", id, deliveries)
+		}
+		if !lastRunSet {
+			t.Errorf("report %v last_run_at not set after the tick", id)
+		}
+	}
+}
+
+// waitForDeliveryInsertWaiters waits until want sessions in this test's
+// database are waiting for a lock on notification_deliveries, or until done is
+// closed. A nil done is never closed.
+func waitForDeliveryInsertWaiters(t *testing.T, ctx context.Context, db *sql.DB, want int, done <-chan struct{}) {
+	t.Helper()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.After(30 * time.Second)
+	for {
+		var waiters int
+		if err := db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM pg_locks
+			WHERE locktype = 'relation'
+			  AND relation = 'notification_deliveries'::regclass
+			  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			  AND NOT granted`).Scan(&waiters); err != nil {
+			t.Fatalf("count lock waiters: %v", err)
+		}
+		if waiters >= want {
+			return
+		}
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatalf("timed out waiting for %d sessions blocked on notification_deliveries, have %d", want, waiters)
+		}
 	}
 }

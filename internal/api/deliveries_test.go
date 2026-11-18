@@ -225,6 +225,55 @@ func TestGetDelivery_Found(t *testing.T) {
 	}
 }
 
+// TestDeliveries_ReturnOrgErrorOnly verifies that the org delivery endpoints
+// return last_error_for_org and never the full failure text, which can name
+// addresses a webhook host name resolved to.
+func TestDeliveries_ReturnOrgErrorOnly(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID := mustParseUUID(t, aliceReg.OrgID)
+	chanID := createTestDelivery(t, ctx, db, orgID, "")
+	delID := getDeliveryIDByChannel(t, ctx, db, orgID, chanID)
+
+	const detail = "webhook POST: dial tcp 10.1.2.3:443: ip: 10.1.2.3 not found in allowlist"
+	const forOrg = "delivery failed, cause withheld"
+	if _, err := db.DB().ExecContext(ctx,
+		"UPDATE notification_deliveries SET status='failed', last_error=$2, last_error_for_org=$3, updated_at=now() WHERE id=$1",
+		delID, detail, forOrg); err != nil {
+		t.Fatalf("set failed: %v", err)
+	}
+
+	getResp := doGetDelivery(t, ctx, ts, token, aliceReg.OrgID, delID.String())
+	defer getResp.Body.Close() //nolint:errcheck,gosec // G104
+	var got map[string]any
+	if err := json.NewDecoder(getResp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if got["last_error"] != forOrg {
+		t.Errorf("get last_error = %v, want %q", got["last_error"], forOrg)
+	}
+
+	listResp := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, nil)
+	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
+	var list struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Items) != 1 || list.Items[0]["last_error"] != forOrg {
+		t.Errorf("list items = %v, want one with last_error %q", list.Items, forOrg)
+	}
+}
+
 // TestGetDelivery_404 verifies that fetching a non-existent delivery returns 404.
 func TestGetDelivery_404(t *testing.T) {
 	t.Parallel()
@@ -262,7 +311,7 @@ func TestReplayDelivery_ResetsStatus(t *testing.T) {
 
 	// Put a last_error on the delivery and set status to failed.
 	_, err := db.DB().ExecContext(ctx,
-		"UPDATE notification_deliveries SET status='failed', attempt_count=3, last_error='timeout', updated_at=now() WHERE id=$1",
+		"UPDATE notification_deliveries SET status='failed', attempt_count=3, last_error='timeout', last_error_for_org='timeout', updated_at=now() WHERE id=$1",
 		delID,
 	)
 	if err != nil {
@@ -684,6 +733,51 @@ func TestListDeliveries_Envelope(t *testing.T) {
 	}
 	if len(envelope.Items) != 1 {
 		t.Fatalf("items count = %d, want 1", len(envelope.Items))
+	}
+}
+
+// TestListDeliveries_FirstPageIncludesRowsAheadOfAppClock verifies that the first page
+// lists a delivery whose created_at, set by the database clock, is later than the app's
+// clock. The database host's clock can lead the app host's.
+func TestListDeliveries_FirstPageIncludesRowsAheadOfAppClock(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID := mustParseUUID(t, aliceReg.OrgID)
+	channelID := createTestDelivery(t, ctx, db, orgID, "skew")
+	deliveryID := getDeliveryIDByChannel(t, ctx, db, orgID, channelID)
+
+	// Simulate a database clock 5 seconds ahead of the app clock.
+	if _, err := db.DB().ExecContext(ctx,
+		"UPDATE notification_deliveries SET created_at = now() + interval '5 seconds' WHERE id = $1",
+		deliveryID,
+	); err != nil {
+		t.Fatalf("move created_at ahead: %v", err)
+	}
+
+	resp := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, nil)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list deliveries: got %d, want 200", resp.StatusCode)
+	}
+
+	var envelope struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if len(envelope.Items) != 1 || envelope.Items[0].ID != deliveryID.String() {
+		t.Fatalf("items = %+v, want one item with id %s", envelope.Items, deliveryID)
 	}
 }
 

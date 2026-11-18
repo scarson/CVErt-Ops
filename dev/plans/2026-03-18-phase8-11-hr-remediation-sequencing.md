@@ -151,7 +151,7 @@ All three tasks modify `middleware_auth_test.go`. Execute as a single unit in on
 
 ### Stage 5: Final Cleanup
 
-1. Update `dev/implementation-log.md` with all stages
+1. Add an entry to `dev/implementation-log/` covering all stages
 2. Verify no remaining lint issues: `golangci-lint run`
 3. Run full test suite: `go test ./... -count=1`
 4. Run frontend checks: `cd web && npm run test:unit && npm run type-check && npm run lint`

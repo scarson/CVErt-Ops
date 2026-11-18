@@ -21,6 +21,12 @@ updates:
     labels:
       - dependencies
       - frontend
+    groups:
+      # eslint-plugin-oxlint pins its oxlint peer to the same minor, so both must move together
+      oxlint:
+        patterns:
+          - oxlint
+          - eslint-plugin-oxlint
 
   - package-ecosystem: github-actions
     directory: /

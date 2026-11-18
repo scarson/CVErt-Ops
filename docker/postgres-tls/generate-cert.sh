@@ -19,12 +19,15 @@ fi
 echo "Generating self-signed TLS certificate for dev postgres..."
 
 # MSYS_NO_PATHCONV prevents Git Bash on Windows from mangling /CN= as a file path.
+# It also stops Git Bash converting /c/... paths for the native openssl.exe, so
+# openssl gets paths relative to the script's directory.
+cd "$SCRIPT_DIR"
 MSYS_NO_PATHCONV=1 openssl req -new -x509 -nodes \
     -days 3650 \
     -subj "/CN=cvert-ops-postgres" \
     -addext "subjectAltName=DNS:postgres,DNS:localhost,IP:127.0.0.1" \
-    -keyout "$KEY_FILE" \
-    -out "$CERT_FILE" \
+    -keyout server.key \
+    -out server.crt \
     2>/dev/null
 
 # Postgres requires the key file to have restricted permissions (mode 0600).

@@ -87,6 +87,28 @@ func TestLogValue_EmptySecretsNotMasked(t *testing.T) {
 	}
 }
 
+func TestLoadMigration_NeedsOnlyDatabaseURL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://app@localhost/db")
+	t.Setenv("JWT_SECRET", "")
+
+	cfg, err := LoadMigration()
+	if err != nil {
+		t.Fatalf("LoadMigration: %v", err)
+	}
+	if got := cfg.URL(); got != "postgres://app@localhost/db" {
+		t.Errorf("URL() = %q, want DATABASE_URL", got)
+	}
+
+	t.Setenv("DATABASE_URL_MIGRATE", "postgres://admin@localhost/db")
+	cfg, err = LoadMigration()
+	if err != nil {
+		t.Fatalf("LoadMigration with DATABASE_URL_MIGRATE: %v", err)
+	}
+	if got := cfg.URL(); got != "postgres://admin@localhost/db" {
+		t.Errorf("URL() = %q, want DATABASE_URL_MIGRATE", got)
+	}
+}
+
 func TestLoad_Defaults(t *testing.T) {
 	// Set only the required env vars; all envDefault fields should get defaults.
 	t.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
@@ -107,7 +129,7 @@ func TestLoad_Defaults(t *testing.T) {
 		{"DBMaxConnIdleTime", cfg.DBMaxConnIdleTime, 5 * time.Minute},
 		{"DBStatementTimeoutMS", cfg.DBStatementTimeoutMS, 14000},
 		{"DBLongStatementTimeoutMS", cfg.DBLongStatementTimeoutMS, 120000},
-		{"DBQueryExecMode", cfg.DBQueryExecMode, "simple_protocol"},
+		{"DBQueryExecMode", cfg.DBQueryExecMode, "cache_describe"},
 		// Server
 		{"ListenAddr", cfg.ListenAddr, ":8080"},
 		{"AppEnv", cfg.AppEnv, "development"},
@@ -155,6 +177,7 @@ func TestLoad_Defaults(t *testing.T) {
 		{"RetentionNotifDeliveriesDays", cfg.RetentionNotifDeliveriesDays, 90},
 		{"RetentionAuditLogDays", cfg.RetentionAuditLogDays, 365},
 		{"RetentionJobQueueHours", cfg.RetentionJobQueueHours, 24},
+		{"RetentionWatchlistItemsDays", cfg.RetentionWatchlistItemsDays, 30},
 		{"RetentionMaxRuntimeSeconds", cfg.RetentionMaxRuntimeSeconds, 300},
 		// MFA
 		{"MFARequiredSiteAdmins", cfg.MFARequiredSiteAdmins, false},

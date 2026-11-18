@@ -1630,7 +1630,7 @@ Expected: 0 issues.
 Use `/plan-check` on PLAN.md §7.2 (SSO), §14 (tiers), §17 (audit log), §21 (retention).
 Use `/pitfall-check` on all new code.
 
-**Step 4: Update `dev/implementation-log.md`**
+**Step 4: Add an entry to `dev/implementation-log/`**
 
 Document what was built, key decisions, gotchas, test coverage.
 

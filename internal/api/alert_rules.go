@@ -5,6 +5,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -12,9 +13,11 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/validation"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/alert/dsl"
 	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/store"
@@ -24,38 +27,35 @@ import (
 // ── Request / response types ──────────────────────────────────────────────────
 
 type createAlertRuleBody struct {
-	Name                     string          `json:"name"`
-	Logic                    string          `json:"logic"`
-	Conditions               json.RawMessage `json:"conditions"`
-	WatchlistIDs             []string        `json:"watchlist_ids"`
-	Enabled                  bool            `json:"enabled"`
-	FireOnNonMaterialChanges bool            `json:"fire_on_non_material_changes"`
+	Name         string          `json:"name"`
+	Logic        string          `json:"logic"`
+	Conditions   json.RawMessage `json:"conditions"`
+	WatchlistIDs []string        `json:"watchlist_ids"`
+	Enabled      bool            `json:"enabled"`
 }
 
 // patchAlertRuleBody uses nil-check semantics for all fields.
 // json.RawMessage is nil if the key was absent from the PATCH payload.
 // Enabled maps to the status state machine: true → activating, false → disabled.
 type patchAlertRuleBody struct {
-	Name                     *string         `json:"name"`
-	Logic                    *string         `json:"logic"`
-	Conditions               json.RawMessage `json:"conditions"` // nil = not provided
-	WatchlistIDs             *[]string       `json:"watchlist_ids"`
-	Enabled                  *bool           `json:"enabled"`
-	FireOnNonMaterialChanges *bool           `json:"fire_on_non_material_changes"`
+	Name         *string         `json:"name,omitempty"`
+	Logic        *string         `json:"logic,omitempty"`
+	Conditions   json.RawMessage `json:"conditions,omitempty"` // nil = not provided
+	WatchlistIDs *[]string       `json:"watchlist_ids,omitempty"`
+	Enabled      *bool           `json:"enabled,omitempty"`
 }
 
 type alertRuleEntry struct {
-	ID                       string          `json:"id"`
-	Name                     string          `json:"name"`
-	Logic                    string          `json:"logic"`
-	Conditions               json.RawMessage `json:"conditions"`
-	WatchlistIDs             []string        `json:"watchlist_ids"`
-	HasEPSSCondition         bool            `json:"has_epss_condition"`
-	IsEPSSOnly               bool            `json:"is_epss_only"`
-	FireOnNonMaterialChanges bool            `json:"fire_on_non_material_changes"`
-	Status                   string          `json:"status"`
-	CreatedAt                string          `json:"created_at"`
-	UpdatedAt                string          `json:"updated_at"`
+	ID               string          `json:"id"`
+	Name             string          `json:"name"`
+	Logic            string          `json:"logic"`
+	Conditions       json.RawMessage `json:"conditions"`
+	WatchlistIDs     []string        `json:"watchlist_ids"`
+	HasEPSSCondition bool            `json:"has_epss_condition"`
+	IsEPSSOnly       bool            `json:"is_epss_only"`
+	Status           string          `json:"status"`
+	CreatedAt        string          `json:"created_at"`
+	UpdatedAt        string          `json:"updated_at"`
 }
 
 type alertRuleCursor struct {
@@ -92,17 +92,16 @@ func alertRuleToEntry(r store.AlertRuleRow) alertRuleEntry {
 		ids[i] = id.String()
 	}
 	return alertRuleEntry{
-		ID:                       r.ID.String(),
-		Name:                     r.Name,
-		Logic:                    r.Logic,
-		Conditions:               r.Conditions,
-		WatchlistIDs:             ids,
-		HasEPSSCondition:         r.HasEpssCondition,
-		IsEPSSOnly:               r.IsEpssOnly,
-		FireOnNonMaterialChanges: r.FireOnNonMaterialChanges,
-		Status:                   r.Status,
-		CreatedAt:                r.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:                r.UpdatedAt.Format(time.RFC3339),
+		ID:               r.ID.String(),
+		Name:             r.Name,
+		Logic:            r.Logic,
+		Conditions:       r.Conditions,
+		WatchlistIDs:     ids,
+		HasEPSSCondition: r.HasEpssCondition,
+		IsEPSSOnly:       r.IsEpssOnly,
+		Status:           r.Status,
+		CreatedAt:        r.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:        r.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -125,6 +124,13 @@ func parseDSL(logic string, conditionsJSON json.RawMessage, watchlistCount int) 
 		return dsl.Rule{}, dslMeta{}, nil, err
 	}
 	rule, err := dsl.Parse(raw)
+	if unknown, ok := errors.AsType[*dsl.UnknownKeyError](err); ok && unknown.Index >= 0 {
+		// A key the condition does not define: located like the request body's
+		// own unknown members, at body.conditions[i].<key>.
+		return dsl.Rule{}, dslMeta{}, []dsl.ValidationError{
+			{Index: unknown.Index, Field: unknown.Key, Message: validation.MsgUnexpectedProperty, Severity: "error"},
+		}, nil
+	}
 	if err != nil {
 		// Structural parse error — return as a validation error.
 		return dsl.Rule{}, dslMeta{}, []dsl.ValidationError{
@@ -203,8 +209,7 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	var req createAlertRuleBody
-	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
@@ -256,14 +261,13 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	row, err := srv.store.CreateAlertRule(r.Context(), orgID, store.CreateAlertRuleParams{
-		Name:                     req.Name,
-		Logic:                    req.Logic,
-		Conditions:               req.Conditions,
-		WatchlistIds:             wlUUIDs,
-		HasEpssCondition:         meta.hasEPSS,
-		IsEpssOnly:               meta.isEPSSOnly,
-		Status:                   status,
-		FireOnNonMaterialChanges: req.FireOnNonMaterialChanges,
+		Name:             req.Name,
+		Logic:            req.Logic,
+		Conditions:       req.Conditions,
+		WatchlistIds:     wlUUIDs,
+		HasEpssCondition: meta.hasEPSS,
+		IsEpssOnly:       meta.isEPSSOnly,
+		Status:           status,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -415,8 +419,7 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	oldState := alertRuleToEntry(*current)
 
 	var req patchAlertRuleBody
-	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -434,7 +437,6 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	logic := current.Logic
 	conditions := current.Conditions
 	wlIDs := current.WatchlistIds
-	fireOnNonMaterial := current.FireOnNonMaterialChanges
 	hasEPSS := current.HasEpssCondition
 	isEPSSOnly := current.IsEpssOnly
 
@@ -458,9 +460,6 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 			return
 		}
 		wlIDs = uuids
-	}
-	if req.FireOnNonMaterialChanges != nil {
-		fireOnNonMaterial = *req.FireOnNonMaterialChanges
 	}
 
 	// Re-validate DSL only if DSL fields changed.
@@ -526,14 +525,13 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	row, err := srv.store.UpdateAlertRule(r.Context(), orgID, id, store.UpdateAlertRuleParams{
-		Name:                     name,
-		Logic:                    logic,
-		Conditions:               conditions,
-		WatchlistIds:             wlIDs,
-		HasEpssCondition:         hasEPSS,
-		IsEpssOnly:               isEPSSOnly,
-		FireOnNonMaterialChanges: fireOnNonMaterial,
-		Status:                   newStatus,
+		Name:             name,
+		Logic:            logic,
+		Conditions:       conditions,
+		WatchlistIds:     wlIDs,
+		HasEpssCondition: hasEPSS,
+		IsEpssOnly:       isEPSSOnly,
+		Status:           newStatus,
 	})
 	if err != nil {
 		slog.ErrorContext(r.Context(), "update alert rule", "error", err)
@@ -621,8 +619,7 @@ func (srv *Server) validateAlertRuleHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req validateRuleBody
-	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -725,14 +722,14 @@ func (srv *Server) listRuleChannelsHandler(w http.ResponseWriter, r *http.Reques
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	items := make([]channelEntry, len(rows))
+	items := make([]ChannelEntry, len(rows))
 	for i, row := range rows {
-		items[i] = channelEntry{
+		items[i] = ChannelEntry{
 			ID:        row.ID.String(),
 			OrgID:     row.OrgID.String(),
 			Name:      row.Name,
 			Type:      row.Type,
-			Config:    row.Config,
+			Config:    channelResponseConfig(row.Config),
 			CreatedAt: row.CreatedAt.Format(time.RFC3339),
 			UpdatedAt: row.UpdatedAt.Format(time.RFC3339),
 		}
@@ -819,14 +816,14 @@ func (srv *Server) unbindRuleChannelHandler(w http.ResponseWriter, r *http.Reque
 }
 
 // enqueueActivation enqueues an alert_activation job for the given rule.
-// Errors are logged but not propagated — the rule is already persisted and
-// the sweep zombie mechanism will recover stuck activations.
+// Errors are logged but not propagated — the rule is already persisted, and the
+// zombie activation sweeper moves a rule left activating with no job to 'error'.
 func (srv *Server) enqueueActivation(ctx context.Context, orgID, ruleID uuid.UUID) {
 	payload, _ := json.Marshal(map[string]string{
 		"rule_id": ruleID.String(),
 		"org_id":  orgID.String(),
 	})
-	lockKey := "activation:" + ruleID.String()
+	lockKey := alert.ActivationLockKey(ruleID)
 	if _, err := srv.store.EnqueueJob(ctx, "alert_activation", 10, payload, &lockKey, 3, nil); err != nil {
 		slog.ErrorContext(ctx, "enqueue activation job", "rule_id", ruleID, "error", err)
 	}

@@ -62,7 +62,7 @@ func TestCSRF_BlocksCookiePostWithoutHeader(t *testing.T) {
 	body := `{"name":"NoCSRFOrg"}`
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	req.AddCookie(requestCookie("access_token", accessToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -94,7 +94,7 @@ func TestCSRF_AllowsCookiePostWithHeader(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	req.AddCookie(requestCookie("access_token", accessToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -123,7 +123,7 @@ func TestCSRF_AllowsGETWithoutHeader(t *testing.T) {
 
 	// GET without X-Requested-By — must reach the handler (200 OK).
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/orgs/"+reg.OrgID, nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	req.AddCookie(requestCookie("access_token", accessToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -184,8 +184,8 @@ func TestCSRF_SafeMethodsAllowed(t *testing.T) {
 			handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			}))
-			req := httptest.NewRequest(method, "/api/v1/test", nil)
-			req.AddCookie(&http.Cookie{Name: "access_token", Value: "fake-token"})
+			req := httptest.NewRequestWithContext(t.Context(), method, "/api/v1/test", nil)
+			req.AddCookie(requestCookie("access_token", "fake-token"))
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 			if rec.Code != http.StatusOK {
@@ -211,8 +211,8 @@ func TestCSRF_StateChangingMethodsBlocked(t *testing.T) {
 			handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			}))
-			req := httptest.NewRequest(method, "/api/v1/test", nil)
-			req.AddCookie(&http.Cookie{Name: "access_token", Value: "fake-token"})
+			req := httptest.NewRequestWithContext(t.Context(), method, "/api/v1/test", nil)
+			req.AddCookie(requestCookie("access_token", "fake-token"))
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 			if rec.Code != http.StatusForbidden {
@@ -229,8 +229,8 @@ func TestCSRF_WrongHeaderValue(t *testing.T) {
 	handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/test", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: "fake-token"})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/test", nil)
+	req.AddCookie(requestCookie("access_token", "fake-token"))
 	req.Header.Set("X-Requested-By", "wrong-value")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -246,8 +246,8 @@ func TestCSRF_ErrorFormat_RFC9457(t *testing.T) {
 	handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/test", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: "fake-token"})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/test", nil)
+	req.AddCookie(requestCookie("access_token", "fake-token"))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -292,7 +292,7 @@ func TestCSRF_NoCookieBypassesCheck(t *testing.T) {
 			handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			}))
-			req := httptest.NewRequest(method, "/api/v1/test", nil)
+			req := httptest.NewRequestWithContext(t.Context(), method, "/api/v1/test", nil)
 			// No cookie — should pass through without CSRF header.
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)

@@ -50,8 +50,18 @@ function formatJson(data: unknown): string {
   return JSON.stringify(data, null, 2)
 }
 
+function sourceTabValue(source: CVESourceResponse): string {
+  return `${source.source_name}:${source.source_id ?? ''}`
+}
+
+function sourceTabLabel(source: CVESourceResponse): string {
+  const name = formatSourceName(source.source_name)
+  const repeated = props.sources.filter((s) => s.source_name === source.source_name).length > 1
+  return repeated && source.source_id ? `${name} ${source.source_id}` : name
+}
+
 const defaultTab = computed(() =>
-  props.sources.length > 0 ? props.sources[0]!.source_name : '',
+  props.sources.length > 0 ? sourceTabValue(props.sources[0]!) : '',
 )
 </script>
 
@@ -73,17 +83,17 @@ const defaultTab = computed(() =>
       <TabsList>
         <TabsTrigger
           v-for="source in sources"
-          :key="source.source_name"
-          :value="source.source_name"
+          :key="sourceTabValue(source)"
+          :value="sourceTabValue(source)"
         >
-          {{ formatSourceName(source.source_name) }}
+          {{ sourceTabLabel(source) }}
         </TabsTrigger>
       </TabsList>
 
       <TabsContent
         v-for="source in sources"
-        :key="source.source_name"
-        :value="source.source_name"
+        :key="sourceTabValue(source)"
+        :value="sourceTabValue(source)"
         class="mt-4 space-y-4"
       >
         <div class="flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">

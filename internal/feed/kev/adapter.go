@@ -230,6 +230,13 @@ func parseKEV(body interface{ Read([]byte) (int, error) }, storedVersion string)
 							syntaxBroken = true
 							break
 						}
+						// Only a type error leaves the decoder past the record. Any other
+						// error, such as a body cut short, is sticky: every later Decode
+						// returns it again, so the fetch fails and is tried again.
+						var typeErr *json.UnmarshalTypeError
+						if !errors.As(err, &typeErr) {
+							return nil, "", "", fmt.Errorf("decode vulnerability: %w", err)
+						}
 						slog.Warn("skipping malformed record in feed stream",
 							"feed", SourceName, "error", err)
 						continue
@@ -277,9 +284,9 @@ func recordToPatch(rec kevRecord) *feed.CanonicalPatch {
 	kevTrue := true
 
 	patch := &feed.CanonicalPatch{
-		CVEID:        cveID,
-		SourceID:     cveID,
-		InCISAKEV:    &kevTrue,
+		CVEID:            cveID,
+		SourceID:         cveID,
+		InCISAKEV:        &kevTrue,
 		ExploitAvailable: &kevTrue, // KEV entries have known exploits
 	}
 

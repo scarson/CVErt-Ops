@@ -1048,3 +1048,24 @@ func TestAdminUpdateOrgMFASettings_EmitsEvent(t *testing.T) {
 		t.Errorf("event severity = %q, want info", events[0]["severity"])
 	}
 }
+
+func TestAdminForcePasswordReset_Repeat(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+	actors := setupAdminMFATest(t, ctx, srv, ts)
+
+	url := ts.URL + "/api/v1/orgs/" + actors.orgID.String() + "/members/" + actors.memberID.String() + "/force-password-reset"
+	for i := range 2 {
+		req := authedRequest(t, ctx, http.MethodPost, url, "", actors.ownerCookies)
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+		if err != nil {
+			t.Fatalf("force-password-reset call %d: %v", i, err)
+		}
+		resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("force-password-reset call %d: got %d, want 200", i, resp.StatusCode)
+		}
+	}
+}

@@ -39,22 +39,26 @@ UPDATE scheduled_reports
 SET deleted_at = now(), updated_at = now()
 WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL;
 
--- name: ClaimDueReports :many
--- Digest runner: claim up to $1 reports that are due for execution.
+-- name: ClaimDueReport :one
+-- Digest runner: claim the earliest due report that is not in skip_ids and not
+-- held by another run. The row lock lasts until the caller's transaction ends.
 SELECT * FROM scheduled_reports
 WHERE status = 'active'
   AND next_run_at <= now()
   AND deleted_at IS NULL
+  AND id <> ALL(@skip_ids::uuid[])
 ORDER BY next_run_at
-LIMIT $1
+LIMIT 1
 FOR UPDATE SKIP LOCKED;
 
 -- name: AdvanceReport :exec
--- After a digest run: update last_run_at and next_run_at.
+-- After a digest run: update last_run_at, next_run_at, and the sent CVE
+-- versions the next run's re-scan window must leave out.
 UPDATE scheduled_reports
-SET last_run_at = $2,
-    next_run_at = $3,
-    updated_at  = now()
+SET last_run_at      = $2,
+    next_run_at      = $3,
+    rescan_sent_cves = $4,
+    updated_at       = now()
 WHERE id = $1;
 
 -- name: GetAlertRuleName :one

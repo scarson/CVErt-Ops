@@ -18,9 +18,13 @@ WITH doomed AS (
 DELETE FROM feed_fetch_log f USING doomed WHERE f.id = doomed.id;
 
 -- name: CleanupAlertEvents :execrows
+-- An event's age counts from its most recent fire. last_fired_at is never earlier than
+-- first_fired_at, so the bound on first_fired_at lets this scan use that column's index.
 WITH doomed AS (
     SELECT id FROM alert_events
-    WHERE org_id = ANY(@org_ids::uuid[]) AND first_fired_at < @cutoff::timestamptz
+    WHERE org_id = ANY(@org_ids::uuid[])
+      AND first_fired_at < @cutoff::timestamptz
+      AND last_fired_at < @cutoff::timestamptz
     ORDER BY first_fired_at LIMIT @batch_size::int
 )
 DELETE FROM alert_events ae USING doomed WHERE ae.id = doomed.id;
@@ -90,3 +94,11 @@ WITH doomed AS (
     ORDER BY created_at LIMIT @batch_size::int
 )
 DELETE FROM audit_log al USING doomed WHERE al.id = doomed.id;
+
+-- name: CleanupWatchlistItems :execrows
+WITH doomed AS (
+    SELECT id FROM watchlist_items
+    WHERE deleted_at < @cutoff::timestamptz
+    ORDER BY deleted_at LIMIT @batch_size::int
+)
+DELETE FROM watchlist_items wi USING doomed WHERE wi.id = doomed.id;

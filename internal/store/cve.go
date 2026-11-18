@@ -7,10 +7,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
 
+	"github.com/scarson/cvert-ops/internal/ecosystem"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -27,20 +29,27 @@ func (s *Store) GetCVE(ctx context.Context, cveID string) (*generated.CVE, error
 	return &row, nil
 }
 
-// GetCVEMaterialHash returns the material_hash for a CVE, or empty string if
-// the CVE does not exist or has no hash.
-func (s *Store) GetCVEMaterialHash(ctx context.Context, cveID string) (string, error) {
-	var hash sql.NullString
+// CVEChangeHashes holds the two hashes whose change triggers realtime alert
+// evaluation: material_hash and match_inputs_hash. A missing row or value is "".
+type CVEChangeHashes struct {
+	Material    string
+	MatchInputs string
+}
+
+// GetCVEChangeHashes returns the material_hash and match_inputs_hash of a CVE,
+// with empty strings when the CVE does not exist or a hash is NULL.
+func (s *Store) GetCVEChangeHashes(ctx context.Context, cveID string) (CVEChangeHashes, error) {
+	var material, matchInputs sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		"SELECT material_hash FROM cves WHERE cve_id = $1", cveID,
-	).Scan(&hash)
+		"SELECT material_hash, match_inputs_hash FROM cves WHERE cve_id = $1", cveID,
+	).Scan(&material, &matchInputs)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+		return CVEChangeHashes{}, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("get cve material hash: %w", err)
+		return CVEChangeHashes{}, fmt.Errorf("get cve change hashes: %w", err)
 	}
-	return hash.String, nil
+	return CVEChangeHashes{Material: material.String, MatchInputs: matchInputs.String}, nil
 }
 
 // GetCVEDetail fetches the canonical CVE row plus all child tables (references,
@@ -70,6 +79,20 @@ func (s *Store) GetCVEDetail(ctx context.Context, cveID string) (
 		return nil, nil, nil, nil, fmt.Errorf("get affected CPEs: %w", err)
 	}
 	return cve, refs, pkgs, cpes, nil
+}
+
+// GetCVEVersionRanges returns what a CVE affects by version: its vulnerable NVD
+// CPE matches, which skip "running on" platforms, and its CNA affected entries.
+func (s *Store) GetCVEVersionRanges(ctx context.Context, cveID string) ([]generated.CveCpeMatch, []generated.CveCnaAffected, error) {
+	matches, err := s.q.GetCVEVulnerableCPEMatches(ctx, cveID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get CPE matches: %w", err)
+	}
+	cnaAffected, err := s.q.GetCVECNAAffected(ctx, cveID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get CNA affected: %w", err)
+	}
+	return matches, cnaAffected, nil
 }
 
 // ListCVEs returns a page of CVE rows ordered by date_modified_canonical desc,
@@ -133,8 +156,13 @@ func (s *Store) SearchCVEs(ctx context.Context, p SearchParams) ([]generated.CVE
 	}
 
 	// Severity filter — IN ($1, $2, ...) is safe since severity has 5 possible values.
+	// Compared in lower case: feeds store it in either case, and clients may send either.
 	if len(p.Severity) > 0 {
-		sb = sb.Where(sq.Eq{"cves.severity": p.Severity})
+		lowered := make([]string, len(p.Severity))
+		for i, severity := range p.Severity {
+			lowered[i] = strings.ToLower(severity)
+		}
+		sb = sb.Where(sq.Eq{"lower(cves.severity)": lowered})
 	}
 
 	// CVSS score range.
@@ -161,16 +189,19 @@ func (s *Store) SearchCVEs(ctx context.Context, p SearchParams) ([]generated.CVE
 
 	// Ecosystem / package filter via EXISTS subquery to avoid duplicate rows
 	// when a CVE affects multiple packages in the same ecosystem.
+	// A name without a release matches every release of that ecosystem, as alert rules do.
 	if p.Ecosystem != nil {
+		const ecosystemMatches = "(lower(p.ecosystem) = lower(?) OR starts_with(lower(p.ecosystem), lower(?) || ':'))"
 		if p.PackageName != nil {
 			sb = sb.Where(
-				"EXISTS (SELECT 1 FROM cve_affected_packages p WHERE p.cve_id = cves.cve_id AND p.ecosystem = ? AND p.package_name = ?)",
-				*p.Ecosystem, *p.PackageName,
+				"EXISTS (SELECT 1 FROM cve_affected_packages p WHERE p.cve_id = cves.cve_id AND "+ecosystemMatches+
+					" AND "+ecosystem.FoldedNameSQL("p.ecosystem", "p.package_name")+" = ?)",
+				*p.Ecosystem, *p.Ecosystem, ecosystem.FoldPackageName(*p.Ecosystem, *p.PackageName),
 			)
 		} else {
 			sb = sb.Where(
-				"EXISTS (SELECT 1 FROM cve_affected_packages p WHERE p.cve_id = cves.cve_id AND p.ecosystem = ?)",
-				*p.Ecosystem,
+				"EXISTS (SELECT 1 FROM cve_affected_packages p WHERE p.cve_id = cves.cve_id AND "+ecosystemMatches+")",
+				*p.Ecosystem, *p.Ecosystem,
 			)
 		}
 	}

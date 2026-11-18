@@ -408,8 +408,8 @@ func doLinkInit(t *testing.T, ctx context.Context, ts *httptest.Server, orgID, a
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	initReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken}) //nolint:exhaustruct // test
-	initResp, err := client.Do(initReq)                                       //nolint:gosec // G704 false positive
+	initReq.AddCookie(requestCookie("access_token", accessToken))
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("link init: %v", err)
 	}
@@ -457,8 +457,8 @@ func TestIdentityLinking_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	initReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken}) //nolint:exhaustruct // test
-	initResp, err := client.Do(initReq)                                       //nolint:gosec // G704 false positive
+	initReq.AddCookie(requestCookie("access_token", accessToken))
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -493,8 +493,8 @@ func TestIdentityLinking_Success(t *testing.T) {
 	}
 	cbReq.AddCookie(stateCookie)
 	cbReq.AddCookie(nonceCookie)
-	cbReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken}) //nolint:exhaustruct // test
-	cbResp, err := client.Do(cbReq)                                         //nolint:gosec // G704 false positive
+	cbReq.AddCookie(requestCookie("access_token", accessToken))
+	cbResp, err := client.Do(cbReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("callback: %v", err)
 	}
@@ -547,8 +547,8 @@ func TestIdentityLinking_AlreadyLinked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	initReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken}) //nolint:exhaustruct // test
-	initResp, err := client.Do(initReq)                                       //nolint:gosec // G704 false positive
+	initReq.AddCookie(requestCookie("access_token", accessToken))
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -582,8 +582,8 @@ func TestIdentityLinking_AlreadyLinked(t *testing.T) {
 	}
 	cbReq.AddCookie(stateCookie)
 	cbReq.AddCookie(nonceCookie)
-	cbReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken}) //nolint:exhaustruct // test
-	cbResp, err := client.Do(cbReq)                                         //nolint:gosec // G704 false positive
+	cbReq.AddCookie(requestCookie("access_token", accessToken))
+	cbResp, err := client.Do(cbReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("callback: %v", err)
 	}
@@ -661,8 +661,8 @@ func TestIdentityLinking_InvalidJWT(t *testing.T) {
 	}
 	cbReq.AddCookie(stateCookie)
 	cbReq.AddCookie(nonceCookie)
-	cbReq.AddCookie(&http.Cookie{Name: "access_token", Value: "not-a-valid-jwt"}) //nolint:exhaustruct // test
-	cbResp, err := client.Do(cbReq)                                               //nolint:gosec // G704 false positive
+	cbReq.AddCookie(requestCookie("access_token", "not-a-valid-jwt"))
+	cbResp, err := client.Do(cbReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("callback: %v", err)
 	}
@@ -692,8 +692,8 @@ func TestIdentityLinking_NoSSOConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	initReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken}) //nolint:exhaustruct // test
-	initResp, err := client.Do(initReq)                                       //nolint:gosec // G704 false positive
+	initReq.AddCookie(requestCookie("access_token", accessToken))
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("link init: %v", err)
 	}
@@ -725,8 +725,8 @@ func TestIdentityLinking_DisabledSSO(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	initReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken}) //nolint:exhaustruct // test
-	initResp, err := client.Do(initReq)                                       //nolint:gosec // G704 false positive
+	initReq.AddCookie(requestCookie("access_token", accessToken))
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("link init: %v", err)
 	}
@@ -749,7 +749,7 @@ func TestIdentityLinking_Idempotent(t *testing.T) {
 	loginResp := doLogin(t, ctx, ts, "link-idem@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	accessToken := cookieValue(loginResp, "access_token")
-	authCookie := &http.Cookie{Name: "access_token", Value: accessToken} //nolint:exhaustruct // test
+	authCookie := requestCookie("access_token", accessToken)
 
 	client := ts.Client()
 	client.CheckRedirect = noRedirect
@@ -837,8 +837,8 @@ func TestAudit_IdentityLinking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	initReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken}) //nolint:exhaustruct // test
-	initResp, err := client.Do(initReq)                                       //nolint:gosec // G704 false positive
+	initReq.AddCookie(requestCookie("access_token", accessToken))
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -872,8 +872,8 @@ func TestAudit_IdentityLinking(t *testing.T) {
 	}
 	cbReq.AddCookie(stateCookie)
 	cbReq.AddCookie(nonceCookie)
-	cbReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken}) //nolint:exhaustruct // test
-	cbResp, err := client.Do(cbReq)                                         //nolint:gosec // G704 false positive
+	cbReq.AddCookie(requestCookie("access_token", accessToken))
+	cbResp, err := client.Do(cbReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("callback: %v", err)
 	}

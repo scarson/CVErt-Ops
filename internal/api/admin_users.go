@@ -192,6 +192,7 @@ func (srv *Server) adminUnlockUserHandler(w http.ResponseWriter, r *http.Request
 }
 
 // adminResetPasswordHandler handles POST /api/v1/admin/users/{user_id}/reset-password.
+// Sets force_password_reset=true, increments token_version, and deletes device tokens.
 func (srv *Server) adminResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	userID, err := uuid.Parse(chi.URLParam(r, "user_id"))
 	if err != nil {
@@ -199,7 +200,14 @@ func (srv *Server) adminResetPasswordHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if _, err := srv.store.AdminGetUserByID(r.Context(), userID); err != nil {
+	callerID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
+	if callerID == userID {
+		writeProblem(w, http.StatusBadRequest, "cannot force password reset on yourself")
+		return
+	}
+
+	user, err := srv.store.AdminGetUserByID(r.Context(), userID)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeProblem(w, http.StatusNotFound, "user not found")
 			return
@@ -208,14 +216,25 @@ func (srv *Server) adminResetPasswordHandler(w http.ResponseWriter, r *http.Requ
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	if !user.PasswordHash.Valid {
+		writeProblem(w, http.StatusBadRequest, noNativeIdentityProblem)
+		return
+	}
 
-	if _, err := srv.store.AdminForcePasswordReset(r.Context(), userID); err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			slog.ErrorContext(r.Context(), "admin reset password", "error", err)
-			writeProblem(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-		// Already flagged — idempotent.
+	if err := srv.forcePasswordReset(r.Context(), userID); err != nil {
+		slog.ErrorContext(r.Context(), "admin reset password", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(r.Context(), secure.Event{
+			Type:     secure.EventAuthPasswordResetForced,
+			Severity: secure.SeverityCritical,
+			ActorIP:  clientIP(r.Context()),
+			UserID:   &callerID,
+			Details:  map[string]any{"target_user_id": userID.String()},
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "password_reset_required", "user_id": userID.String()})

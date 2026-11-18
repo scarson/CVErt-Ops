@@ -3,12 +3,14 @@
 package api
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/merge"
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
@@ -16,7 +18,7 @@ import (
 // Enqueues an async search index rebuild job, returns 202 Accepted.
 func (srv *Server) adminReindexHandler(w http.ResponseWriter, r *http.Request) {
 	lockKey := "system:reindex"
-	jobID, err := srv.store.EnqueueJob(r.Context(), "system_reindex", 0, nil, &lockKey, 1, nil)
+	jobID, err := srv.store.EnqueueJob(r.Context(), merge.SearchReindexQueue, 0, json.RawMessage(`{}`), &lockKey, 1, nil)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "admin reindex: enqueue", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")
@@ -43,9 +45,9 @@ func (srv *Server) adminConfigHandler(w http.ResponseWriter, _ *http.Request) {
 		"cookie_secure":     cfg.CookieSecure,
 
 		// Auth.
-		"jwt_algorithm":        cfg.JWTAlgorithm,
-		"lockout_threshold":    cfg.LockoutThreshold,
-		"lockout_duration":     cfg.LockoutDuration.String(),
+		"jwt_algorithm":         cfg.JWTAlgorithm,
+		"lockout_threshold":     cfg.LockoutThreshold,
+		"lockout_duration":      cfg.LockoutDuration.String(),
 		"argon2_max_concurrent": cfg.Argon2MaxConcurrent,
 
 		// Database.
@@ -65,14 +67,14 @@ func (srv *Server) adminConfigHandler(w http.ResponseWriter, _ *http.Request) {
 		"notify_backoff_base_seconds":   cfg.NotifyBackoffBaseSeconds,
 
 		// Data retention.
-		"retention_cleanup_enabled":    cfg.RetentionCleanupEnabled,
-		"retention_cleanup_batch_size": cfg.RetentionCleanupBatchSize,
-		"retention_raw_payload_days":   cfg.RetentionRawPayloadDays,
-		"retention_feed_fetch_log_days": cfg.RetentionFeedFetchLogDays,
-		"retention_alert_events_days":  cfg.RetentionAlertEventsDays,
+		"retention_cleanup_enabled":       cfg.RetentionCleanupEnabled,
+		"retention_cleanup_batch_size":    cfg.RetentionCleanupBatchSize,
+		"retention_raw_payload_days":      cfg.RetentionRawPayloadDays,
+		"retention_feed_fetch_log_days":   cfg.RetentionFeedFetchLogDays,
+		"retention_alert_events_days":     cfg.RetentionAlertEventsDays,
 		"retention_notif_deliveries_days": cfg.RetentionNotifDeliveriesDays,
-		"retention_audit_log_days":     cfg.RetentionAuditLogDays,
-		"retention_job_queue_hours":    cfg.RetentionJobQueueHours,
+		"retention_audit_log_days":        cfg.RetentionAuditLogDays,
+		"retention_job_queue_hours":       cfg.RetentionJobQueueHours,
 
 		// AI.
 		"ai_quota_enabled": cfg.AIQuotaEnabled,
@@ -181,4 +183,3 @@ func redactSecret(s string) string {
 	}
 	return "***"
 }
-

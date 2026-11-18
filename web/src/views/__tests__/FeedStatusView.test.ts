@@ -3,6 +3,7 @@
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import FeedStatusView from '@/views/FeedStatusView.vue'
 
 vi.mock('vue-router', () => ({
   useRoute: vi.fn<() => { path: string }>(() => ({ path: '/admin/feeds' })),
@@ -79,7 +80,6 @@ function mockFeedsError() {
 }
 
 async function mountFeedStatus() {
-  const { default: FeedStatusView } = await import('@/views/FeedStatusView.vue')
   const wrapper = mount(FeedStatusView)
   await flushPromises()
   return wrapper
@@ -166,7 +166,6 @@ describe('FeedStatusView', () => {
   it('shows loading state', async () => {
     mockGET.mockReset()
     mockGET.mockImplementation(() => new Promise(() => {}))
-    const { default: FeedStatusView } = await import('@/views/FeedStatusView.vue')
     const wrapper = mount(FeedStatusView)
     expect(wrapper.text()).toContain('Loading')
   })
@@ -186,6 +185,30 @@ describe('FeedStatusView', () => {
     // Log details should now be visible
     expect(wrapper.text()).toContain('150 fetched')
     expect(wrapper.text()).toContain('42 upserted')
+  })
+
+  it('does not render a partial run as an error', async () => {
+    mockGET.mockReset()
+    mockGET.mockResolvedValueOnce({
+      data: {
+        items: [
+          {
+            ...mockFeedItems[0],
+            recent_logs: [{ ...mockFeedItems[0]!.recent_logs[0], status: 'partial' }],
+          },
+        ],
+      },
+      error: undefined,
+    })
+
+    const wrapper = await mountFeedStatus()
+    await wrapper.find('button[aria-label^="Toggle logs"]').trigger('click')
+    await flushPromises()
+
+    const badge = wrapper.findAll('[data-slot="badge"]').find((el) => el.text() === 'partial')
+    expect(badge).toBeDefined()
+    expect(badge!.classes()).not.toContain('bg-destructive')
+    expect(badge!.classes()).toContain('bg-secondary')
   })
 
   it('collapses log rows when chevron is clicked again', async () => {

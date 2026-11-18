@@ -7,11 +7,9 @@ import "testing"
 // TODO(test): EPSS Apply integration tests require a live Postgres database with
 // the cves and epss_staging tables. These tests should verify:
 //
-// 1. Apply with a synthetic gzip CSV served via httptest:
-//    - Scores applied to existing CVEs (Statement 1: UPDATE cves SET epss_score)
-//    - Scores staged for non-existent CVEs (Statement 2: INSERT INTO epss_staging)
-//    - Advisory lock coordination with merge pipeline
-//    - IS DISTINCT FROM guard prevents dead tuples on unchanged scores
+// 1. Apply with a synthetic gzip CSV served via httptest — covered by
+//    apply_batch_integration_test.go (writes to existing CVEs, staging of
+//    non-existent CVEs, merge advisory lock, IS DISTINCT FROM guard).
 //
 // 2. Apply short-circuit when cursor score_date matches today
 //

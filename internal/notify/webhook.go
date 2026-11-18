@@ -8,12 +8,17 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/scarson/cvert-ops/internal/store"
 )
 
 // WebhookConfig holds the delivery-time view of a notification_channels row for a webhook channel.
@@ -24,6 +29,35 @@ type WebhookConfig struct {
 	CustomHeaders          map[string]string // applied after denylist filtering
 }
 
+// ChannelWebhookConfig builds the WebhookConfig for a webhook channel from its stored
+// config JSON ({"url": ..., "custom_headers": {...}}), decoded by ParseWebhookSettings,
+// and its signing secrets. Delivery and the channel test endpoint both use it so a test
+// sends exactly what a delivery would. Config the parser or CheckWebhookSettings
+// refuses is returned as an error.
+func ChannelWebhookConfig(ch *store.NotificationChannelForDeliveryRow) (WebhookConfig, error) {
+	settings, err := ParseWebhookSettings(ch.Config)
+	if err != nil {
+		return WebhookConfig{}, err
+	}
+	if err := CheckWebhookSettings(settings); err != nil {
+		return WebhookConfig{}, err
+	}
+	return WebhookConfig{
+		URL:                    settings.URL,
+		SigningSecret:          ch.SigningSecret.String,
+		SigningSecretSecondary: ch.SigningSecretSecondary.String,
+		CustomHeaders:          settings.CustomHeaders,
+	}, nil
+}
+
+// ReservedHeaderNames returns the custom header names a channel may not set,
+// in lowercase and sorted.
+func ReservedHeaderNames() []string {
+	names := slices.Collect(maps.Keys(deniedHeaders))
+	slices.Sort(names)
+	return names
+}
+
 // deniedHeaders are custom header keys that callers must not override.
 var deniedHeaders = map[string]bool{
 	"host":                           true,
@@ -31,6 +65,11 @@ var deniedHeaders = map[string]bool{
 	"content-length":                 true,
 	"transfer-encoding":              true,
 	"connection":                     true,
+	"upgrade":                        true,
+	"keep-alive":                     true,
+	"proxy-connection":               true,
+	"te":                             true,
+	"trailer":                        true,
 	"x-cvert-timestamp":              true,
 	"x-cvertops-signature":           true,
 	"x-cvertops-signature-secondary": true,
@@ -45,7 +84,8 @@ func Send(ctx context.Context, client *http.Client, cfg WebhookConfig, payload [
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// Apply custom headers, skipping denied keys.
+	// Apply custom headers, skipping denied keys. ChannelWebhookConfig already
+	// refuses them; this also covers a WebhookConfig built another way.
 	for k, v := range cfg.CustomHeaders {
 		if !deniedHeaders[strings.ToLower(k)] {
 			req.Header.Set(k, v)
@@ -78,7 +118,37 @@ func Send(ctx context.Context, client *http.Client, cfg WebhookConfig, payload [
 	io.Copy(io.Discard, io.LimitReader(resp.Body, 4096)) //nolint:errcheck,gosec // G104: discard errors are irrelevant for io.Discard writes
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("webhook POST: unexpected status %d", resp.StatusCode)
+		return &StatusError{StatusCode: resp.StatusCode}
 	}
 	return nil
+}
+
+// StatusError reports that the webhook receiver answered with a non-2xx status.
+// Any other error from Send means the request failed before a response arrived.
+type StatusError struct {
+	StatusCode int
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("webhook POST: unexpected status %d", e.StatusCode)
+}
+
+// ErrCauseWithheld stands in for a delivery error that org members may not read.
+var ErrCauseWithheld = errors.New("delivery failed; the cause is recorded for the instance operator")
+
+// ErrorForOrg returns the error org members may read for a failed delivery.
+// Only errors known to describe the org's own channel pass through: a
+// receiver's answer (*StatusError) and a problem with the channel's stored
+// configuration (permanentDeliveryError). Every other error, including dial
+// and DNS failures that name resolved addresses, becomes ErrCauseWithheld.
+func ErrorForOrg(err error) error {
+	if err == nil {
+		return nil
+	}
+	var statusErr *StatusError
+	var configErr *permanentDeliveryError
+	if errors.As(err, &statusErr) || errors.As(err, &configErr) {
+		return err
+	}
+	return ErrCauseWithheld
 }

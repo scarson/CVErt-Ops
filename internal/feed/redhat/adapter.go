@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -45,6 +46,10 @@ var dateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 type Cursor struct {
 	AfterDate string `json:"after_date"`
 	Page      int    `json:"page,omitempty"`
+	// CaughtUp is true once a walk has reached its last list page. A cleared
+	// cursor starts false, so a refill reports Red Hat data as incomplete until
+	// it finishes.
+	CaughtUp bool `json:"caught_up,omitempty"`
 }
 
 // Adapter implements feed.Adapter for the Red Hat Security Data API.
@@ -73,18 +78,18 @@ type listEntry struct {
 
 // detailRecord represents the full Red Hat CVE detail response.
 type detailRecord struct {
-	Name            string            `json:"name"`
-	ThreatSeverity  string            `json:"threat_severity"`
-	PublicDate      string            `json:"public_date"`
-	CWE             string            `json:"cwe"`
-	CVSS3           *cvss3Info        `json:"cvss3"`
-	Details         []string          `json:"details"`
-	References      []string          `json:"references"`
-	Bugzilla        *bugzillaInfo     `json:"bugzilla"`
+	Name            string              `json:"name"`
+	ThreatSeverity  string              `json:"threat_severity"`
+	PublicDate      string              `json:"public_date"`
+	CWE             string              `json:"cwe"`
+	CVSS3           *cvss3Info          `json:"cvss3"`
+	Details         []string            `json:"details"`
+	References      []string            `json:"references"`
+	Bugzilla        *bugzillaInfo       `json:"bugzilla"`
 	AffectedRelease affectedReleaseList `json:"affected_release"`
-	PackageState    packageStateList   `json:"package_state"`
-	Mitigation      *mitigationInfo   `json:"mitigation"`
-	UpstreamFix     string            `json:"upstream_fix"`
+	PackageState    packageStateList    `json:"package_state"`
+	Mitigation      *mitigationInfo     `json:"mitigation"`
+	UpstreamFix     string              `json:"upstream_fix"`
 }
 
 type cvss3Info struct {
@@ -155,11 +160,11 @@ type mitigationInfo struct {
 // fixStatePriority maps fix state strings to severity rankings.
 // Lower number = more severe. States not in the map get priority 0 (worst).
 var fixStatePriority = map[string]int{
-	"Affected":             1,
-	"Will not fix":         2,
-	"Fix deferred":         3,
-	"Under investigation":  4,
-	"Not affected":         5,
+	"Affected":            1,
+	"Will not fix":        2,
+	"Fix deferred":        3,
+	"Under investigation": 4,
+	"Not affected":        5,
 }
 
 // parseListResponse decodes the Red Hat CVE list endpoint JSON array.
@@ -197,10 +202,12 @@ func detailToPatch(d detailRecord) feed.CanonicalPatch {
 	// Date published from public_date
 	p.DatePublished = feed.ParseTimePtr(d.PublicDate)
 
-	// CVSS v3: score is a string in the API, needs parsing
+	// CVSS v3: score is a string in the API, needs parsing. ParseFloat accepts
+	// NaN and infinity spellings; a non-finite score cannot be marshaled to JSON,
+	// so it would fail merge.Ingest and stop the feed run. Fetch logs the drop.
 	if d.CVSS3 != nil && d.CVSS3.BaseScore != "" {
 		score, err := strconv.ParseFloat(d.CVSS3.BaseScore, 64)
-		if err == nil {
+		if err == nil && !math.IsNaN(score) && !math.IsInf(score, 0) {
 			p.CVSSv3Score = &score
 			vec := strings.Clone(feed.StripNullBytes(d.CVSS3.ScoringVector))
 			p.CVSSv3Vector = &vec
@@ -472,13 +479,19 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		}
 
 		patch := detailToPatch(*detail)
+		if detail.CVSS3 != nil && detail.CVSS3.BaseScore != "" && patch.CVSSv3Score == nil {
+			a.log.WarnContext(ctx, "redhat: dropping unusable CVSS v3 score",
+				slog.String("cve_id", cveID),
+				slog.String("score_raw", detail.CVSS3.BaseScore))
+		}
 		patch.RawPayload = raw
 		patches = append(patches, patch)
 	}
 
 	// Determine next cursor for pagination.
 	// When fullPage: advance to the next page with same AfterDate.
-	// When !fullPage (last page): advance AfterDate to today, reset Page.
+	// When !fullPage (last page): advance AfterDate to today, reset Page, and
+	// mark the walk caught up. A full page keeps the flag it was given.
 	// Always return non-nil NextCursor so the caller persists the new position.
 	var next Cursor
 	if fullPage {
@@ -489,10 +502,12 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		next = Cursor{
 			AfterDate: cur.AfterDate,
 			Page:      page + 1,
+			CaughtUp:  cur.CaughtUp,
 		}
 	} else {
 		next = Cursor{
 			AfterDate: fetchedAt.Format("2006-01-02"),
+			CaughtUp:  true,
 		}
 	}
 	nextCursor, err := json.Marshal(next)

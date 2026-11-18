@@ -3,7 +3,10 @@
 package merge
 
 import (
+	"cmp"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"sort"
@@ -54,27 +57,29 @@ type ResolvedReference struct {
 // rules (PLAN.md §5.1 + §5.2).
 type ResolvedCVE struct {
 	// Scalar fields mapped to the cves table.
-	Status               string
-	DatePublished        *time.Time
+	Status                string
+	DatePublished         *time.Time
 	DateModifiedSourceMax *time.Time // max source_date_modified across all sources
-	DescriptionPrimary   *string
-	Severity             string
-	CVSSv3Score          *float64
-	CVSSv3Vector         string
-	CVSSv3Source         string // source_name that provided the winning v3 CVSS
-	CVSSv4Score          *float64
-	CVSSv4Vector         string
-	CVSSv4Source         string // source_name that provided the winning v4 CVSS
-	CVSSScoreDiverges    bool
-	CWEIDs               []string // sorted, deduped union across all sources
-	ExploitAvailable     bool
-	InCISAKEV            bool
-	IsWithdrawn          bool
+	DescriptionPrimary    *string
+	Severity              string
+	CVSSv3Score           *float64
+	CVSSv3Vector          string
+	CVSSv3Source          string // source_name that provided the winning v3 CVSS
+	CVSSv4Score           *float64
+	CVSSv4Vector          string
+	CVSSv4Source          string // source_name that provided the winning v4 CVSS
+	CVSSScoreDiverges     bool
+	CWEIDs                []string // sorted, deduped union across all sources
+	ExploitAvailable      bool
+	InCISAKEV             bool
+	IsWithdrawn           bool
 
 	// Child table data.
 	References       []ResolvedReference
 	AffectedPackages []feed.AffectedPackage
 	AffectedCPEs     []feed.AffectedCPE
+	CPEMatches       []feed.CPEMatch    // not a material_hash input
+	CNAAffected      []feed.CNAAffected // not a material_hash input
 }
 
 // resolve builds a ResolvedCVE from the given cve_sources rows by applying
@@ -82,7 +87,7 @@ type ResolvedCVE struct {
 // priority lists contribute to union fields (CWEs, references, packages, CPEs)
 // but never win scalar precedence over the named sources.
 func resolve(sources []generated.CveSource) (ResolvedCVE, error) {
-	patches := make(map[string]feed.CanonicalPatch, len(sources))
+	rows := make([]sourceRow, 0, len(sources))
 	var latestModified *time.Time
 
 	for _, src := range sources {
@@ -92,7 +97,7 @@ func resolve(sources []generated.CveSource) (ResolvedCVE, error) {
 			// with remaining well-formed sources rather than failing the whole CVE.
 			continue
 		}
-		patches[src.SourceName] = p
+		rows = append(rows, sourceRow{name: src.SourceName, id: src.SourceID, patch: p})
 		if src.SourceDateModified.Valid {
 			t := src.SourceDateModified.Time
 			if latestModified == nil || t.After(*latestModified) {
@@ -102,24 +107,22 @@ func resolve(sources []generated.CveSource) (ResolvedCVE, error) {
 		}
 	}
 
+	patches, allWithdrawn := collapseSources(rows)
+
 	var r ResolvedCVE
 	r.DateModifiedSourceMax = latestModified
 
 	// --- Status (MITRE > NVD > OSV > GHSA, then unknown sources) ---
 	r.Status = firstStr(patches, func(p feed.CanonicalPatch) string { return p.Status }, statusPriority)
 
-	// --- IsWithdrawn: follows the same source as Status when possible,
-	//     but also set if ANY source explicitly marks withdrawal. ---
-	for _, src := range statusPriority {
-		if p, ok := patches[src]; ok && p.Status != "" {
-			r.IsWithdrawn = p.IsWithdrawn
-			break
-		}
-	}
+	// --- IsWithdrawn: the CVE is withdrawn when every row is, or when the
+	//     highest-precedence source with a status says so. A withdrawn advisory
+	//     is absent from patches, so it cannot reach this check. ---
+	r.IsWithdrawn = allWithdrawn
 	if !r.IsWithdrawn {
-		for _, p := range patches {
-			if p.IsWithdrawn {
-				r.IsWithdrawn = true
+		for _, src := range statusPriority {
+			if p, ok := patches[src]; ok && p.Status != "" {
+				r.IsWithdrawn = p.IsWithdrawn
 				break
 			}
 		}
@@ -218,8 +221,8 @@ func resolve(sources []generated.CveSource) (ResolvedCVE, error) {
 
 	// --- References: union, deduped by url_canonical ---
 	refSeen := make(map[string]struct{})
-	for _, p := range patches {
-		for _, ref := range p.References {
+	for _, src := range slices.Sorted(maps.Keys(patches)) {
+		for _, ref := range patches[src].References {
 			canon := canonicalizeURL(ref.URL)
 			if _, seen := refSeen[canon]; seen {
 				continue
@@ -233,29 +236,13 @@ func resolve(sources []generated.CveSource) (ResolvedCVE, error) {
 		}
 	}
 
-	// --- Affected packages: union, deduped by (ecosystem, package_name, introduced),
-	//     iterated in pkgPriority order so higher-precedence source wins collisions ---
-	pkgSeen := make(map[string]struct{})
-	for _, src := range slices.Concat(pkgPriority, otherSources(patches, pkgPriority)) {
-		p, ok := patches[src]
-		if !ok {
-			continue
-		}
-		for _, pkg := range p.AffectedPackages {
-			// NUL byte separator: safe because ecosystem/package names never contain NUL.
-			key := pkg.Ecosystem + "\x00" + pkg.PackageName + "\x00" + pkg.Introduced
-			if _, seen := pkgSeen[key]; seen {
-				continue
-			}
-			pkgSeen[key] = struct{}{}
-			r.AffectedPackages = append(r.AffectedPackages, pkg)
-		}
-	}
+	// --- Affected packages: union of whole ranges ---
+	r.AffectedPackages = unionPackages(patches)
 
 	// --- Affected CPEs: union, deduped by cpe_normalized ---
 	cpeSeen := make(map[string]struct{})
-	for _, p := range patches {
-		for _, cpe := range p.AffectedCPEs {
+	for _, src := range slices.Sorted(maps.Keys(patches)) {
+		for _, cpe := range patches[src].AffectedCPEs {
 			norm := cpe.CPENormalized
 			if norm == "" {
 				norm = strings.ToLower(cpe.CPE)
@@ -271,7 +258,75 @@ func resolve(sources []generated.CveSource) (ResolvedCVE, error) {
 		}
 	}
 
+	r.CPEMatches = unionCPEMatches(patches)
+
+	var err error
+	if r.CNAAffected, err = resolveCNAAffected(patches); err != nil {
+		return ResolvedCVE{}, err
+	}
+
 	return r, nil
+}
+
+// unionCPEMatches returns every distinct CPE match across all sources, sorted so
+// the result does not depend on map iteration. NVD repeats whole entries across
+// configurations, and two entries that differ in any field are both kept.
+func unionCPEMatches(patches map[string]feed.CanonicalPatch) []feed.CPEMatch {
+	seen := make(map[feed.CPEMatch]struct{})
+	var matches []feed.CPEMatch
+	for _, p := range patches {
+		for _, m := range p.CPEMatches {
+			if _, ok := seen[m]; ok {
+				continue
+			}
+			seen[m] = struct{}{}
+			matches = append(matches, m)
+		}
+	}
+	slices.SortFunc(matches, func(a, b feed.CPEMatch) int {
+		return cmp.Or(
+			cmp.Compare(a.CPENormalized, b.CPENormalized),
+			cmp.Compare(a.CPE, b.CPE),
+			cmp.Compare(a.VersionStartIncluding, b.VersionStartIncluding),
+			cmp.Compare(a.VersionStartExcluding, b.VersionStartExcluding),
+			cmp.Compare(a.VersionEndIncluding, b.VersionEndIncluding),
+			cmp.Compare(a.VersionEndExcluding, b.VersionEndExcluding),
+			cmp.Compare(boolRank(a.Vulnerable), boolRank(b.Vulnerable)),
+		)
+	})
+	return matches
+}
+
+func boolRank(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// resolveCNAAffected returns the distinct CNA affected entries of every source,
+// ordered by their JSON form. CNAs repeat whole entries within one record, and the
+// MITRE copy and NVD's relay can differ. CNA data can only report a version as
+// affected or unresolved, so keeping a stale copy is the safe direction.
+func resolveCNAAffected(patches map[string]feed.CanonicalPatch) ([]feed.CNAAffected, error) {
+	byKey := make(map[string]feed.CNAAffected)
+	for _, p := range patches {
+		for _, a := range p.CNAAffected {
+			key, err := json.Marshal(a)
+			if err != nil {
+				return nil, fmt.Errorf("marshal CNA affected entry: %w", err)
+			}
+			byKey[string(key)] = a
+		}
+	}
+	if len(byKey) == 0 {
+		return nil, nil
+	}
+	entries := make([]feed.CNAAffected, 0, len(byKey))
+	for _, key := range slices.Sorted(maps.Keys(byKey)) {
+		entries = append(entries, byKey[key])
+	}
+	return entries, nil
 }
 
 // firstStr returns the first non-empty string produced by field() when

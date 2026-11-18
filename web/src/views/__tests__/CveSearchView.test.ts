@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import type { components } from '@/lib/api/schema'
+import CveSearchView from '@/views/CveSearchView.vue'
 
 type CVEItem = components['schemas']['CVEItem']
 
@@ -75,8 +76,20 @@ function mockErrorResponse() {
   })
 }
 
+// The client converts a request that never reaches the server into a 503 problem.
+function mockNetworkFailure() {
+  mockGET.mockResolvedValue({
+    data: undefined,
+    error: {
+      type: 'about:blank',
+      title: 'Network Error',
+      status: 503,
+      detail: 'Could not reach the server. Check your connection and try again.',
+    },
+  })
+}
+
 async function mountView() {
-  const { default: CveSearchView } = await import('@/views/CveSearchView.vue')
   return mount(CveSearchView)
 }
 
@@ -297,6 +310,14 @@ describe('CveSearchView', () => {
   describe('error handling', () => {
     it('displays error message on API failure', async () => {
       mockErrorResponse()
+      const wrapper = await mountView()
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Failed to load CVEs')
+    })
+
+    it('displays error message on network failure', async () => {
+      mockNetworkFailure()
       const wrapper = await mountView()
       await flushPromises()
 

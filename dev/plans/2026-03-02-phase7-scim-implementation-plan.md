@@ -1577,7 +1577,7 @@ Every new Go file must start with two `// ABOUTME:` comment lines.
 
 **Step 4: Update implementation log**
 
-Add Phase 7 summary to `dev/implementation-log.md`.
+Add a Phase 7 summary entry to `dev/implementation-log/`.
 
 **Step 5: Run /pitfall-check**
 

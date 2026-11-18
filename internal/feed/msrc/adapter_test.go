@@ -8,13 +8,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
 	"net/url"
 
 	"github.com/scarson/cvert-ops/internal/feed"
+	"golang.org/x/time/rate"
 )
 
 // redirectTransport rewrites outbound request URLs to point at the test server.
@@ -510,6 +513,7 @@ func TestFetch_ShortCircuit(t *testing.T) {
 
 	cursorJSON, _ := json.Marshal(Cursor{
 		LastUpdated: "2026-03-12T08:00:00Z",
+		LastPath:    "2026/msrc_cve-2026-21001.json",
 	})
 
 	result, err := adapter.Fetch(context.Background(), cursorJSON)
@@ -522,6 +526,131 @@ func TestFetch_ShortCircuit(t *testing.T) {
 	// Should have made the /changes.csv request but NOT any .json requests
 	if requestCount.Load() != 1 {
 		t.Errorf("requestCount = %d, want 1 (only /changes.csv, no .json)", requestCount.Load())
+	}
+}
+
+// csafRecordingServer serves changesCSV and minimalCSAFDoc for every CSAF path,
+// and records each CSAF path requested, in order.
+func csafRecordingServer(t *testing.T, changesCSV string) (*Adapter, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var requested []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/changes.csv"):
+			w.Header().Set("Content-Type", "text/csv")
+			_, _ = w.Write([]byte(changesCSV))
+		case strings.HasSuffix(r.URL.Path, ".json"):
+			mu.Lock()
+			requested = append(requested, strings.TrimPrefix(r.URL.Path, "/csaf/advisories/"))
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(minimalCSAFDoc))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	adapter := New(&http.Client{
+		Transport: &redirectTransport{targetURL: srv.URL, inner: http.DefaultTransport},
+	})
+	adapter.rateLimiter = rate.NewLimiter(rate.Inf, 1)
+	return adapter, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(requested)
+	}
+}
+
+func TestFetch_PagesInTimestampThenPathOrder(t *testing.T) {
+	t.Parallel()
+
+	// changes.csv lists the newest files first; several share a timestamp.
+	changesCSV := strings.Join([]string{
+		`"2026/msrc_cve-2026-0005.json","2026-03-12T08:00:00Z"`,
+		`"2026/msrc_cve-2026-0003.json","2026-03-10T08:00:00Z"`,
+		`"2026/msrc_cve-2026-0001.json","2026-03-10T08:00:00Z"`,
+		`"2026/msrc_cve-2026-0002.json","2026-03-10T08:00:00Z"`,
+		`"2025/msrc_cve-2025-0009.json","2025-01-01T07:00:00Z"`,
+	}, "\n") + "\n"
+	adapter, requested := csafRecordingServer(t, changesCSV)
+	adapter.pageSize = 2
+
+	var pageSizes []int
+	var lastPages []bool
+	var cursors []Cursor
+	var cursor json.RawMessage
+	for range 10 {
+		result, err := adapter.Fetch(context.Background(), cursor)
+		if err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		pageSizes = append(pageSizes, len(result.Patches))
+		lastPages = append(lastPages, result.LastPage)
+		var cur Cursor
+		if err := json.Unmarshal(result.NextCursor, &cur); err != nil {
+			t.Fatalf("unmarshal cursor: %v", err)
+		}
+		cursors = append(cursors, cur)
+		cursor = result.NextCursor
+		if result.LastPage {
+			break
+		}
+	}
+
+	wantRequested := []string{
+		"2025/msrc_cve-2025-0009.json",
+		"2026/msrc_cve-2026-0001.json",
+		"2026/msrc_cve-2026-0002.json",
+		"2026/msrc_cve-2026-0003.json",
+		"2026/msrc_cve-2026-0005.json",
+	}
+	if got := requested(); !slices.Equal(got, wantRequested) {
+		t.Errorf("requested files = %v, want %v", got, wantRequested)
+	}
+	if want := []int{2, 2, 1}; !slices.Equal(pageSizes, want) {
+		t.Errorf("page sizes = %v, want %v", pageSizes, want)
+	}
+	if want := []bool{false, false, true}; !slices.Equal(lastPages, want) {
+		t.Errorf("LastPage per page = %v, want %v", lastPages, want)
+	}
+	wantCursors := []Cursor{
+		{LastUpdated: "2026-03-10T08:00:00Z", LastPath: "2026/msrc_cve-2026-0001.json"},
+		{LastUpdated: "2026-03-10T08:00:00Z", LastPath: "2026/msrc_cve-2026-0003.json"},
+		{LastUpdated: "2026-03-12T08:00:00Z", LastPath: "2026/msrc_cve-2026-0005.json"},
+	}
+	if !slices.Equal(cursors, wantCursors) {
+		t.Errorf("cursors = %+v, want %+v", cursors, wantCursors)
+	}
+}
+
+func TestFetch_ResumesPartwayThroughSharedTimestamp(t *testing.T) {
+	t.Parallel()
+
+	changesCSV := strings.Join([]string{
+		`"2026/msrc_cve-2026-0003.json","2026-03-10T08:00:00Z"`,
+		`"2026/msrc_cve-2026-0001.json","2026-03-10T08:00:00Z"`,
+		`"2026/msrc_cve-2026-0002.json","2026-03-10T08:00:00Z"`,
+		`"2025/msrc_cve-2025-0009.json","2025-01-01T07:00:00Z"`,
+	}, "\n") + "\n"
+	adapter, requested := csafRecordingServer(t, changesCSV)
+
+	cursorJSON, _ := json.Marshal(Cursor{
+		LastUpdated: "2026-03-10T08:00:00Z",
+		LastPath:    "2026/msrc_cve-2026-0001.json",
+	})
+	result, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	want := []string{"2026/msrc_cve-2026-0002.json", "2026/msrc_cve-2026-0003.json"}
+	if got := requested(); !slices.Equal(got, want) {
+		t.Errorf("requested files = %v, want %v", got, want)
+	}
+	if !result.LastPage {
+		t.Error("LastPage = false, want true when every remaining file fits in one page")
 	}
 }
 

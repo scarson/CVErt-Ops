@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/testutil"
@@ -257,6 +258,12 @@ func TestIngestHandler_RateLimitCountsAsNRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	// Freeze the per-org limiter's clock so no tokens refill while the test
+	// runs; under load the requests below can take seconds, and the free tier
+	// refills one token per second.
+	frozen := time.Now()
+	srv.orgRL.Stop()
+	srv.orgRL = newOrgRateLimiter(func() time.Time { return frozen }, time.Hour)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	t.Cleanup(srv.Close)
@@ -266,17 +273,20 @@ func TestIngestHandler_RateLimitCountsAsNRequests(t *testing.T) {
 	defer loginResp.Body.Close() //nolint:errcheck,gosec
 	token := cookieValue(loginResp, "access_token")
 
-	// The default free-tier rate is 60/min (burst ~10). Send many requests
-	// to exhaust the rate limit. This verifies N-patch requests consume N tokens.
-	// First, exhaust the burst by sending multiple small requests.
-	for i := 0; i < 12; i++ {
+	// The free tier allows 60/min with a burst of 10. Six single-patch
+	// requests leave 4 tokens.
+	for i := 0; i < 6; i++ {
 		body := `{"source_name":"scanner","patches":[{"cve_id":"CVE-2026-1234"}]}`
 		resp := doIngest(t, ctx, ts, token, reg.OrgID, body)
 		resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("single-patch request %d: want 202, got %d", i+1, resp.StatusCode)
+		}
 	}
 
-	// Now a request with multiple patches should be rate limited because
-	// the burst is exhausted.
+	// A 5-patch request needs 5 tokens: the middleware takes 1 and the
+	// handler 4 more, but only 3 remain after the middleware's. Counting the
+	// request as one unit would let it through.
 	var patches []string
 	for i := 0; i < 5; i++ {
 		patches = append(patches, fmt.Sprintf(`{"cve_id":"CVE-2026-%04d"}`, i+2000))

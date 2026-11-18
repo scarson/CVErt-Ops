@@ -19,26 +19,48 @@ import (
 // ClaimedDelivery is the row returned by ClaimPendingDeliveries.
 type ClaimedDelivery = generated.ClaimPendingDeliveriesRow
 
-// upsertDeliverySQL is the debounce INSERT: creates a pending delivery or appends the
-// CVE snapshot to an existing pending row for the same (rule_id, channel_id) pair.
-// The ON CONFLICT targets the partial unique index uq_deliveries_pending_alert.
+// upsertDeliverySQL is the debounce INSERT: creates an open batch or appends the CVE
+// snapshot to the open batch for the same (rule_id, channel_id) pair. Claiming a batch
+// closes it, so CVEs never join a batch that has been sent or is waiting out a retry.
+// The ON CONFLICT targets the partial unique index uq_deliveries_open_alert_batch.
 const upsertDeliverySQL = `
-INSERT INTO notification_deliveries (org_id, rule_id, channel_id, kind, payload, send_after)
-VALUES ($1, $2, $3, 'alert', jsonb_build_array($4::jsonb), now() + ($5 * interval '1 second'))
-ON CONFLICT (rule_id, channel_id) WHERE status = 'pending' AND kind = 'alert'
+INSERT INTO notification_deliveries (org_id, rule_id, channel_id, kind, payload, send_after, batch_open)
+VALUES ($1, $2, $3, 'alert', jsonb_build_array($4::jsonb), now() + ($5 * interval '1 second'), true)
+ON CONFLICT (rule_id, channel_id) WHERE status = 'pending' AND kind = 'alert' AND batch_open` + appendToOpenBatchSQL
+
+// upsertResolutionDeliverySQL is the debounce INSERT for resolution notifications.
+// The ON CONFLICT targets the partial unique index uq_deliveries_open_resolution_batch.
+const upsertResolutionDeliverySQL = `
+INSERT INTO notification_deliveries (org_id, rule_id, channel_id, kind, payload, send_after, batch_open)
+VALUES ($1, $2, $3, 'resolution', jsonb_build_array($4::jsonb), now() + ($5 * interval '1 second'), true)
+ON CONFLICT (rule_id, channel_id) WHERE status = 'pending' AND kind = 'resolution' AND batch_open` + appendToOpenBatchSQL
+
+// appendToOpenBatchSQL adds a CVE to the conflicting open batch and restarts its debounce window.
+const appendToOpenBatchSQL = `
 DO UPDATE SET
     payload    = notification_deliveries.payload || jsonb_build_array($4::jsonb),
     send_after = now() + ($5 * interval '1 second'),
     updated_at = now()`
 
-// UpsertDelivery creates a pending delivery row or, if a pending row already exists for
+// UpsertDelivery creates a pending delivery row or, if an open batch already exists for
 // the same (rule_id, channel_id), appends the CVE snapshot to its payload array.
 // debounceSeconds controls when send_after is set (debounce window or retry backoff).
-// Uses an explicit transaction so the raw SQL executes on the same connection as the
-// RLS bypass SET LOCAL — s.db.ExecContext would acquire a different pool connection.
 func (s *Store) UpsertDelivery(ctx context.Context, orgID, ruleID, channelID uuid.UUID, payload []byte, debounceSeconds int) error {
+	return s.upsertOpenBatch(ctx, upsertDeliverySQL, orgID, ruleID, channelID, payload, debounceSeconds)
+}
+
+// UpsertResolutionDelivery is UpsertDelivery for resolution notifications, which batch
+// separately from alerts.
+func (s *Store) UpsertResolutionDelivery(ctx context.Context, orgID, ruleID, channelID uuid.UUID, payload []byte, debounceSeconds int) error {
+	return s.upsertOpenBatch(ctx, upsertResolutionDeliverySQL, orgID, ruleID, channelID, payload, debounceSeconds)
+}
+
+// upsertOpenBatch runs one of the debounce INSERTs. Uses an explicit transaction so the
+// raw SQL executes on the same connection as the RLS bypass SET LOCAL — s.db.ExecContext
+// would acquire a different pool connection.
+func (s *Store) upsertOpenBatch(ctx context.Context, query string, orgID, ruleID, channelID uuid.UUID, payload []byte, debounceSeconds int) error {
 	return s.withBypassRawTx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, upsertDeliverySQL, orgID, ruleID, channelID, payload, debounceSeconds)
+		_, err := tx.ExecContext(ctx, query, orgID, ruleID, channelID, payload, debounceSeconds)
 		if err != nil {
 			return fmt.Errorf("upsert delivery: %w", err)
 		}
@@ -81,14 +103,25 @@ func (s *Store) CompleteDelivery(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// DeliveryFailure is the most recent failure of a delivery attempt. Detail is
+// the full text, shown only to site admins. ForOrg is the text org members may
+// read, which must not describe the instance's network. Both are set or both
+// are empty: the notification_deliveries_last_error_pair constraint rejects one
+// without the other.
+type DeliveryFailure struct {
+	Detail string
+	ForOrg string
+}
+
 // RetryDelivery moves a delivery back to pending with incremented attempt_count and a
-// backoff delay of backoffSeconds. lastError records the most recent failure message.
-func (s *Store) RetryDelivery(ctx context.Context, id uuid.UUID, backoffSeconds int, lastError string) error {
+// backoff delay of backoffSeconds. failure records the most recent failure.
+func (s *Store) RetryDelivery(ctx context.Context, id uuid.UUID, backoffSeconds int, failure DeliveryFailure) error {
 	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
 		return q.RetryDelivery(ctx, generated.RetryDeliveryParams{
-			ID:        id,
-			Column2:   backoffSeconds,
-			LastError: dbutil.NullString(lastError),
+			ID:              id,
+			Column2:         backoffSeconds,
+			LastError:       dbutil.NullString(failure.Detail),
+			LastErrorForOrg: dbutil.NullString(failure.ForOrg),
 		})
 	})
 	if err != nil {
@@ -98,11 +131,12 @@ func (s *Store) RetryDelivery(ctx context.Context, id uuid.UUID, backoffSeconds 
 }
 
 // ExhaustDelivery marks a delivery as permanently failed (max attempts reached).
-func (s *Store) ExhaustDelivery(ctx context.Context, id uuid.UUID, lastError string) error {
+func (s *Store) ExhaustDelivery(ctx context.Context, id uuid.UUID, failure DeliveryFailure) error {
 	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
 		return q.ExhaustDelivery(ctx, generated.ExhaustDeliveryParams{
-			ID:        id,
-			LastError: dbutil.NullString(lastError),
+			ID:              id,
+			LastError:       dbutil.NullString(failure.Detail),
+			LastErrorForOrg: dbutil.NullString(failure.ForOrg),
 		})
 	})
 	if err != nil {
@@ -202,29 +236,66 @@ func (s *Store) ReplayDelivery(ctx context.Context, id, orgID uuid.UUID) error {
 // Uses bypass-RLS (worker context). ON CONFLICT DO NOTHING prevents double-dispatch.
 func (s *Store) InsertDigestDelivery(ctx context.Context, orgID uuid.UUID, reportID, channelID uuid.UUID, payload json.RawMessage) error {
 	return s.withBypassTx(ctx, func(q *generated.Queries) error {
-		return q.InsertDigestDelivery(ctx, generated.InsertDigestDeliveryParams{
-			OrgID:     orgID,
-			ReportID:  uuid.NullUUID{UUID: reportID, Valid: true},
-			ChannelID: channelID,
-			Payload:   payload,
-		})
+		return insertDigestDelivery(ctx, q, orgID, reportID, channelID, payload)
+	})
+}
+
+// insertDigestDelivery inserts a digest delivery for a report+channel in q's transaction.
+func insertDigestDelivery(ctx context.Context, q *generated.Queries, orgID, reportID, channelID uuid.UUID, payload json.RawMessage) error {
+	return q.InsertDigestDelivery(ctx, generated.InsertDigestDeliveryParams{
+		OrgID:     orgID,
+		ReportID:  uuid.NullUUID{UUID: reportID, Valid: true},
+		ChannelID: channelID,
+		Payload:   payload,
 	})
 }
 
 // DigestCVEsRow is the row returned by DigestCVEs.
 type DigestCVEsRow = generated.DigestCVEsRow
 
-// DigestCVEs returns CVEs modified since the given time, optionally filtered by severity.
-// Uses bypass-RLS (worker context). Returns up to 500 rows sorted by severity desc.
-func (s *Store) DigestCVEs(ctx context.Context, since time.Time, severities []string) ([]DigestCVEsRow, error) {
+// DigestSentCVE identifies one version of a CVE that a digest has already sent.
+// date_modified_canonical changes only when the CVE's material content does.
+type DigestSentCVE struct {
+	CVEID                 string    `json:"cve_id"`
+	DateModifiedCanonical time.Time `json:"date_modified_canonical"`
+}
+
+// marshalDigestSentCVEs encodes sent CVE versions as a JSON array; nil encodes as [].
+func marshalDigestSentCVEs(sent []DigestSentCVE) (json.RawMessage, error) {
+	if sent == nil {
+		sent = []DigestSentCVE{}
+	}
+	raw, err := json.Marshal(sent)
+	if err != nil {
+		return nil, fmt.Errorf("marshal sent digest CVEs: %w", err)
+	}
+	return raw, nil
+}
+
+// DigestCVEs returns CVEs modified since the given time, optionally filtered by severity,
+// leaving out the CVE versions in sent. Uses bypass-RLS (worker context).
+// Returns up to 500 rows sorted by severity desc; each row's TotalCount is the
+// number of matching CVEs before that limit.
+func (s *Store) DigestCVEs(ctx context.Context, since time.Time, severities []string, sent []DigestSentCVE) ([]DigestCVEsRow, error) {
 	var result []DigestCVEsRow
 	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
 		var err error
-		result, err = q.DigestCVEs(ctx, generated.DigestCVEsParams{
-			DateModifiedCanonical: since,
-			Column2:               severities,
-		})
+		result, err = digestCVEs(ctx, q, since, severities, sent)
 		return err
+	})
+	return result, err
+}
+
+// digestCVEs runs the DigestCVEs query in q's transaction.
+func digestCVEs(ctx context.Context, q *generated.Queries, since time.Time, severities []string, sent []DigestSentCVE) ([]DigestCVEsRow, error) {
+	sentJSON, err := marshalDigestSentCVEs(sent)
+	if err != nil {
+		return nil, fmt.Errorf("digest cves: %w", err)
+	}
+	result, err := q.DigestCVEs(ctx, generated.DigestCVEsParams{
+		DateModifiedCanonical: since,
+		Column2:               severities,
+		Column3:               sentJSON,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("digest cves: %w", err)

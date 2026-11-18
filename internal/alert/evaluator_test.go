@@ -3,19 +3,25 @@
 package alert_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/scarson/cvert-ops/internal/alert"
+	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
@@ -284,6 +290,20 @@ func getRunPath(t *testing.T, db *sql.DB, ruleID uuid.UUID) string {
 	return p
 }
 
+// getLatestRunStatus returns the status column for the most recent alert_rule_run for a rule.
+func getLatestRunStatus(t *testing.T, db *sql.DB, ruleID uuid.UUID) string {
+	t.Helper()
+	var s string
+	err := db.QueryRowContext(context.Background(),
+		`SELECT status FROM alert_rule_runs WHERE rule_id = $1 ORDER BY started_at DESC LIMIT 1`,
+		ruleID,
+	).Scan(&s)
+	if err != nil {
+		t.Fatalf("getLatestRunStatus: %v", err)
+	}
+	return s
+}
+
 // getCursorSince reads the "since" value from the feed_sync_state cursor JSON for the named feed.
 func getCursorSince(t *testing.T, db *sql.DB, feedName string) time.Time {
 	t.Helper()
@@ -445,6 +465,50 @@ func TestEvaluatorRealtime(t *testing.T) {
 		}
 	})
 
+	// A regex matches regardless of case (PLAN.md §10.2), so a pattern written
+	// with an upper-case literal matches a description in any case.
+	t.Run("RegexUpperCaseLiteral", func(t *testing.T) {
+		cveID := "CVE-RT-REGEX-003"
+		score := 8.0
+		insertCVE(t, tdb.DB(), cveID, "Analyzed", "apache http server vulnerability", &score, "hashregex3")
+
+		const regexConds = `[
+			{"field":"cvss_v3_score","operator":"gte","value":7.0},
+			{"field":"description_primary","operator":"regex","value":"Apache HTTP"}
+		]`
+		rule := mustRule(t, ctx, tdb.Store, orgID, "and", regexConds, nil)
+		activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+		if err := ev.EvaluateRealtime(ctx, cveID); err != nil {
+			t.Fatalf("EvaluateRealtime: %v", err)
+		}
+		if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
+			t.Fatalf("want 1 alert_event for an upper-case regex literal, got %d", n)
+		}
+	})
+
+	// A pattern that turns case-insensitivity off matches the description as
+	// stored, so the description must not be lower-cased before matching.
+	t.Run("RegexPatternFlagsCaseSensitive", func(t *testing.T) {
+		cveID := "CVE-RT-REGEX-004"
+		score := 8.0
+		insertCVE(t, tdb.DB(), cveID, "Analyzed", "Apache HTTP server vulnerability", &score, "hashregex4")
+
+		const regexConds = `[
+			{"field":"cvss_v3_score","operator":"gte","value":7.0},
+			{"field":"description_primary","operator":"regex","value":"(?-i)apache"}
+		]`
+		rule := mustRule(t, ctx, tdb.Store, orgID, "and", regexConds, nil)
+		activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+		if err := ev.EvaluateRealtime(ctx, cveID); err != nil {
+			t.Fatalf("EvaluateRealtime: %v", err)
+		}
+		if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 0 {
+			t.Fatalf("want 0 alert_events for a case-sensitive pattern of another case, got %d", n)
+		}
+	})
+
 	t.Run("RejectedCVE", func(t *testing.T) {
 		cveID := "CVE-RT-REJECTED-001"
 		score := 9.5
@@ -563,58 +627,204 @@ func TestEvaluatorActivation(t *testing.T) {
 	}
 }
 
-func TestEvaluatorSweepZombieActivations(t *testing.T) {
-	tdb := testutil.NewTestDB(t)
-	ev := newTestEvaluator(t, tdb)
-	ctx := context.Background()
-	orgID := createTestOrg(t, tdb.DB())
+// TestEvaluator_CVEWithoutStatus verifies every evaluation path matches a CVE whose
+// sources supply no status, such as one known only from CISA KEV. NULL NOT IN (...)
+// is NULL, so a status filter that does not handle NULL drops these CVEs silently.
+func TestEvaluator_CVEWithoutStatus(t *testing.T) {
+	const cveID = "CVE-NOSTATUS-001"
+	const cvssCondition = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	score := 9.0
 
-	// Create a rule in 'activating' status
-	conds := json.RawMessage(`[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`)
-	row, err := tdb.CreateAlertRule(ctx, orgID, store.CreateAlertRuleParams{
-		Name:       "zombie-test-rule",
-		Logic:      "and",
-		Conditions: conds,
-		Status:     "activating",
-	})
-	if err != nil {
-		t.Fatalf("create alert rule: %v", err)
+	paths := []struct {
+		name string
+		run  func(ctx context.Context, ev *alert.Evaluator, ruleID, orgID uuid.UUID) error
+	}{
+		{"Realtime", func(ctx context.Context, ev *alert.Evaluator, _, _ uuid.UUID) error {
+			return ev.EvaluateRealtime(ctx, cveID)
+		}},
+		{"Batch", func(ctx context.Context, ev *alert.Evaluator, _, _ uuid.UUID) error {
+			return ev.EvaluateBatch(ctx)
+		}},
+		{"Activation", func(ctx context.Context, ev *alert.Evaluator, ruleID, orgID uuid.UUID) error {
+			return ev.EvaluateActivation(ctx, ruleID, orgID)
+		}},
 	}
-	t.Cleanup(func() {
-		_ = tdb.SoftDeleteAlertRule(context.Background(), orgID, row.ID)
+	for _, path := range paths {
+		t.Run(path.name, func(t *testing.T) {
+			tdb := testutil.NewTestDB(t)
+			ev := newTestEvaluator(t, tdb)
+			ctx := context.Background()
+			orgID := createTestOrg(t, tdb.DB())
+			insertCVE(t, tdb.DB(), cveID, "", "no status", &score, "nostatushash")
+			rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCondition, nil)
+			activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+			if err := path.run(ctx, ev, rule.ID, orgID); err != nil {
+				t.Fatalf("evaluate: %v", err)
+			}
+			if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
+				t.Fatalf("want 1 alert_event, got %d", n)
+			}
+		})
+	}
+
+	t.Run("EPSS", func(t *testing.T) {
+		tdb := testutil.NewTestDB(t)
+		ev := newTestEvaluator(t, tdb)
+		ctx := context.Background()
+		orgID := createTestOrg(t, tdb.DB())
+		epss := 0.95
+		insertCVEWithEPSS(t, tdb.DB(), cveID, "", "no status", &score, &epss, "nostatushash")
+		rule := mustEPSSRule(t, ctx, tdb.Store, orgID, "and", `[{"field":"epss_score","operator":"gte","value":0.9}]`, true)
+		activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+		if err := ev.EvaluateEPSS(ctx); err != nil {
+			t.Fatalf("EvaluateEPSS: %v", err)
+		}
+		if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
+			t.Fatalf("want 1 alert_event, got %d", n)
+		}
 	})
 
-	// Directly insert a 'running' activation job with old locked_at to simulate zombie
+	t.Run("DryRun", func(t *testing.T) {
+		tdb := testutil.NewTestDB(t)
+		ev := newTestEvaluator(t, tdb)
+		ctx := context.Background()
+		orgID := createTestOrg(t, tdb.DB())
+		insertCVE(t, tdb.DB(), cveID, "", "no status", &score, "nostatushash")
+		rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCondition, nil)
+		activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+		result, err := ev.DryRun(ctx, rule.ID, orgID)
+		if err != nil {
+			t.Fatalf("DryRun: %v", err)
+		}
+		if !slices.Contains(result.SampleCVEs, cveID) {
+			t.Fatalf("SampleCVEs = %v, want %s", result.SampleCVEs, cveID)
+		}
+	})
+}
+
+// insertActivationJob inserts an alert_activation job for ruleID in the given status,
+// with the lock key and payload the API enqueues. A running job is locked lockedAgo
+// before now; a dead job has used all its attempts.
+func insertActivationJob(t *testing.T, db *sql.DB, orgID, ruleID uuid.UUID, status string, lockedAgo time.Duration) uuid.UUID {
+	t.Helper()
 	payload, _ := json.Marshal(map[string]string{
-		"rule_id": row.ID.String(),
+		"rule_id": ruleID.String(),
 		"org_id":  orgID.String(),
 	})
 	var jobID uuid.UUID
-	err = tdb.DB().QueryRowContext(ctx, `
-		INSERT INTO job_queue (queue, lock_key, payload, status, locked_by, locked_at)
-		VALUES ('alert_activation', $1, $2, 'running', 'worker-1', now() - interval '20 minutes')
+	if err := db.QueryRowContext(context.Background(), `
+		INSERT INTO job_queue (queue, lock_key, payload, status, attempts, max_attempts, locked_by, locked_at, finished_at)
+		VALUES ('alert_activation', $1, $2, $3,
+		        CASE WHEN $3 = 'dead' THEN 3 ELSE 1 END, 3,
+		        CASE WHEN $3 = 'running' THEN 'worker-1' END,
+		        CASE WHEN $3 = 'running' THEN now() - $4::interval END,
+		        CASE WHEN $3 = 'dead' THEN now() END)
 		RETURNING id
-	`, "alert:activation:"+row.ID.String(), payload).Scan(&jobID)
-	if err != nil {
-		t.Fatalf("insert zombie job: %v", err)
+	`, alert.ActivationLockKey(ruleID), payload, status, fmt.Sprintf("%d seconds", int(lockedAgo.Seconds()))).Scan(&jobID); err != nil {
+		t.Fatalf("insert %s activation job: %v", status, err)
+	}
+	return jobID
+}
+
+// TestEvaluatorSweepZombieActivations checks that the sweeper moves a rule from
+// 'activating' to 'error' only when the rule was last updated over 15 minutes ago and
+// has no pending or running activation job, and that it leaves job rows as they are.
+func TestEvaluatorSweepZombieActivations(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+	otherOrgID := createTestOrg(t, tdb.DB())
+	// The app role is NOBYPASSRLS, so rules of every org are visible to the sweep only
+	// through its RLS bypass transaction.
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	ev := alert.New(tdb.AppStore.DB(), tdb.AppStore, alert.NewRuleCache(), log, 0)
+
+	type job struct {
+		status    string
+		lockedAgo time.Duration
+	}
+	cases := []struct {
+		name       string
+		orgID      uuid.UUID
+		status     string
+		updatedAgo time.Duration
+		jobs       []job
+		deleted    bool
+		wantStatus string
+	}{
+		{name: "dead job", orgID: orgID, status: "activating", updatedAgo: 20 * time.Minute,
+			jobs: []job{{status: "dead"}}, wantStatus: "error"},
+		{name: "no job", orgID: otherOrgID, status: "activating", updatedAgo: 20 * time.Minute,
+			wantStatus: "error"},
+		{name: "pending job", orgID: orgID, status: "activating", updatedAgo: 20 * time.Minute,
+			jobs: []job{{status: "pending"}}, wantStatus: "activating"},
+		{name: "running job locked long ago", orgID: orgID, status: "activating", updatedAgo: 20 * time.Minute,
+			jobs: []job{{status: "running", lockedAgo: 20 * time.Minute}}, wantStatus: "activating"},
+		{name: "dead job then pending job", orgID: orgID, status: "activating", updatedAgo: 20 * time.Minute,
+			jobs: []job{{status: "dead"}, {status: "pending"}}, wantStatus: "activating"},
+		{name: "no job, recently updated", orgID: orgID, status: "activating", updatedAgo: 5 * time.Minute,
+			wantStatus: "activating"},
+		{name: "active rule, no job", orgID: orgID, status: "active", updatedAgo: 20 * time.Minute,
+			wantStatus: "active"},
+		{name: "active rule, dead job", orgID: orgID, status: "active", updatedAgo: 20 * time.Minute,
+			jobs: []job{{status: "dead"}}, wantStatus: "active"},
+		{name: "deleted rule, no job", orgID: orgID, status: "activating", updatedAgo: 20 * time.Minute,
+			deleted: true, wantStatus: "activating"},
+	}
+
+	conds := json.RawMessage(`[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`)
+	ruleIDs := make([]uuid.UUID, len(cases))
+	jobStatuses := make([]map[uuid.UUID]string, len(cases))
+	for i, tc := range cases {
+		row, err := tdb.CreateAlertRule(ctx, tc.orgID, store.CreateAlertRuleParams{
+			Name:       tc.name,
+			Logic:      "and",
+			Conditions: conds,
+			Status:     tc.status,
+		})
+		if err != nil {
+			t.Fatalf("%s: create alert rule: %v", tc.name, err)
+		}
+		ruleIDs[i] = row.ID
+		jobStatuses[i] = map[uuid.UUID]string{}
+		for _, j := range tc.jobs {
+			jobStatuses[i][insertActivationJob(t, tdb.DB(), tc.orgID, row.ID, j.status, j.lockedAgo)] = j.status
+		}
+		if tc.deleted {
+			if err := tdb.SoftDeleteAlertRule(ctx, tc.orgID, row.ID); err != nil {
+				t.Fatalf("%s: delete rule: %v", tc.name, err)
+			}
+		}
+		if _, err := tdb.DB().ExecContext(ctx,
+			`UPDATE alert_rules SET updated_at = now() - $2::interval WHERE id = $1`,
+			row.ID, fmt.Sprintf("%d seconds", int(tc.updatedAgo.Seconds())),
+		); err != nil {
+			t.Fatalf("%s: set updated_at: %v", tc.name, err)
+		}
 	}
 
 	if err := ev.SweepZombieActivations(ctx); err != nil {
 		t.Fatalf("SweepZombieActivations: %v", err)
 	}
 
-	// Rule should now be 'error'
-	if s := getRuleStatus(t, tdb.DB(), row.ID); s != "error" {
-		t.Fatalf("want rule status 'error', got %q", s)
-	}
-
-	// Job should be 'failed'
-	var jobStatus string
-	if err := tdb.DB().QueryRowContext(ctx, `SELECT status FROM job_queue WHERE id = $1`, jobID).Scan(&jobStatus); err != nil {
-		t.Fatalf("get job status: %v", err)
-	}
-	if jobStatus != "failed" {
-		t.Fatalf("want job status 'failed', got %q", jobStatus)
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := getRuleStatus(t, tdb.DB(), ruleIDs[i]); got != tc.wantStatus {
+				t.Errorf("rule status = %q, want %q", got, tc.wantStatus)
+			}
+			for jobID, want := range jobStatuses[i] {
+				var got string
+				if err := tdb.DB().QueryRowContext(ctx, `SELECT status FROM job_queue WHERE id = $1`, jobID).Scan(&got); err != nil {
+					t.Fatalf("get job status: %v", err)
+				}
+				if got != want {
+					t.Errorf("job %s status = %q, want %q (sweep must not change jobs)", jobID, got, want)
+				}
+			}
+		})
 	}
 }
 
@@ -688,6 +898,10 @@ func (m *mockDispatcher) Fanout(_ context.Context, orgID, ruleID uuid.UUID, cveI
 		ruleID uuid.UUID
 		cveID  string
 	}{orgID, ruleID, cveID})
+	return nil
+}
+
+func (m *mockDispatcher) FanoutResolution(_ context.Context, _, _ uuid.UUID, _ string) error {
 	return nil
 }
 
@@ -1112,12 +1326,17 @@ func TestDryRun_CandidateCapFailClosed(t *testing.T) {
 	rule := mustRule(t, ctx, tdb.Store, orgID, "and", broadCondition, nil)
 	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
 
+	capHitsBefore := promtestutil.ToFloat64(metrics.AlertCandidateCapExceededTotal)
 	result, err := ev.DryRun(ctx, rule.ID, orgID)
 	if err != nil {
 		t.Fatalf("DryRun: %v", err)
 	}
 	if result == nil {
 		t.Fatal("DryRun returned nil result")
+	}
+	// PLAN.md §10.2: exceeding the cap emits an operator-facing metric.
+	if got := promtestutil.ToFloat64(metrics.AlertCandidateCapExceededTotal) - capHitsBefore; got != 1 {
+		t.Errorf("candidate cap metric rose by %v, want 1", got)
 	}
 	if !result.Partial {
 		t.Fatalf("want Partial=true when candidates exceed 5000, got false (MatchCount=%d, CandidatesEvaluated=%d)",
@@ -1130,6 +1349,73 @@ func TestDryRun_CandidateCapFailClosed(t *testing.T) {
 	// CandidatesEvaluated should be candidateCap+1 (5001) to signal overflow
 	if result.CandidatesEvaluated != 5001 {
 		t.Fatalf("want CandidatesEvaluated=5001 on partial, got %d", result.CandidatesEvaluated)
+	}
+}
+
+// TestEvaluateBatch_RuleMatchingMoreThanCandidateCap verifies that a batch run evaluates
+// every changed CVE for a rule whose prefilter matches more than candidateCap of them.
+// The run advances the cursor past these CVEs, so any that are not evaluated in this run
+// are never evaluated by the batch path.
+func TestEvaluateBatch_RuleMatchingMoreThanCandidateCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping candidateCap test in short mode (inserts 5100 rows)")
+	}
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	bulkInsertCVEs(t, tdb.DB(), "CVE-BATCHCAP", 5100, 8.0)
+
+	const cvssCondition = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCondition, nil)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+	if err := ev.EvaluateBatch(ctx); err != nil {
+		t.Fatalf("EvaluateBatch: %v", err)
+	}
+
+	if n := countAllAlertEventsForRule(t, tdb.DB(), rule.ID); n != 5100 {
+		t.Fatalf("want 5100 alert_events (one per matching changed CVE), got %d", n)
+	}
+	if s := getLatestRunStatus(t, tdb.DB(), rule.ID); s != "complete" {
+		t.Fatalf("want run status complete, got %q", s)
+	}
+}
+
+// TestEvaluateEPSS_RuleMatchingMoreThanCandidateCap verifies that an EPSS run evaluates
+// every CVE with a new EPSS score for a rule whose prefilter matches more than
+// candidateCap of them. EPSS score changes do not trigger realtime evaluation, so the
+// EPSS run is the only path that can alert on them.
+func TestEvaluateEPSS_RuleMatchingMoreThanCandidateCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping candidateCap test in short mode (inserts 5100 rows)")
+	}
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	bulkInsertCVEs(t, tdb.DB(), "CVE-EPSSCAP", 5100, 8.0)
+	if _, err := tdb.DB().ExecContext(ctx,
+		`UPDATE cves SET epss_score = 0.9, date_epss_updated = now() WHERE cve_id LIKE 'CVE-EPSSCAP-%'`,
+	); err != nil {
+		t.Fatalf("set EPSS scores: %v", err)
+	}
+
+	const epssCondition = `[{"field":"epss_score","operator":"gte","value":0.5}]`
+	rule := mustEPSSRule(t, ctx, tdb.Store, orgID, "and", epssCondition, true)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+	if err := ev.EvaluateEPSS(ctx); err != nil {
+		t.Fatalf("EvaluateEPSS: %v", err)
+	}
+
+	if n := countAllAlertEventsForRule(t, tdb.DB(), rule.ID); n != 5100 {
+		t.Fatalf("want 5100 alert_events (one per CVE with a new matching EPSS score), got %d", n)
+	}
+	if s := getLatestRunStatus(t, tdb.DB(), rule.ID); s != "complete" {
+		t.Fatalf("want run status complete, got %q", s)
 	}
 }
 
@@ -1178,6 +1464,39 @@ func TestEvaluatorBatch_CursorAdvancement(t *testing.T) {
 	cursor2 := getCursorSince(t, tdb.DB(), "alert:batch")
 	if !cursor2.After(cursor1) {
 		t.Fatalf("batch cursor should advance: cursor1=%v, cursor2=%v", cursor1, cursor2)
+	}
+}
+
+// TestEvaluatorBatch_ChangeStampedAheadOfEvaluatorClock verifies that a run evaluates a
+// CVE whose change date is ahead of the evaluator's clock, as when the clock that stamps
+// it (the merge worker's, or the database's now()) runs ahead, by less than
+// cursorRescanWindow.
+func TestEvaluatorBatch_ChangeStampedAheadOfEvaluatorClock(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	const cvssCondition = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	score := 9.0
+	rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCondition, nil)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+	if err := ev.EvaluateBatch(ctx); err != nil {
+		t.Fatalf("first EvaluateBatch: %v", err)
+	}
+
+	insertCVE(t, tdb.DB(), "CVE-BATCHSKEW-001", "Analyzed", "stamped ahead", &score, "batchskew1")
+	ahead := time.Now().UTC().Add(time.Minute) // half of cursorRescanWindow
+	if _, err := tdb.DB().ExecContext(ctx,
+		`UPDATE cves SET date_modified_canonical = $2 WHERE cve_id = $1`, "CVE-BATCHSKEW-001", ahead); err != nil {
+		t.Fatalf("stamp ahead: %v", err)
+	}
+
+	if err := ev.EvaluateBatch(ctx); err != nil {
+		t.Fatalf("second EvaluateBatch: %v", err)
+	}
+	if n := countAlertEvents(t, tdb.DB(), rule.ID, "CVE-BATCHSKEW-001"); n != 1 {
+		t.Fatalf("want 1 alert_event for a CVE stamped a minute ahead of the evaluator, got %d", n)
 	}
 }
 
@@ -1355,6 +1674,10 @@ func (f *failingDispatcher) Fanout(_ context.Context, _, _ uuid.UUID, _ string) 
 	return fmt.Errorf("simulated fanout failure")
 }
 
+func (f *failingDispatcher) FanoutResolution(_ context.Context, _, _ uuid.UUID, _ string) error {
+	return fmt.Errorf("simulated resolution fanout failure")
+}
+
 func TestEvaluateRealtime_FanoutErrorContinuesProcessing(t *testing.T) {
 	tdb := testutil.NewTestDB(t)
 	ev := newTestEvaluator(t, tdb)
@@ -1402,61 +1725,6 @@ func TestSweepZombieActivations_NoZombies(t *testing.T) {
 	// No zombie jobs in the queue — sweep should succeed silently
 	if err := ev.SweepZombieActivations(ctx); err != nil {
 		t.Fatalf("SweepZombieActivations with no zombies: %v", err)
-	}
-}
-
-func TestSweepZombieActivations_RecentJobNotSwept(t *testing.T) {
-	tdb := testutil.NewTestDB(t)
-	ev := newTestEvaluator(t, tdb)
-	ctx := context.Background()
-	orgID := createTestOrg(t, tdb.DB())
-
-	// Create a rule in 'activating' status
-	conds := json.RawMessage(`[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`)
-	row, err := tdb.CreateAlertRule(ctx, orgID, store.CreateAlertRuleParams{
-		Name:       "recent-job-rule",
-		Logic:      "and",
-		Conditions: conds,
-		Status:     "activating",
-	})
-	if err != nil {
-		t.Fatalf("create alert rule: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = tdb.SoftDeleteAlertRule(context.Background(), orgID, row.ID)
-	})
-
-	// Insert a 'running' job with RECENT locked_at (5 minutes ago, within 15-minute threshold)
-	payload, _ := json.Marshal(map[string]string{
-		"rule_id": row.ID.String(),
-		"org_id":  orgID.String(),
-	})
-	var jobID uuid.UUID
-	err = tdb.DB().QueryRowContext(ctx, `
-		INSERT INTO job_queue (queue, lock_key, payload, status, locked_by, locked_at)
-		VALUES ('alert_activation', $1, $2, 'running', 'worker-1', now() - interval '5 minutes')
-		RETURNING id
-	`, "alert:activation:"+row.ID.String(), payload).Scan(&jobID)
-	if err != nil {
-		t.Fatalf("insert recent job: %v", err)
-	}
-
-	if err := ev.SweepZombieActivations(ctx); err != nil {
-		t.Fatalf("SweepZombieActivations: %v", err)
-	}
-
-	// Rule should still be 'activating' (not swept)
-	if s := getRuleStatus(t, tdb.DB(), row.ID); s != "activating" {
-		t.Fatalf("want rule status 'activating' (not swept), got %q", s)
-	}
-
-	// Job should still be 'running'
-	var jobStatus string
-	if err := tdb.DB().QueryRowContext(ctx, `SELECT status FROM job_queue WHERE id = $1`, jobID).Scan(&jobStatus); err != nil {
-		t.Fatalf("get job status: %v", err)
-	}
-	if jobStatus != "running" {
-		t.Fatalf("want job status 'running', got %q", jobStatus)
 	}
 }
 
@@ -1614,62 +1882,9 @@ func TestEvaluateActivation_DoesNotOverrideDisabledStatus(t *testing.T) {
 	}
 }
 
-func TestSweepZombieActivations_SkipsCompletedJobs(t *testing.T) {
-	tdb := testutil.NewTestDB(t)
-	ev := newTestEvaluator(t, tdb)
-	ctx := context.Background()
-	orgID := createTestOrg(t, tdb.DB())
-
-	// Create a rule that successfully completed activation (status = 'active')
-	conds := json.RawMessage(`[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`)
-	row, err := tdb.CreateAlertRule(ctx, orgID, store.CreateAlertRuleParams{
-		Name:       "completed-activation-rule",
-		Logic:      "and",
-		Conditions: conds,
-		Status:     "active", // already completed activation
-	})
-	if err != nil {
-		t.Fatalf("create alert rule: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = tdb.SoftDeleteAlertRule(context.Background(), orgID, row.ID)
-	})
-
-	// Insert a zombie job for this rule (old locked_at) — simulates a TOCTOU race where
-	// the activation completed just before the sweep query ran
-	payload, _ := json.Marshal(map[string]string{
-		"rule_id": row.ID.String(),
-		"org_id":  orgID.String(),
-	})
-	var jobID uuid.UUID
-	err = tdb.DB().QueryRowContext(ctx, `
-		INSERT INTO job_queue (queue, lock_key, payload, status, locked_by, locked_at)
-		VALUES ('alert_activation', $1, $2, 'running', 'worker-1', now() - interval '20 minutes')
-		RETURNING id
-	`, "alert:activation:"+row.ID.String(), payload).Scan(&jobID)
-	if err != nil {
-		t.Fatalf("insert zombie job: %v", err)
-	}
-
-	if err := ev.SweepZombieActivations(ctx); err != nil {
-		t.Fatalf("SweepZombieActivations: %v", err)
-	}
-
-	// Rule should STILL be 'active' — sweep must NOT overwrite to 'error'
-	if s := getRuleStatus(t, tdb.DB(), row.ID); s != "active" {
-		t.Fatalf("want rule status 'active' (completed), got %q", s)
-	}
-
-	// Job should be marked 'failed' (zombie cleanup is fine for the job row)
-	var jobStatus string
-	if err := tdb.DB().QueryRowContext(ctx, `SELECT status FROM job_queue WHERE id = $1`, jobID).Scan(&jobStatus); err != nil {
-		t.Fatalf("get job status: %v", err)
-	}
-	if jobStatus != "failed" {
-		t.Fatalf("want job status 'failed', got %q", jobStatus)
-	}
-}
-
+// TestApplyPostFilters_UsesORLogicForORRules checks an "or" rule of regex
+// conditions matches a CVE that any of them matches. Such a rule needs a
+// watchlist to select its candidates (PLAN.md §10.2).
 func TestApplyPostFilters_UsesORLogicForORRules(t *testing.T) {
 	tdb := testutil.NewTestDB(t)
 	ev := newTestEvaluator(t, tdb)
@@ -1682,22 +1897,26 @@ func TestApplyPostFilters_UsesORLogicForORRules(t *testing.T) {
 	insertCVE(t, tdb.DB(), "CVE-ORPF-002", "Analyzed", "Windows kernel overflow", &score, "orpf-hash2")
 	insertCVE(t, tdb.DB(), "CVE-ORPF-003", "Analyzed", "Linux privilege escalation", &score, "orpf-hash3")
 
-	// Create an OR rule with two regex PostFilters:
-	// "apache" OR "windows" — both CVE-ORPF-001 and CVE-ORPF-002 should match
+	wl, err := tdb.CreateWatchlist(ctx, orgID, uuid.NullUUID{}, "or regex", sql.NullString{})
+	if err != nil {
+		t.Fatalf("CreateWatchlist: %v", err)
+	}
+	var items []store.CreateWatchlistItemParams
+	for _, id := range []string{"CVE-ORPF-001", "CVE-ORPF-002", "CVE-ORPF-003"} {
+		items = append(items, store.CreateWatchlistItemParams{ItemType: "cve", CveID: &id})
+	}
+	if _, err := tdb.ReplaceWatchlistItems(ctx, orgID, wl.ID, items); err != nil {
+		t.Fatalf("ReplaceWatchlistItems: %v", err)
+	}
+
+	// "apache" OR "windows": CVE-ORPF-001 and CVE-ORPF-002 match, CVE-ORPF-003 does not.
 	const orRegexConds = `[
 		{"field":"description_primary","operator":"regex","value":"apache"},
 		{"field":"description_primary","operator":"regex","value":"windows"}
 	]`
-	// Need a SQL condition too since all-regex with no watchlist fails compilation
-	const orCondWithCVSS = `[
-		{"field":"cvss_v3_score","operator":"gte","value":7.0},
-		{"field":"description_primary","operator":"regex","value":"apache"},
-		{"field":"description_primary","operator":"regex","value":"windows"}
-	]`
-	rule := mustRule(t, ctx, tdb.Store, orgID, "or", orCondWithCVSS, nil)
+	rule := mustRule(t, ctx, tdb.Store, orgID, "or", orRegexConds, []uuid.UUID{wl.ID})
 	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
 
-	// DryRun to check results
 	result, err := ev.DryRun(ctx, rule.ID, orgID)
 	if err != nil {
 		t.Fatalf("DryRun: %v", err)
@@ -1705,15 +1924,10 @@ func TestApplyPostFilters_UsesORLogicForORRules(t *testing.T) {
 	if result == nil {
 		t.Fatal("DryRun returned nil")
 	}
-
-	// With OR logic, any CVE matching "apache" OR "windows" should be included.
-	// CVE-ORPF-001 (apache) and CVE-ORPF-002 (windows) should match.
-	// CVE-ORPF-003 (linux) should NOT match.
 	matched := make(map[string]bool)
 	for _, id := range result.SampleCVEs {
 		matched[id] = true
 	}
-
 	if !matched["CVE-ORPF-001"] {
 		t.Error("CVE-ORPF-001 (apache) should match OR rule")
 	}
@@ -1722,6 +1936,47 @@ func TestApplyPostFilters_UsesORLogicForORRules(t *testing.T) {
 	}
 	if matched["CVE-ORPF-003"] {
 		t.Error("CVE-ORPF-003 (linux) should NOT match OR rule")
+	}
+}
+
+// TestEvaluator_StoredOrRuleMixingRegexFailsClosed checks a stored "or" rule
+// with a regex beside a SQL condition, which Validate refuses, does not
+// evaluate as "and" (CVE-ORMIX-002 would match cvss >= 7 alone): its compile
+// fails, dry-run returns the error, and evaluation sets it to status=error.
+func TestEvaluator_StoredOrRuleMixingRegexFailsClosed(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	score := 8.0
+	insertCVE(t, tdb.DB(), "CVE-ORMIX-001", "Analyzed", "Apache HTTP server exploit", &score, "ormix-hash1")
+	insertCVE(t, tdb.DB(), "CVE-ORMIX-002", "Analyzed", "Linux privilege escalation", &score, "ormix-hash2")
+
+	const orMixedConds = `[
+		{"field":"cvss_v3_score","operator":"gte","value":7.0},
+		{"field":"description_primary","operator":"regex","value":"apache"}
+	]`
+	rule := mustRule(t, ctx, tdb.Store, orgID, "or", orMixedConds, nil)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+	if _, err := ev.DryRun(ctx, rule.ID, orgID); err == nil {
+		t.Fatal("DryRun: want a compile error for an or rule mixing regex with a SQL condition")
+	}
+	if err := ev.EvaluateRealtime(ctx, "CVE-ORMIX-002"); err != nil {
+		t.Fatalf("EvaluateRealtime: %v", err)
+	}
+	for _, id := range []string{"CVE-ORMIX-001", "CVE-ORMIX-002"} {
+		if n := countAlertEvents(t, tdb.DB(), rule.ID, id); n != 0 {
+			t.Errorf("%s: want 0 alert_events from a rule that fails to compile, got %d", id, n)
+		}
+	}
+	got, err := tdb.GetAlertRule(ctx, orgID, rule.ID)
+	if err != nil {
+		t.Fatalf("GetAlertRule: %v", err)
+	}
+	if got.Status != "error" {
+		t.Errorf("rule status = %q, want error", got.Status)
 	}
 }
 
@@ -1763,6 +2018,144 @@ func TestEvaluatorEPSS_NoCandidates(t *testing.T) {
 	cursor := getCursorSince(t, tdb.DB(), "alert:epss")
 	if cursor.IsZero() {
 		t.Fatal("EPSS cursor should be set even with no candidates")
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Batch and EPSS evaluators — rows stamped before the cursor
+// ──────────────────────────────────────────────────────────────────────────────
+
+// cursorLag is how far before the stored cursor a late-visible row is stamped. It stands
+// for the Postgres clock running behind the app clock, or for a writer transaction whose
+// timestamp was taken before the evaluator ran but which committed after it.
+const cursorLag = time.Second
+
+// TestEvaluatorCursor_RowStampedBeforeCursor checks that a CVE row which becomes visible
+// after an evaluation run, but whose timestamp is earlier than the cursor that run stored,
+// is still evaluated by the next run.
+func TestEvaluatorCursor_RowStampedBeforeCursor(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	t.Run("EPSS", func(t *testing.T) {
+		const epssCond = `[{"field":"epss_score","operator":"gte","value":0.9}]`
+		rule := mustEPSSRule(t, ctx, tdb.Store, orgID, "and", epssCond, true)
+		activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+		if err := ev.EvaluateEPSS(ctx); err != nil {
+			t.Fatalf("first EvaluateEPSS: %v", err)
+		}
+		cursor := getCursorSince(t, tdb.DB(), "alert:epss")
+
+		const cveID = "CVE-EPSS-LAG-001"
+		score := 6.0
+		epss := 0.95
+		insertCVEWithEPSS(t, tdb.DB(), cveID, "Analyzed", "stamped before cursor", &score, &epss, "epss-lag-hash-001")
+		if _, err := tdb.DB().ExecContext(ctx,
+			`UPDATE cves SET date_epss_updated = $1 WHERE cve_id = $2`,
+			cursor.Add(-cursorLag), cveID,
+		); err != nil {
+			t.Fatalf("backdate date_epss_updated: %v", err)
+		}
+
+		if err := ev.EvaluateEPSS(ctx); err != nil {
+			t.Fatalf("second EvaluateEPSS: %v", err)
+		}
+		if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
+			t.Fatalf("want 1 alert_event for CVE stamped %v before the EPSS cursor, got %d", cursorLag, n)
+		}
+	})
+
+	t.Run("Batch", func(t *testing.T) {
+		const cvssCond = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+		rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCond, nil)
+		activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+		if err := ev.EvaluateBatch(ctx); err != nil {
+			t.Fatalf("first EvaluateBatch: %v", err)
+		}
+		cursor := getCursorSince(t, tdb.DB(), "alert:batch")
+
+		const cveID = "CVE-BATCH-LAG-001"
+		score := 9.0
+		insertCVE(t, tdb.DB(), cveID, "Analyzed", "stamped before cursor", &score, "batch-lag-hash-001")
+		if _, err := tdb.DB().ExecContext(ctx,
+			`UPDATE cves SET date_modified_canonical = $1 WHERE cve_id = $2`,
+			cursor.Add(-cursorLag), cveID,
+		); err != nil {
+			t.Fatalf("backdate date_modified_canonical: %v", err)
+		}
+
+		if err := ev.EvaluateBatch(ctx); err != nil {
+			t.Fatalf("second EvaluateBatch: %v", err)
+		}
+		if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
+			t.Fatalf("want 1 alert_event for CVE stamped %v before the batch cursor, got %d", cursorLag, n)
+		}
+	})
+}
+
+// TestEvaluatorCursor_RescanDoesNotRedispatch checks that a CVE evaluated again because
+// it falls inside the window re-scanned behind the cursor is not notified a second time.
+func TestEvaluatorCursor_RescanDoesNotRedispatch(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	disp := &mockDispatcher{}
+	ev.SetDispatcher(disp)
+
+	const cvssCond = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	const cveID = "CVE-RESCAN-001"
+	score := 9.0
+	insertCVE(t, tdb.DB(), cveID, "Analyzed", "rescan test", &score, "rescan-hash-001")
+
+	rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCond, nil)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+	for i := range 2 {
+		if err := ev.EvaluateBatch(ctx); err != nil {
+			t.Fatalf("EvaluateBatch run %d: %v", i+1, err)
+		}
+	}
+
+	// The second run must have re-scanned the CVE: it was modified moments before the
+	// first run's cursor, well inside the re-scanned window.
+	rows, err := tdb.DB().QueryContext(ctx,
+		`SELECT candidates_evaluated FROM alert_rule_runs
+		 WHERE rule_id = $1 AND path = 'batch'
+		 ORDER BY started_at ASC`,
+		rule.ID,
+	)
+	if err != nil {
+		t.Fatalf("query batch runs: %v", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	var runCandidates []int
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			t.Fatalf("scan batch run: %v", err)
+		}
+		runCandidates = append(runCandidates, n)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate batch runs: %v", err)
+	}
+	if len(runCandidates) != 2 || runCandidates[1] != 1 {
+		t.Fatalf("batch runs candidates_evaluated = %v, want [1 1]", runCandidates)
+	}
+
+	if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
+		t.Fatalf("want 1 alert_event after re-scan, got %d", n)
+	}
+	disp.mu.Lock()
+	defer disp.mu.Unlock()
+	if len(disp.calls) != 1 {
+		t.Fatalf("want 1 Fanout call across both runs, got %d", len(disp.calls))
 	}
 }
 
@@ -1820,5 +2213,213 @@ func TestEvaluateBatch_PaginatesMultiplePages(t *testing.T) {
 	}
 	if totalEvents < totalCVEs {
 		t.Errorf("alert_events = %d, want >= %d (all CVEs should match)", totalEvents, totalCVEs)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Batch evaluator — rule failures must not move the cursor past unevaluated CVEs
+// ──────────────────────────────────────────────────────────────────────────────
+
+// eventInsertFailingStore uses the real store but fails InsertAlertEvent for one rule
+// while failuresLeft > 0. failuresLeft < 0 fails every call. It simulates a transient
+// database failure (statement timeout, dropped connection) during one rule's evaluation.
+type eventInsertFailingStore struct {
+	store.AlertRuleStore
+	ruleID       uuid.UUID
+	mu           sync.Mutex
+	failuresLeft int
+}
+
+func (s *eventInsertFailingStore) InsertAlertEvent(ctx context.Context, orgID, ruleID uuid.UUID, cveID, materialHash string, suppressDelivery bool) (uuid.UUID, error) {
+	if ruleID == s.ruleID {
+		s.mu.Lock()
+		fail := s.failuresLeft != 0
+		if s.failuresLeft > 0 {
+			s.failuresLeft--
+		}
+		s.mu.Unlock()
+		if fail {
+			return uuid.Nil, errors.New("simulated insert failure")
+		}
+	}
+	return s.AlertRuleStore.InsertAlertEvent(ctx, orgID, ruleID, cveID, materialHash, suppressDelivery)
+}
+
+// newLoggedEvaluator returns an evaluator over st whose error log is written to the
+// returned buffer, so tests that trigger rule failures can assert the log instead of
+// printing it.
+func newLoggedEvaluator(tdb *testutil.TestDB, st store.AlertRuleStore) (*alert.Evaluator, *bytes.Buffer) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+	return alert.New(tdb.DB(), st, alert.NewRuleCache(), log, 0), &buf
+}
+
+// backdateModified sets a CVE's date_modified_canonical to age before now, outside the
+// window each batch run re-scans behind its cursor.
+func backdateModified(t *testing.T, db *sql.DB, cveID string, age time.Duration) {
+	t.Helper()
+	if _, err := db.ExecContext(context.Background(),
+		`UPDATE cves SET date_modified_canonical = now() - make_interval(secs => $1) WHERE cve_id = $2`,
+		age.Seconds(), cveID,
+	); err != nil {
+		t.Fatalf("backdate date_modified_canonical for %s: %v", cveID, err)
+	}
+}
+
+// TestEvaluateBatch_RuleErrorDoesNotSkipCVEs checks that a CVE in a run where a rule's
+// evaluation failed is evaluated for that rule by a later run.
+func TestEvaluateBatch_RuleErrorDoesNotSkipCVEs(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	const cveID = "CVE-RULEERR-001"
+	score := 9.0
+	insertCVE(t, tdb.DB(), cveID, "Analyzed", "rule error test", &score, "ruleerr-hash-001")
+	backdateModified(t, tdb.DB(), cveID, time.Hour)
+
+	const cvssCond = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCond, nil)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+	st := &eventInsertFailingStore{AlertRuleStore: tdb.Store, ruleID: rule.ID, failuresLeft: 1}
+	ev, logBuf := newLoggedEvaluator(tdb, st)
+
+	if err := ev.EvaluateBatch(ctx); err != nil {
+		t.Fatalf("first EvaluateBatch: %v", err)
+	}
+	if s := getLatestRunStatus(t, tdb.DB(), rule.ID); s != "error" {
+		t.Fatalf("first run status = %q, want error", s)
+	}
+	if !strings.Contains(logBuf.String(), "simulated insert failure") {
+		t.Fatalf("want the rule failure logged, got log %q", logBuf.String())
+	}
+
+	if err := ev.EvaluateBatch(ctx); err != nil {
+		t.Fatalf("second EvaluateBatch: %v", err)
+	}
+	if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
+		t.Fatalf("want 1 alert_event once the rule evaluates successfully, got %d", n)
+	}
+}
+
+// TestEvaluator_UncompilableRuleSetToError checks that a rule whose stored conditions no
+// longer compile is marked status=error, so it fails closed visibly (PLAN §10.5).
+func TestEvaluator_UncompilableRuleSetToError(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	const cveID = "CVE-RULECOMPILE-001"
+	score := 9.0
+	insertCVE(t, tdb.DB(), cveID, "Analyzed", "compile error test", &score, "rulecompile-hash-001")
+
+	uncompilableRule := func(t *testing.T) *store.AlertRuleRow {
+		t.Helper()
+		const cvssCond = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+		rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCond, nil)
+		activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+		if _, err := tdb.DB().ExecContext(ctx,
+			`UPDATE alert_rules SET conditions = '[{"field":"no_such_field","operator":"eq","value":1}]' WHERE id = $1`,
+			rule.ID,
+		); err != nil {
+			t.Fatalf("corrupt rule conditions: %v", err)
+		}
+		return rule
+	}
+
+	paths := []struct {
+		name     string
+		evaluate func(*alert.Evaluator) error
+	}{
+		{"Batch", func(ev *alert.Evaluator) error { return ev.EvaluateBatch(ctx) }},
+		{"Realtime", func(ev *alert.Evaluator) error { return ev.EvaluateRealtime(ctx, cveID) }},
+	}
+	for _, p := range paths {
+		t.Run(p.name, func(t *testing.T) {
+			rule := uncompilableRule(t)
+			ev, logBuf := newLoggedEvaluator(tdb, tdb.Store)
+			if err := p.evaluate(ev); err != nil {
+				t.Fatalf("evaluate: %v", err)
+			}
+			if s := getRuleStatus(t, tdb.DB(), rule.ID); s != "error" {
+				t.Fatalf("rule status = %q, want error", s)
+			}
+			if !strings.Contains(logBuf.String(), "no_such_field") {
+				t.Fatalf("want the compile failure logged, got log %q", logBuf.String())
+			}
+		})
+	}
+}
+
+// getCursorHeldRuns reads the "held_runs" value from the feed_sync_state cursor JSON.
+func getCursorHeldRuns(t *testing.T, db *sql.DB, feedName string) int {
+	t.Helper()
+	var raw []byte
+	err := db.QueryRowContext(context.Background(),
+		`SELECT cursor_json FROM feed_sync_state WHERE feed_name = $1`, feedName,
+	).Scan(&raw)
+	if err != nil {
+		t.Fatalf("getCursorHeldRuns for %s: %v", feedName, err)
+	}
+	var cur struct {
+		HeldRuns int `json:"held_runs"`
+	}
+	if err := json.Unmarshal(raw, &cur); err != nil {
+		t.Fatalf("parse cursor for %s: %v", feedName, err)
+	}
+	return cur.HeldRuns
+}
+
+// TestEvaluateBatch_PersistentRuleErrorAdvancesCursorAfterCap checks that a rule failing on
+// every run holds the batch cursor for a bounded number of runs, that other rules keep
+// evaluating meanwhile, and that the cursor then advances with an error logged.
+func TestEvaluateBatch_PersistentRuleErrorAdvancesCursorAfterCap(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	const cveID = "CVE-RULECAP-001"
+	score := 9.0
+	insertCVE(t, tdb.DB(), cveID, "Analyzed", "held cursor cap test", &score, "rulecap-hash-001")
+
+	const cvssCond = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	failing := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCond, nil)
+	activateRule(t, ctx, tdb.Store, orgID, failing.ID)
+	healthy := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCond, nil)
+	activateRule(t, ctx, tdb.Store, orgID, healthy.ID)
+
+	st := &eventInsertFailingStore{AlertRuleStore: tdb.Store, ruleID: failing.ID, failuresLeft: -1}
+	ev, logBuf := newLoggedEvaluator(tdb, st)
+
+	if err := ev.EvaluateBatch(ctx); err != nil {
+		t.Fatalf("first EvaluateBatch: %v", err)
+	}
+	if n := countAlertEvents(t, tdb.DB(), healthy.ID, cveID); n != 1 {
+		t.Fatalf("want 1 alert_event for the healthy rule, got %d", n)
+	}
+	if !getCursorSince(t, tdb.DB(), "alert:batch").IsZero() {
+		t.Fatal("cursor advanced past a run in which a rule failed")
+	}
+	if n := getCursorHeldRuns(t, tdb.DB(), "alert:batch"); n != 1 {
+		t.Fatalf("held_runs = %d after one failed run, want 1", n)
+	}
+
+	const maxRuns = 100
+	advanced := false
+	for i := 0; i < maxRuns && !advanced; i++ {
+		if err := ev.EvaluateBatch(ctx); err != nil {
+			t.Fatalf("EvaluateBatch run %d: %v", i+2, err)
+		}
+		advanced = !getCursorSince(t, tdb.DB(), "alert:batch").IsZero()
+	}
+	if !advanced {
+		t.Fatalf("cursor still held after %d runs with a persistently failing rule", maxRuns+1)
+	}
+	if n := getCursorHeldRuns(t, tdb.DB(), "alert:batch"); n != 0 {
+		t.Fatalf("held_runs = %d after the cursor advanced, want 0", n)
+	}
+	if !strings.Contains(logBuf.String(), "did not evaluate") {
+		t.Fatalf("want an error logged when the cursor advances past unevaluated CVEs, got log %q", logBuf.String())
 	}
 }

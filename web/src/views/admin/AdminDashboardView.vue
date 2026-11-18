@@ -42,18 +42,18 @@ async function fetchDashboard() {
       return
     }
 
-    const feeds = feedsResult.data.items ?? []
+    const feeds = feedsResult.data.items
     const healthy = feeds.filter((f) => f.consecutive_failures === 0).length
     const failing = feeds.filter((f) => f.consecutive_failures > 0).length
 
     data.value = {
-      orgCount: (orgsResult.data.items ?? []).length,
+      orgCount: orgsResult.data.items.length,
       orgHasMore: !!orgsResult.data.next_cursor,
-      userCount: (usersResult.data.items ?? []).length,
+      userCount: usersResult.data.items.length,
       userHasMore: !!usersResult.data.next_cursor,
       healthyFeeds: healthy,
       failingFeeds: failing,
-      failedDeliveryCount: (deliveriesResult.data.items ?? []).length,
+      failedDeliveryCount: deliveriesResult.data.items.length,
       failedDeliveryHasMore: !!deliveriesResult.data.next_cursor,
     }
   } catch {

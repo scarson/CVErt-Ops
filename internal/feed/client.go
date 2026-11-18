@@ -3,6 +3,7 @@
 package feed
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -11,8 +12,13 @@ import (
 )
 
 // DefaultMaxBodyBytes is the default maximum response body size for feed downloads.
-// 512 MB accommodates bulk feed archives (MITRE, OSV) while preventing unbounded reads.
-const DefaultMaxBodyBytes int64 = 512 << 20 // 512 MiB
+// The bulk archives pass through it whole: OSV's all.zip was 2.9 GB and MITRE's
+// cvelistV5 archive 0.7 GB on 2026-11-10, so the cap leaves room for growth
+// while still bounding a runaway response.
+const DefaultMaxBodyBytes int64 = 8 << 30 // 8 GiB
+
+// ErrBodyTooLarge reports a response body longer than the feed client's cap.
+var ErrBodyTooLarge = errors.New("feed: response body exceeds the size limit")
 
 // maxBodyTransport wraps an http.RoundTripper and limits response body size
 // to prevent unbounded memory/disk consumption from malicious or corrupt feeds.
@@ -21,21 +27,40 @@ type maxBodyTransport struct {
 	maxBytes int64
 }
 
-// limitedReadCloser preserves the original body's Close while limiting reads.
-type limitedReadCloser struct {
-	io.Reader
-	io.Closer
+// limitedBody reads at most remaining bytes and then fails with
+// ErrBodyTooLarge if the body has more. A body cut short must not read as a
+// complete one: a truncated archive would otherwise fail later as a corrupt
+// file, far from the cause.
+type limitedBody struct {
+	body      io.ReadCloser
+	remaining int64
 }
+
+func (b *limitedBody) Read(p []byte) (int, error) {
+	if b.remaining <= 0 {
+		var probe [1]byte
+		n, err := b.body.Read(probe[:])
+		if n > 0 {
+			return 0, ErrBodyTooLarge
+		}
+		return 0, err
+	}
+	if int64(len(p)) > b.remaining {
+		p = p[:b.remaining]
+	}
+	n, err := b.body.Read(p)
+	b.remaining -= int64(n)
+	return n, err
+}
+
+func (b *limitedBody) Close() error { return b.body.Close() }
 
 func (t *maxBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.inner.RoundTrip(req)
 	if err != nil {
 		return nil, err
 	}
-	resp.Body = limitedReadCloser{
-		Reader: io.LimitReader(resp.Body, t.maxBytes),
-		Closer: resp.Body,
-	}
+	resp.Body = &limitedBody{body: resp.Body, remaining: t.maxBytes}
 	return resp, nil
 }
 

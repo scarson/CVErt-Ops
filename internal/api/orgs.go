@@ -54,8 +54,7 @@ func (srv *Server) createOrgHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req createOrgBody
-	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
@@ -115,8 +114,7 @@ func (srv *Server) updateOrgHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req updateOrgBody
-	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -170,7 +168,7 @@ type memberEntry struct {
 	DisplayName   string  `json:"display_name"`
 	Role          string  `json:"role"`
 	Active        bool    `json:"active"`
-	DeactivatedAt *string `json:"deactivated_at,omitempty"`
+	DeactivatedAt *string `json:"deactivated_at,omitzero" nullable:"false"`
 	SCIMExempt    bool    `json:"scim_exempt"`
 	JoinedAt      string  `json:"joined_at"`
 }
@@ -188,7 +186,7 @@ type patchMemberResponseBody struct {
 	UserID        string  `json:"user_id"`
 	Role          string  `json:"role"`
 	Active        bool    `json:"active"`
-	DeactivatedAt *string `json:"deactivated_at,omitempty"`
+	DeactivatedAt *string `json:"deactivated_at,omitzero" nullable:"false"`
 	SCIMExempt    bool    `json:"scim_exempt"`
 }
 
@@ -252,8 +250,7 @@ func (srv *Server) updateMemberRoleHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	var req patchMemberBody
-	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -478,8 +475,7 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	var req createInvitationBody
-	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.Email) == "" {

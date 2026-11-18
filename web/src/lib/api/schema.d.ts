@@ -259,6 +259,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/reload-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reload configuration from secrets file */
+        post: operations["admin-reload-config"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/security-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List security events */
+        get: operations["admin-list-security-events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/users": {
         parameters: {
             query?: never;
@@ -491,6 +525,159 @@ export interface paths {
         get: operations["get-me"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/challenge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request MFA challenge (email OTP code or signal TOTP readiness) */
+        post: operations["mfa-challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/email-otp/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify email OTP code and finalize enrollment */
+        post: operations["mfa-email-otp-confirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/email-otp/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send email OTP verification code for enrollment */
+        post: operations["mfa-email-otp-setup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/methods": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List enrolled MFA methods and enforcement status */
+        get: operations["mfa-methods-list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/methods/{method}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove an MFA method (requires password re-auth) */
+        delete: operations["mfa-method-remove"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/recovery-codes/regenerate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Regenerate recovery codes (requires password re-auth) */
+        post: operations["mfa-recovery-codes-regenerate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/totp/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify TOTP code and finalize enrollment */
+        post: operations["mfa-totp-confirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/totp/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Generate TOTP secret and QR code URI */
+        post: operations["mfa-totp-setup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit MFA verification code */
+        post: operations["mfa-verify"];
         delete?: never;
         options?: never;
         head?: never;
@@ -735,7 +922,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List alert events */
+        /**
+         * List alert events
+         * @description With order=asc the list is a feed for pollers: store next_cursor, which is present once a position exists, and pass it as after on the next poll. Each change to an event (its first fire, a reopen, a resolve, or a move to a new CVE ID when an advisory is renamed) gives it a new position, and a poller sees each change exactly once, with no overlap between polls. Each entry shows the event's current state: last_match_state says whether it is open, times_fired counts fires, and changes not yet read collapse into one entry. Filters apply to that state. A page shorter than limit means the poller has caught up. With expand=rule, limit is at most 100.
+         */
         get: operations["list-alert-events"];
         put?: never;
         post?: never;
@@ -991,6 +1181,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/orgs/{org_id}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check component versions against known advisories
+         * @description For each listed component version, says which advisories affect it, which range matched, and the lowest version the advisory data no longer reports as affected. Takes 1 to 500 items within the 1 MiB request limit, and reads only the global CVE corpus. An item that cannot be read is answered with status invalid, and the others are still answered. Only not_affected clears a version: it means the version is not in any analysed or CNA-named advisory held. unresolved means no advisory was established as affected and the data leaves some unresolved; cannot_evaluate means the check could not be completed for the item; no_advisory_found means no matching advisory was found, not that the component is safe. Answers 422 with problem type urn:cvert:error:candidate_limit_exceeded when the request reads more candidate rows than one request may (split the request), and 503 when no check slot is free (with Retry-After) or the check did not finish within 30 seconds. Item values are not stored or logged.
+         */
+        post: operations["check-components"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/orgs/{org_id}/deliveries": {
         parameters: {
             query?: never;
@@ -1218,6 +1428,75 @@ export interface paths {
         patch: operations["update-member-role"];
         trace?: never;
     };
+    "/orgs/{org_id}/members/{user_id}/force-password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Force a member to reset their password */
+        post: operations["force-member-password-reset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/members/{user_id}/require-mfa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Require MFA for a member */
+        post: operations["require-member-mfa"];
+        /** Remove a member's MFA requirement */
+        delete: operations["unrequire-member-mfa"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/members/{user_id}/reset-mfa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reset a member's MFA */
+        post: operations["reset-member-mfa"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/mfa-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update organization MFA settings */
+        patch: operations["update-org-mfa-settings"];
+        trace?: never;
+    };
     "/orgs/{org_id}/reports": {
         parameters: {
             query?: never;
@@ -1381,6 +1660,100 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/orgs/{org_id}/sso/link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Start linking the caller's account to the org's SSO identity
+         * @description Redirects the browser to the identity provider. The provider returns to /auth/oidc/link-callback.
+         */
+        get: operations["link-sso-identity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/sso/scim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get SCIM configuration */
+        get: operations["get-scim-config"];
+        put?: never;
+        /**
+         * Create SCIM configuration
+         * @description The response carries the SCIM bearer token; it is not shown again.
+         */
+        post: operations["create-scim-config"];
+        /** Delete SCIM configuration */
+        delete: operations["delete-scim-config"];
+        options?: never;
+        head?: never;
+        /** Update SCIM configuration */
+        patch: operations["patch-scim-config"];
+        trace?: never;
+    };
+    "/orgs/{org_id}/sso/scim/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List SCIM-provisioned groups */
+        get: operations["list-scim-groups"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/sso/scim/groups/{id}/mapping": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Map a SCIM group to a role or notification group */
+        patch: operations["patch-scim-group-mapping"];
+        trace?: never;
+    };
+    "/orgs/{org_id}/sso/scim/rotate-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rotate the SCIM bearer token */
+        post: operations["rotate-scim-token"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/orgs/{org_id}/tier": {
         parameters: {
             query?: never;
@@ -1444,7 +1817,11 @@ export interface paths {
         };
         /** List watchlist items */
         get: operations["list-watchlist-items"];
-        put?: never;
+        /**
+         * Replace all items in a watchlist
+         * @description Makes the watchlist hold exactly the items in the request, in one transaction, and returns how many were added, removed and left unchanged. Repeating a request changes nothing. Takes at most 10000 items within the 1 MiB request limit. Rules bound to the watchlist stay active and are not re-activated: their next evaluation run alerts on an added CVE item that already matches them.
+         */
+        put: operations["replace-watchlist-items"];
         /** Add an item to a watchlist */
         post: operations["create-watchlist-item"];
         delete?: never;
@@ -1470,6 +1847,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/whoami": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Describe the calling credential
+         * @description For an API key: the key's ID, name, role and expiry, and its org with the role the key acts with, the org's tier and its rate limit. A key's request counts against its org's rate limit. For a browser session: the user and each org where the membership is active. Answers 403 for a key whose creator is no longer an active member of the key's org.
+         */
+        get: operations["whoami"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1478,104 +1875,33 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/AddGroupMemberBody.json
+             * @example /api/v1/schemas/AddGroupMemberBody.json
              */
             readonly $schema?: string;
             user_id: string;
         };
-        "Admin-bulk-retry-deliveriesResponse": {
+        AdminBulkRetryResult: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/Admin-bulk-retry-deliveriesResponse.json
+             * @example /api/v1/schemas/AdminBulkRetryResult.json
              */
             readonly $schema?: string;
             /** Format: int64 */
             rows_affected: number;
             status: string;
         };
-        "Admin-disable-userResponse": {
+        AdminDeliveryRetryResult: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/Admin-disable-userResponse.json
-             */
-            readonly $schema?: string;
-            status: string;
-            user_id: string;
-        };
-        "Admin-enable-userResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/Admin-enable-userResponse.json
-             */
-            readonly $schema?: string;
-            status: string;
-            user_id: string;
-        };
-        "Admin-patch-orgRequest": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/Admin-patch-orgRequest.json
-             */
-            readonly $schema?: string;
-            suspend?: boolean;
-            tier?: string;
-        };
-        "Admin-reindexResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/Admin-reindexResponse.json
-             */
-            readonly $schema?: string;
-            job_id: string;
-        };
-        "Admin-reset-passwordResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/Admin-reset-passwordResponse.json
-             */
-            readonly $schema?: string;
-            status: string;
-            user_id: string;
-        };
-        "Admin-retry-deliveryResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/Admin-retry-deliveryResponse.json
+             * @example /api/v1/schemas/AdminDeliveryRetryResult.json
              */
             readonly $schema?: string;
             delivery_id: string;
             /** Format: int64 */
             rows_affected: number;
             status: string;
-        };
-        "Admin-unlock-userResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/Admin-unlock-userResponse.json
-             */
-            readonly $schema?: string;
-            status: string;
-            user_id: string;
-        };
-        "Admin-versionResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/Admin-versionResponse.json
-             */
-            readonly $schema?: string;
-            build_time: string;
-            commit: string;
-            go_version: string;
-            version: string;
         };
         AdminDeliveryRow: {
             /** Format: int32 */
@@ -1598,16 +1924,39 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        AdminFeedStateResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/AdminFeedStateResponse.json
+             */
+            readonly $schema?: string;
+            feed: string;
+            status: string;
+        };
+        AdminJobResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/AdminJobResponse.json
+             */
+            readonly $schema?: string;
+            job_id: string;
+        };
         AdminOrgResponse: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/AdminOrgResponse.json
+             * @example /api/v1/schemas/AdminOrgResponse.json
              */
             readonly $schema?: string;
             /** Format: date-time */
             created_at: string;
             id: string;
+            /** Format: date-time */
+            last_activity_at: string | null;
+            /** Format: int64 */
+            member_count: number;
             name: string;
             /** Format: date-time */
             suspended_at: string | null;
@@ -1626,6 +1975,25 @@ export interface components {
             suspended_at: string | null;
             tier: string;
         };
+        AdminPatchOrgBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/AdminPatchOrgBody.json
+             */
+            readonly $schema?: string;
+            suspend?: boolean;
+            tier?: string;
+        };
+        AdminReloadResult: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/AdminReloadResult.json
+             */
+            readonly $schema?: string;
+            message: string;
+        };
         AdminUserRow: {
             /** Format: date-time */
             created_at: string;
@@ -1643,6 +2011,28 @@ export interface components {
             /** Format: int64 */
             org_count: number;
         };
+        AdminUserStatusResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/AdminUserStatusResponse.json
+             */
+            readonly $schema?: string;
+            status: string;
+            user_id: string;
+        };
+        AdminVersionInfo: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/AdminVersionInfo.json
+             */
+            readonly $schema?: string;
+            build_time: string;
+            commit: string;
+            go_version: string;
+            version: string;
+        };
         AffectedCPEResponse: {
             cpe: string;
             cpe_normalized: string;
@@ -1655,28 +2045,89 @@ export interface components {
             package_name: string;
             range_type?: string;
         };
+        AlertEventCVEContext: {
+            /**
+             * Format: double
+             * @description CVSS v3 base score.
+             */
+            cvss_v3_score: number | null;
+            /**
+             * Format: double
+             * @description CVSS v4 base score.
+             */
+            cvss_v4_score: number | null;
+            /**
+             * Format: double
+             * @description EPSS probability, 0 to 1; null when not scored.
+             */
+            epss_score: number | null;
+            /** @description Whether the CVE is in the CISA Known Exploited Vulnerabilities catalog. */
+            in_cisa_kev: boolean;
+            /** @description Severity as the feed sent it; compare case-insensitively. */
+            severity: string | null;
+            /** @description The CVE's status as the feed sent it. */
+            status: string | null;
+        };
         AlertEventEntry: {
+            /** @description With expand=cve: the CVE's fields as held now. Absent when the CVE is not in the corpus. */
+            cve?: components["schemas"]["AlertEventCVEContext"];
             cve_id: string;
             first_fired_at: string;
             id: string;
             last_fired_at: string;
             last_match_state: boolean;
             material_hash: string;
+            /** @description With expand=rule: the rule's name and the watchlist items that match the CVE. */
+            rule?: components["schemas"]["AlertEventRuleContext"];
             rule_id: string;
             suppress_delivery: boolean;
             /** Format: int32 */
             times_fired: number;
         };
+        AlertEventRuleContext: {
+            /** @description The rule has been deleted since the event fired. */
+            deleted: boolean;
+            /** @description Items of the rule's watchlists that match the CVE, by the conditions rule evaluation uses, read now: an item added or removed since the event fired is reflected. Empty for a rule with no watchlists. */
+            matched_watchlist_items: components["schemas"]["AlertEventWatchlistMatch"][];
+            /** @description The rule's name. */
+            name: string;
+        };
+        AlertEventWatchlistMatch: {
+            /** @description For a cpe item: the normalized CPE prefix. */
+            cpe?: string;
+            /** @description For a cve item: the CVE ID. */
+            cve_id?: string;
+            /** @description For a package item: the ecosystem as listed. */
+            ecosystem?: string;
+            /**
+             * Format: uuid
+             * @description Watchlist item ID.
+             */
+            item_id: string;
+            /**
+             * @description Item type.
+             * @enum {string}
+             */
+            item_type: "cve" | "package" | "cpe";
+            /** @description For a package item: the namespace, when listed. */
+            namespace?: string;
+            /** @description For a package item: the package name as listed. */
+            package_name?: string;
+            /**
+             * Format: uuid
+             * @description Watchlist ID.
+             */
+            watchlist_id: string;
+        };
         AlertRuleEntry: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/AlertRuleEntry.json
+             * @example /api/v1/schemas/AlertRuleEntry.json
              */
             readonly $schema?: string;
             conditions: unknown;
             created_at: string;
-            fire_on_non_material_changes: boolean;
             has_epss_condition: boolean;
             id: string;
             is_epss_only: boolean;
@@ -1684,7 +2135,7 @@ export interface components {
             name: string;
             status: string;
             updated_at: string;
-            watchlist_ids: string[] | null;
+            watchlist_ids: string[];
         };
         ApiKeyEntry: {
             created_at: string;
@@ -1699,6 +2150,7 @@ export interface components {
             action: string;
             actor_email: string;
             actor_id?: string;
+            api_key_id?: string;
             created_at: string;
             entity_id: string;
             entity_name?: string;
@@ -1713,6 +2165,7 @@ export interface components {
             action: string;
             actor_email?: string;
             actor_id?: string;
+            api_key_id?: string;
             /** Format: date-time */
             created_at: string;
             entity_id: string;
@@ -1729,22 +2182,59 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/AuthProvidersOutputBody.json
+             * @example /api/v1/schemas/AuthProvidersOutputBody.json
              */
             readonly $schema?: string;
             github: boolean;
             google: boolean;
             registration_mode: string;
         };
+        CNAAffectedResponse: {
+            collection_url?: string;
+            /** @description Status of versions the versions list does not mention: affected, unaffected or unknown. */
+            default_status?: string;
+            package_name?: string;
+            product?: string;
+            vendor?: string;
+            versions: components["schemas"]["CNAVersionResponse"][];
+        };
+        CNAVersionChangeResponse: {
+            at?: string;
+            status?: string;
+        };
+        CNAVersionResponse: {
+            /** @description Versions inside the range where status stops applying, such as a backported fix. */
+            changes?: components["schemas"]["CNAVersionChangeResponse"][];
+            less_than?: string;
+            less_than_or_equal?: string;
+            /** @description affected, unaffected or unknown. */
+            status?: string;
+            /** @description Start of the range when less_than or less_than_or_equal is set, otherwise a single version. Free text unless version_type names a scheme. */
+            version?: string;
+            version_type?: string;
+        };
+        CPEMatchResponse: {
+            cpe: string;
+            cpe_normalized: string;
+            version_end_excluding?: string;
+            version_end_including?: string;
+            version_start_excluding?: string;
+            version_start_including?: string;
+        };
         CVEDetail: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/CVEDetail.json
+             * @example /api/v1/schemas/CVEDetail.json
              */
             readonly $schema?: string;
-            affected_cpes: components["schemas"]["AffectedCPEResponse"][] | null;
-            affected_packages: components["schemas"]["AffectedPackageResponse"][] | null;
+            /** @description NVD's affected CPEs with their version ranges, one entry per range: NVD repeats a CPE with a different range per release branch. Empty until CVErt Ops ingests an NVD record with configurations for the CVE. A CPE that carries its version in the string has no range fields. */
+            affected_cpe_matches: components["schemas"]["CPEMatchResponse"][];
+            /** @description Every CPE the sources name for this CVE, once each. Includes platforms NVD marks not vulnerable, such as the operating system an affected application runs on. For what is affected, read affected_cpe_matches. */
+            affected_cpes: components["schemas"]["AffectedCPEResponse"][];
+            affected_packages: components["schemas"]["AffectedPackageResponse"][];
+            /** @description Products and versions as the CVE Numbering Authority published them, which can be present before NVD analyses the CVE. Holds the distinct entries of both the CVE record and NVD's copy of it, so a product can appear twice when one copy lags the other. Empty until CVErt Ops ingests a record carrying this data, so an empty list does not mean the CNA published none. */
+            cna_affected: components["schemas"]["CNAAffectedResponse"][];
             cve_id: string;
             cvss_score_diverges: boolean;
             /** Format: double */
@@ -1753,7 +2243,7 @@ export interface components {
             /** Format: double */
             cvss_v4_score?: number;
             cvss_v4_vector?: string;
-            cwe_ids: string[] | null;
+            cwe_ids: string[];
             date_first_seen: string;
             date_modified: string;
             date_published?: string;
@@ -1762,7 +2252,7 @@ export interface components {
             epss_score?: number;
             exploit_available: boolean;
             in_cisa_kev: boolean;
-            references: components["schemas"]["ReferenceResponse"][] | null;
+            references: components["schemas"]["ReferenceResponse"][];
             severity?: string;
             status?: string;
         };
@@ -1773,7 +2263,7 @@ export interface components {
             cvss_v3_score?: number;
             /** Format: double */
             cvss_v4_score?: number;
-            cwe_ids: string[] | null;
+            cwe_ids: string[];
             date_first_seen: string;
             date_modified: string;
             date_published?: string;
@@ -1793,34 +2283,132 @@ export interface components {
             source_name: string;
             source_url?: string;
         };
+        CallerAPIKey: {
+            /**
+             * Format: date-time
+             * @description When the key stops working; null when it does not expire.
+             */
+            expires_at: string | null;
+            /**
+             * Format: uuid
+             * @description API key ID.
+             */
+            id: string;
+            /** @description The name given when the key was created. */
+            name: string;
+            /**
+             * @description The highest role the key may act with. org.role is this, lowered to the creator's current org role.
+             * @enum {string}
+             */
+            role: "viewer" | "member" | "admin";
+        };
+        CallerIdentity: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/CallerIdentity.json
+             */
+            readonly $schema?: string;
+            /** @description The calling key. Present only when principal is api_key. */
+            api_key?: components["schemas"]["CallerAPIKey"];
+            /** @description The org the key belongs to; a key can reach no other org. Present only when principal is api_key. */
+            org?: components["schemas"]["CallerOrg"];
+            /** @description Each org where the user's membership is active, by name. Present only when principal is session. */
+            orgs?: components["schemas"]["CallerOrg"][];
+            /**
+             * @description api_key for a Bearer API key, session for a browser session cookie.
+             * @enum {string}
+             */
+            principal: "api_key" | "session";
+            /**
+             * Format: uuid
+             * @description The user the request acts as. For an API key, the user who created it.
+             */
+            user_id: string;
+        };
+        CallerOrg: {
+            /**
+             * Format: uuid
+             * @description Organization ID, for /orgs/{org_id} paths.
+             */
+            id: string;
+            /** @description Organization name. */
+            name: string;
+            /** @description The API rate limit that applies to requests in this org. */
+            rate_limit: components["schemas"]["CallerRateLimit"];
+            /**
+             * @description The role requests act with in this org.
+             * @enum {string}
+             */
+            role: "viewer" | "member" | "admin" | "owner";
+            /** @description The org's subscription tier. */
+            tier: string;
+        };
+        CallerRateLimit: {
+            /**
+             * Format: int64
+             * @description Requests that may be sent at once when the bucket is full.
+             */
+            burst: number;
+            /**
+             * Format: int64
+             * @description Sustained requests a minute.
+             */
+            requests_per_minute: number;
+            /**
+             * @description Who shares the bucket. org: every key and session acting in the org.
+             * @enum {string}
+             */
+            scope: "org";
+        };
         ChangePasswordInputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ChangePasswordInputBody.json
+             * @example /api/v1/schemas/ChangePasswordInputBody.json
              */
             readonly $schema?: string;
-            /** @description Current password */
-            current_password: string;
+            /** @description Current password (required in normal mode, optional in restricted mode) */
+            current_password?: string;
             /** @description New password (min 16 characters) */
             new_password: string;
+        };
+        ChangePasswordOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/ChangePasswordOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Remaining pending items (if any) */
+            pending?: string[];
         };
         ChannelCreateEntry: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ChannelCreateEntry.json
+             * @example /api/v1/schemas/ChannelCreateEntry.json
              */
             readonly $schema?: string;
-            signing_secret: string;
+            /** @description Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***. The value of any field delivery does not read is replaced by [REDACTED]. */
+            config: unknown;
+            created_at: string;
+            id: string;
+            name: string;
+            org_id: string;
+            /** @description Webhook channels only. Shown once, at creation. */
+            signing_secret?: string;
+            type: string;
+            updated_at: string;
         };
         ChannelEntry: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ChannelEntry.json
+             * @example /api/v1/schemas/ChannelEntry.json
              */
             readonly $schema?: string;
+            /** @description Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***. The value of any field delivery does not read is replaced by [REDACTED]. */
             config: unknown;
             created_at: string;
             id: string;
@@ -1829,11 +2417,210 @@ export interface components {
             type: string;
             updated_at: string;
         };
+        CheckAdvisory: {
+            /** @description Advisory or CVE ID; works with GET /cves/{cve_id}. */
+            advisory_id: string;
+            /** @description CVE IDs the advisory names. */
+            cve_ids: string[];
+            /**
+             * Format: double
+             * @description The advisory's CVSS v3 base score.
+             */
+            cvss_v3_score: number | null;
+            /**
+             * Format: double
+             * @description Highest EPSS score of the CVEs in cve_ids; null when none of them has a score, which means not known.
+             */
+            epss_score: number | null;
+            /** @description The ecosystem of the package range that names fixed_version, preferring the item's own when several do. For an Ubuntu item it can be the release's other stream: Ubuntu:Pro:<release> means the fix is published only through Ubuntu Pro. Null when fixed_version is null or comes from an NVD or CNA range. */
+            fix_ecosystem: string | null;
+            /**
+             * @description Whether fixed_version is in the same major release as the version; null when fixed_version is null.
+             * @enum {string|null}
+             */
+            fix_major: "same" | "different" | "unknown" | null;
+            /** @description The lowest version the advisory data no longer reports as affected; null when none is known. */
+            fixed_version: string | null;
+            /** @description Whether any CVE in cve_ids is in CISA KEV; null when the record names no CVE that is held, which means not known, not false. */
+            in_cisa_kev: boolean | null;
+            /** @description Ranges that contain the version. At most 20. */
+            matched_ranges: components["schemas"]["CheckMatchedRange"][];
+            /**
+             * Format: int64
+             * @description How many ranges contain the version. Verdicts and fixes use all of them.
+             */
+            matched_ranges_total: number;
+            /**
+             * @description Why the advisory could not be evaluated; null when it is affected.
+             * @enum {string|null}
+             */
+            reason: "unknown_version_scheme" | "invalid_version" | "invalid_range" | "commit_ranges_only" | "no_version_bounds" | "cna_cannot_clear" | "cna_indeterminate" | "cna_name_uncertain" | "cna_product_not_mapped" | "data_incomplete" | "distro_package_not_found" | "too_many_candidates" | "too_many_ranges" | "evaluation_failed" | "sdk_version_not_comparable" | "distro_stream_incomplete" | null;
+            /** @description The advisory's severity, as the feed sent it. */
+            severity: string | null;
+            /**
+             * @description This advisory's verdict for the version.
+             * @enum {string}
+             */
+            verdict: "affected" | "cannot_evaluate";
+        };
+        CheckComponent: {
+            /** @description OSV ecosystem, for a package. */
+            ecosystem?: string;
+            /**
+             * @description package for the purl and ecosystem forms, product for the CPE form.
+             * @enum {string}
+             */
+            kind: "package" | "product";
+            /** @description Package name as given, for a package. */
+            name?: string;
+            /** @description CPE part, lower-cased, for a product. */
+            part?: string;
+            /** @description CPE product, lower-cased, for a product. */
+            product?: string;
+            /** @description CPE vendor, lower-cased, for a product. */
+            vendor?: string;
+            /** @description The version as compared. */
+            version: string;
+        } | null;
+        CheckCounts: {
+            /**
+             * Format: int64
+             * @description Advisory records that report the version affected.
+             */
+            affected: number;
+            /**
+             * Format: int64
+             * @description Advisory records that could not be evaluated for the version.
+             */
+            cannot_evaluate: number;
+            /** @description The advisory records that could not be evaluated, by reason, counted before the listing limit: each record is counted once, under the reason it shows. The values sum to cannot_evaluate. */
+            cannot_evaluate_by_reason: {
+                [key: string]: number;
+            };
+            /**
+             * Format: int64
+             * @description Advisory records that do not report the version affected.
+             */
+            not_affected: number;
+            /**
+             * Format: int64
+             * @description Advisory records whose CVE is rejected or withdrawn; they take no part in the status.
+             */
+            retracted: number;
+        };
+        CheckFeedStatus: {
+            /** @description The feed has finished a full walk and succeeded within 7 days. */
+            complete: boolean;
+            /**
+             * Format: date-time
+             * @description When the feed last succeeded; null if never.
+             */
+            last_success_at: string | null;
+            /** @description Feed name, as feed_sync_state names it. */
+            name: string;
+        };
+        CheckItem: {
+            /** @description CPE 2.3 formatted string with literal part, vendor and product. At most 512 characters. */
+            cpe?: string;
+            /** @description OSV ecosystem name; a distribution ecosystem must name a release, such as Debian:13. */
+            ecosystem?: string;
+            /** @description Caller's identifier for the item, echoed back. At most 128 characters. */
+            id?: string;
+            /** @description Package name in the ecosystem. At most 512 characters. */
+            name?: string;
+            /** @description Package URL with a version. At most 1024 characters. Types npm, pypi, golang, maven, cargo, gem, nuget, pub, hex, composer, deb (with a distro qualifier) and apk (with a distro qualifier). */
+            purl?: string;
+            /** @description Version to check. At most 256 characters. With a CPE it may be omitted when the CPE's own version component holds it. */
+            version?: string;
+        };
+        CheckItemError: {
+            /**
+             * @description Stable error code.
+             * @enum {string}
+             */
+            code: "invalid_form" | "invalid_ecosystem" | "ecosystem_release_required" | "invalid_purl" | "unsupported_purl_type" | "unsupported_purl_namespace" | "unsupported_repository" | "distro_required" | "distro_not_recognised" | "conflicting_distro" | "invalid_cpe" | "version_required" | "conflicting_version" | "value_too_long" | "invalid_characters";
+            /** @description A fixed sentence explaining the code. It never repeats the item's values. */
+            message: string;
+        } | null;
+        CheckItemResult: {
+            /** @description Advisories that report the version affected or cannot be evaluated: affected first, then those in CISA KEV, then by score. At most 100. */
+            advisories: components["schemas"]["CheckAdvisory"][];
+            /** @description More advisories applied than are listed. Status and counts use all of them. */
+            advisories_truncated: boolean;
+            /** @description What the item was checked as; null for an invalid item. */
+            component: components["schemas"]["CheckComponent"];
+            /** @description Counts of advisory records found for the item, by verdict. */
+            counts: components["schemas"]["CheckCounts"];
+            /** @description Every feed this item depends on is complete. */
+            data_complete: boolean;
+            /** @description Why the item could not be read; null unless status is invalid. */
+            error: components["schemas"]["CheckItemError"];
+            /** @description The item's id, or null when it had none or it was too long. */
+            id: string | null;
+            /**
+             * Format: int64
+             * @description Position of the item in the request.
+             */
+            index: number;
+            /**
+             * @description Set when an item-level rule gave the status; null when the status comes from the listed advisories, each of which carries its own reason. invalid_version: the item's own version order cannot read its version. sdk_version_not_comparable: a microsoft:.net or .net_core version numbered as an SDK (third component 100 or more, as 10.0.404); NVD and Microsoft state runtime versions, so send the runtime version (SDKs before 2.1.300 cannot be told apart). A .NET item checks the .NET runtime; ASP.NET Core is checked under its own CPE, microsoft:asp.net_core. too_many_ranges: an advisory has more ranges than the per-advisory limit. evaluation_failed: a comparison failed for an unclassified reason. data_incomplete: a feed the item depends on has not finished a full walk or has not succeeded for 7 days; it applies with no advisory too. distro_stream_incomplete: an Ubuntu stream other than a release's standard or plain Pro stream (FIPS or Realtime under Pro, NVIDIA BlueField) lists only some of its release's advisories, so its items are never cleared. distro_lists_fixes_only, with status unresolved: the distribution's feed records issued fixes only (Red Hat, AlmaLinux, Rocky Linux, Alpine, SUSE, openSUSE, Azure Linux, Mageia, TuxCare, openEuler and Red Hat Lightwell, and any distribution not known to record unfixed vulnerabilities), so no published fix is missing for this version, but a vulnerability the distribution has not fixed would not appear; a version below a published fix still answers affected.
+             * @enum {string|null}
+             */
+            reason: "unknown_version_scheme" | "invalid_version" | "invalid_range" | "commit_ranges_only" | "no_version_bounds" | "cna_cannot_clear" | "cna_indeterminate" | "cna_name_uncertain" | "cna_product_not_mapped" | "data_incomplete" | "distro_package_not_found" | "too_many_candidates" | "too_many_ranges" | "evaluation_failed" | "sdk_version_not_comparable" | "distro_stream_incomplete" | "distro_lists_fixes_only" | null;
+            /**
+             * @description Only not_affected clears a version. affected: at least one advisory reports this version affected. not_affected: every advisory found was decided and none reports the version affected; the version is not in any analysed or CNA-named advisory held. unresolved: no advisory was established as affected, and the data leaves one or more advisories unresolved for this version; not a clean result: see each listed advisory's reason and counts.cannot_evaluate_by_reason, or the item's reason when set. cannot_evaluate: the check could not be completed for this item; see reason, or, when reason is null, the listed advisories. no_advisory_found: no matching advisory was found in the searched data, which is not a statement that the component is safe. invalid: the item could not be read; see error.
+             * @enum {string}
+             */
+            status: "affected" | "not_affected" | "unresolved" | "cannot_evaluate" | "no_advisory_found" | "invalid";
+            /** @description Warnings about the answer. */
+            warnings: "cna_product_not_mapped"[];
+        };
+        CheckMatchedRange: {
+            /** @description The CPE of an NVD CPE match. */
+            cpe?: string;
+            /** @description The stored ecosystem of a package range. An Ubuntu item reads both its release's standard and Ubuntu Pro streams, so this names the stream the range came from. */
+            ecosystem?: string;
+            /**
+             * @description Where the range comes from: a package range, an NVD CPE match, or the CNA's affected data.
+             * @enum {string}
+             */
+            evidence: "package_range" | "nvd_cpe" | "cna";
+            /** @description Upper bound, exclusive. */
+            fixed?: string;
+            /** @description Lower bound, inclusive; empty when the range has none. */
+            introduced: string;
+            /** @description Upper bound, inclusive. */
+            last_affected?: string;
+        };
+        CheckRequest: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/CheckRequest.json
+             */
+            readonly $schema?: string;
+            /** @description The components to check, answered in this order. An item that cannot be read is answered with status invalid; the others are still answered. */
+            items: components["schemas"]["CheckItem"][];
+        };
+        CheckResults: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/CheckResults.json
+             */
+            readonly $schema?: string;
+            /** @description Every feed a valid item depends on has finished a full walk and succeeded within 7 days. */
+            data_complete: boolean;
+            /** @description The feeds the valid items depend on, sorted by name. */
+            feeds: components["schemas"]["CheckFeedStatus"][];
+            /** @description One result per request item, in request order. */
+            results: components["schemas"]["CheckItemResult"][];
+        };
         CreateAPIKeyBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/CreateAPIKeyBody.json
+             * @example /api/v1/schemas/CreateAPIKeyBody.json
              */
             readonly $schema?: string;
             expires_at?: string;
@@ -1844,7 +2631,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/CreateAPIKeyResponse.json
+             * @example /api/v1/schemas/CreateAPIKeyResponse.json
              */
             readonly $schema?: string;
             created_at: string;
@@ -1858,23 +2645,23 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/CreateAlertRuleBody.json
+             * @example /api/v1/schemas/CreateAlertRuleBody.json
              */
             readonly $schema?: string;
             conditions: unknown;
             enabled: boolean;
-            fire_on_non_material_changes: boolean;
             logic: string;
             name: string;
-            watchlist_ids: string[] | null;
+            watchlist_ids: string[];
         };
         CreateChannelBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/CreateChannelBody.json
+             * @example /api/v1/schemas/CreateChannelBody.json
              */
             readonly $schema?: string;
+            /** @description A JSON object. Webhook channels take url (required, not blank) and custom_headers (an object of header names to string values); email channels take recipients (an array of 1 to 50 RFC 5322 addresses, no address twice). Key names are case-sensitive, and any other key is refused. A custom header name must be an HTTP token and differ from the other names by more than letter case; a value must not contain a control character other than tab. These names are reserved and refused: Host, Content-Type, Content-Length, Transfer-Encoding, Connection, Upgrade, Keep-Alive, Proxy-Connection, TE, Trailer, X-CVErt-Timestamp, X-CVErtOps-Signature, X-CVErtOps-Signature-Secondary. */
             config: unknown;
             name: string;
             type: string;
@@ -1883,7 +2670,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/CreateGroupBody.json
+             * @example /api/v1/schemas/CreateGroupBody.json
              */
             readonly $schema?: string;
             description: string;
@@ -1893,7 +2680,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/CreateInvitationBody.json
+             * @example /api/v1/schemas/CreateInvitationBody.json
              */
             readonly $schema?: string;
             email: string;
@@ -1903,7 +2690,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/CreateOrgBody.json
+             * @example /api/v1/schemas/CreateOrgBody.json
              */
             readonly $schema?: string;
             name: string;
@@ -1912,7 +2699,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/CreateOrgResponseBody.json
+             * @example /api/v1/schemas/CreateOrgResponseBody.json
              */
             readonly $schema?: string;
             name: string;
@@ -1922,7 +2709,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/CreateReportBody.json
+             * @example /api/v1/schemas/CreateReportBody.json
              */
             readonly $schema?: string;
             ai_summary: boolean | null;
@@ -1931,13 +2718,13 @@ export interface components {
             send_on_empty: boolean | null;
             severity_threshold: string | null;
             timezone: string;
-            watchlist_ids: string[] | null;
+            watchlist_ids: string[];
         };
         CreateSSOBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/CreateSSOBody.json
+             * @example /api/v1/schemas/CreateSSOBody.json
              */
             readonly $schema?: string;
             client_id: string;
@@ -1945,13 +2732,14 @@ export interface components {
             display_name: string;
             enabled: boolean | null;
             issuer_url: string;
-            scopes: string[] | null;
+            /** @description OIDC scopes to request. Omit to request openid, profile and email. */
+            scopes?: string[];
         };
         CreateSavedSearchRequest: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/CreateSavedSearchRequest.json
+             * @example /api/v1/schemas/CreateSavedSearchRequest.json
              */
             readonly $schema?: string;
             is_shared: boolean;
@@ -1963,7 +2751,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/CreateWatchlistBody.json
+             * @example /api/v1/schemas/CreateWatchlistBody.json
              */
             readonly $schema?: string;
             description: string | null;
@@ -1974,23 +2762,41 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/CreateWatchlistItemBody.json
+             * @example /api/v1/schemas/CreateWatchlistItemBody.json
              */
             readonly $schema?: string;
-            cpe_normalized: string | null;
-            ecosystem: string | null;
-            item_type: string;
-            namespace: string | null;
-            package_name: string | null;
+            cpe_normalized?: string;
+            /** @description CVE identifier such as CVE-2024-3094. Stored in upper case. */
+            cve_id?: string;
+            ecosystem?: string;
+            /** @enum {string} */
+            item_type: "package" | "cpe" | "cve";
+            namespace?: string;
+            package_name?: string;
         };
         DeliveryDetail: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/DeliveryDetail.json
+             * @example /api/v1/schemas/DeliveryDetail.json
              */
             readonly $schema?: string;
+            /** Format: int32 */
+            attempt_count: number;
+            channel_id: string;
+            created_at: string;
+            delivered_at?: string;
+            id: string;
+            kind: string;
+            last_attempted_at?: string;
+            last_error?: string;
+            org_id: string;
             payload: unknown;
+            report_id?: string;
+            rule_id: string;
+            send_after: string;
+            status: string;
+            updated_at: string;
         };
         DeliveryEntry: {
             /** Format: int32 */
@@ -2013,7 +2819,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/DiscoverBody.json
+             * @example /api/v1/schemas/DiscoverBody.json
              */
             readonly $schema?: string;
             email: string;
@@ -2022,7 +2828,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/DiscoverResponse.json
+             * @example /api/v1/schemas/DiscoverResponse.json
              */
             readonly $schema?: string;
             connection_id?: string;
@@ -2032,7 +2838,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/DryRunResponse.json
+             * @example /api/v1/schemas/DryRunResponse.json
              */
             readonly $schema?: string;
             /** Format: int64 */
@@ -2040,7 +2846,7 @@ export interface components {
             /** Format: int64 */
             match_count: number;
             partial: boolean;
-            sample_cves: string[] | null;
+            sample_cves: string[];
         };
         DslErrorEntry: {
             field: string;
@@ -2061,7 +2867,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ErrorModel.json
+             * @example /api/v1/schemas/ErrorModel.json
              */
             readonly $schema?: string;
             /**
@@ -2070,7 +2876,7 @@ export interface components {
              */
             detail?: string;
             /** @description Optional list of individual error details */
-            errors?: components["schemas"]["ErrorDetail"][] | null;
+            errors?: components["schemas"]["ErrorDetail"][];
             /**
              * Format: uri
              * @description A URI reference that identifies the specific occurrence of the problem.
@@ -2122,13 +2928,13 @@ export interface components {
             last_success_at?: string;
             /** Format: date-time */
             paused_at?: string;
-            recent_logs: components["schemas"]["FeedLogEntry"][] | null;
+            recent_logs: components["schemas"]["FeedLogEntry"][];
         };
         ForgotPasswordInputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ForgotPasswordInputBody.json
+             * @example /api/v1/schemas/ForgotPasswordInputBody.json
              */
             readonly $schema?: string;
             /**
@@ -2141,7 +2947,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ForgotPasswordOutputBody.json
+             * @example /api/v1/schemas/ForgotPasswordOutputBody.json
              */
             readonly $schema?: string;
             message: string;
@@ -2150,16 +2956,16 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/GetCVESourcesBody.json
+             * @example /api/v1/schemas/GetCVESourcesBody.json
              */
             readonly $schema?: string;
-            sources: components["schemas"]["CVESourceResponse"][] | null;
+            sources: components["schemas"]["CVESourceResponse"][];
         };
         GetInvitationOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/GetInvitationOutputBody.json
+             * @example /api/v1/schemas/GetInvitationOutputBody.json
              */
             readonly $schema?: string;
             expires_at: string;
@@ -2170,7 +2976,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/GroupEntry.json
+             * @example /api/v1/schemas/GroupEntry.json
              */
             readonly $schema?: string;
             created_at: string;
@@ -2202,33 +3008,33 @@ export interface components {
             date_published?: string;
             description?: string;
             raw_payload?: unknown;
-            references?: components["schemas"]["IngestRef"][] | null;
+            references?: components["schemas"]["IngestRef"][];
             severity?: string;
         };
         IngestRef: {
-            tags?: string[] | null;
+            tags?: string[];
             url: string;
         };
         IngestRequest: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/IngestRequest.json
+             * @example /api/v1/schemas/IngestRequest.json
              */
             readonly $schema?: string;
-            patches: components["schemas"]["IngestPatch"][] | null;
+            patches: components["schemas"]["IngestPatch"][];
             source_name: string;
         };
         IngestResponse: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/IngestResponse.json
+             * @example /api/v1/schemas/IngestResponse.json
              */
             readonly $schema?: string;
             /** Format: int64 */
             accepted: number;
-            errors: components["schemas"]["IngestError"][] | null;
+            errors: components["schemas"]["IngestError"][];
             /** Format: int64 */
             rejected: number;
         };
@@ -2236,7 +3042,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/InvitationEntry.json
+             * @example /api/v1/schemas/InvitationEntry.json
              */
             readonly $schema?: string;
             created_at: string;
@@ -2256,77 +3062,106 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ListCVEsBody.json
+             * @example /api/v1/schemas/ListCVEsBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["CVEItem"][] | null;
+            items: components["schemas"]["CVEItem"][];
             next_cursor?: string;
         };
         ListResponseAdminDeliveryRow: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ListResponseAdminDeliveryRow.json
+             * @example /api/v1/schemas/ListResponseAdminDeliveryRow.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["AdminDeliveryRow"][] | null;
+            items: components["schemas"]["AdminDeliveryRow"][];
             next_cursor?: string;
         };
         ListResponseAdminOrgRow: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ListResponseAdminOrgRow.json
+             * @example /api/v1/schemas/ListResponseAdminOrgRow.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["AdminOrgRow"][] | null;
+            items: components["schemas"]["AdminOrgRow"][];
             next_cursor?: string;
         };
         ListResponseAdminUserRow: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ListResponseAdminUserRow.json
+             * @example /api/v1/schemas/ListResponseAdminUserRow.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["AdminUserRow"][] | null;
+            items: components["schemas"]["AdminUserRow"][];
             next_cursor?: string;
         };
         ListResponseAuditRow: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ListResponseAuditRow.json
+             * @example /api/v1/schemas/ListResponseAuditRow.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["AuditRow"][] | null;
+            items: components["schemas"]["AuditRow"][];
+            next_cursor?: string;
+        };
+        ListResponseCVEItem: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/ListResponseCVEItem.json
+             */
+            readonly $schema?: string;
+            items: components["schemas"]["CVEItem"][];
             next_cursor?: string;
         };
         ListResponseFeedLogEntry: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ListResponseFeedLogEntry.json
+             * @example /api/v1/schemas/ListResponseFeedLogEntry.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["FeedLogEntry"][] | null;
+            items: components["schemas"]["FeedLogEntry"][];
             next_cursor?: string;
         };
         ListResponseFeedStatusEntry: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ListResponseFeedStatusEntry.json
+             * @example /api/v1/schemas/ListResponseFeedStatusEntry.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["FeedStatusEntry"][] | null;
+            items: components["schemas"]["FeedStatusEntry"][];
             next_cursor?: string;
+        };
+        ListResponseSecurityEventRow: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/ListResponseSecurityEventRow.json
+             */
+            readonly $schema?: string;
+            items: components["schemas"]["SecurityEventRow"][];
+            next_cursor?: string;
+        };
+        ListSCIMGroupsResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/ListSCIMGroupsResponse.json
+             */
+            readonly $schema?: string;
+            items: components["schemas"]["ScimGroupItem"][];
         };
         LoginInputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/LoginInputBody.json
+             * @example /api/v1/schemas/LoginInputBody.json
              */
             readonly $schema?: string;
             /**
@@ -2337,47 +3172,220 @@ export interface components {
             /** @description Password */
             password: string;
         };
+        LoginOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/LoginOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Available MFA methods (only when pending contains mfa_challenge) */
+            methods?: string[];
+            /** @description Remaining auth steps (empty = fully authenticated) */
+            pending: string[];
+            /** @description Authenticated user ID */
+            user_id: string;
+        };
+        MFARequiredReason: {
+            /** @description Org name (for org_policy and per_member reasons) */
+            org_name?: string;
+            /** @description Reason source (site_admin, org_owner, org_policy, per_member, db_error) */
+            source: string;
+        };
         MeOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/MeOutputBody.json
+             * @example /api/v1/schemas/MeOutputBody.json
              */
             readonly $schema?: string;
             display_name: string;
             email: string;
+            force_password_reset: boolean;
+            /** @description False for accounts that sign in only through an external identity provider */
+            has_password: boolean;
             is_site_admin: boolean;
-            orgs: components["schemas"]["OrgEntry"][] | null;
+            orgs: components["schemas"]["OrgEntry"][];
             user_id: string;
         };
         MemberEntry: {
+            active: boolean;
+            deactivated_at?: string;
             display_name: string;
             email: string;
             joined_at: string;
             role: string;
+            scim_exempt: boolean;
+            user_id: string;
+        };
+        MfaChallengeInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/MfaChallengeInputBody.json
+             */
+            readonly $schema?: string;
+            /**
+             * @description MFA method to challenge
+             * @enum {string}
+             */
+            method: "totp" | "email_otp";
+        };
+        MfaEmailOTPConfirmInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/MfaEmailOTPConfirmInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description 6-digit code from email */
+            code: string;
+        };
+        MfaEmailOTPConfirmOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/MfaEmailOTPConfirmOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description One-time recovery codes (only on first MFA enrollment) */
+            recovery_codes?: string[];
+        };
+        MfaMethodEntry: {
+            /**
+             * Format: date-time
+             * @description When this method was enrolled
+             */
+            created_at: string;
+            /** @description MFA method name (totp, email_otp) */
+            method: string;
+        };
+        MfaMethodsOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/MfaMethodsOutputBody.json
+             */
+            readonly $schema?: string;
+            methods: components["schemas"]["MfaMethodEntry"][];
+            /** Format: int64 */
+            recovery_codes_remaining: number;
+            /** @description Whether MFA is required for this user */
+            required: boolean;
+            /** @description Why MFA is required */
+            required_reasons: components["schemas"]["MFARequiredReason"][];
+        };
+        MfaRegenerateCodesInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/MfaRegenerateCodesInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Current password for re-authentication */
+            current_password: string;
+        };
+        MfaRegenerateCodesOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/MfaRegenerateCodesOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description 10 new one-time recovery codes */
+            recovery_codes: string[];
+        };
+        MfaRemoveMethodInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/MfaRemoveMethodInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Current password for re-authentication */
+            current_password: string;
+        };
+        MfaTOTPConfirmInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/MfaTOTPConfirmInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description 6-digit TOTP code from authenticator app */
+            code: string;
+        };
+        MfaTOTPConfirmOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/MfaTOTPConfirmOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description One-time recovery codes (only on first MFA enrollment) */
+            recovery_codes?: string[];
+        };
+        MfaTOTPSetupOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/MfaTOTPSetupOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description otpauth:// URI for QR code */
+            qr_code_uri: string;
+            /** @description Base32-encoded TOTP secret (manual entry) */
+            secret: string;
+        };
+        MfaVerifyInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/MfaVerifyInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Verification code */
+            code: string;
+            /**
+             * @description MFA method
+             * @enum {string}
+             */
+            method: "totp" | "email_otp" | "recovery";
+            /** @description Issue remember-device token */
+            remember_device?: boolean;
+        };
+        MfaVerifyOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/MfaVerifyOutputBody.json
+             */
+            readonly $schema?: string;
+            methods?: string[];
+            pending: string[];
             user_id: string;
         };
         NlSearchRequest: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/NlSearchRequest.json
+             * @example /api/v1/schemas/NlSearchRequest.json
              */
             readonly $schema?: string;
             query: string;
         };
-        NlSearchResponse: {
+        NlSearchResult: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/NlSearchResponse.json
+             * @example /api/v1/schemas/NlSearchResult.json
              */
             readonly $schema?: string;
             cached: boolean;
             interpreted_query: unknown;
             model: string;
             next_cursor?: string;
-            results: components["schemas"]["CVEItem"][] | null;
+            results: components["schemas"]["CVEItem"][];
         };
         OrgEntry: {
             name: string;
@@ -2388,7 +3396,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/OrgResponseBody.json
+             * @example /api/v1/schemas/OrgResponseBody.json
              */
             readonly $schema?: string;
             created_at: string;
@@ -2399,61 +3407,105 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/PatchAlertRuleBody.json
+             * @example /api/v1/schemas/PatchAlertRuleBody.json
              */
             readonly $schema?: string;
-            conditions: unknown;
-            enabled: boolean | null;
-            fire_on_non_material_changes: boolean | null;
-            logic: string | null;
-            name: string | null;
-            watchlist_ids: string[] | null;
+            conditions?: unknown;
+            enabled?: boolean;
+            logic?: string;
+            name?: string;
+            watchlist_ids?: string[];
         };
         PatchChannelBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/PatchChannelBody.json
+             * @example /api/v1/schemas/PatchChannelBody.json
              */
             readonly $schema?: string;
-            config: unknown;
-            name: string | null;
+            /** @description Replaces the whole config, with the keys the channel's type takes: url (not blank) and custom_headers for webhook, recipients (1 to 50 RFC 5322 addresses, no address twice) for email. Key names are case-sensitive, and any other key is refused. A custom header name must be an HTTP token and differ from the other names by more than letter case; a value must not contain a control character other than tab. These names are reserved and refused: Host, Content-Type, Content-Length, Transfer-Encoding, Connection, Upgrade, Keep-Alive, Proxy-Connection, TE, Trailer, X-CVErt-Timestamp, X-CVErtOps-Signature, X-CVErtOps-Signature-Secondary. Masked values read from this API may be sent back to keep the stored secret while the webhook scheme and host are unchanged. A changed scheme or host needs each secret sent again. */
+            config?: unknown;
+            name?: string;
+        };
+        PatchMemberBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/PatchMemberBody.json
+             */
+            readonly $schema?: string;
+            active?: boolean;
+            role?: string;
+            scim_exempt?: boolean;
+        };
+        PatchMemberResponseBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/PatchMemberResponseBody.json
+             */
+            readonly $schema?: string;
+            active: boolean;
+            deactivated_at?: string;
+            role: string;
+            scim_exempt: boolean;
+            user_id: string;
         };
         PatchReportBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/PatchReportBody.json
+             * @example /api/v1/schemas/PatchReportBody.json
              */
             readonly $schema?: string;
-            ai_summary: boolean | null;
-            name: string | null;
-            scheduled_time: string | null;
-            send_on_empty: boolean | null;
-            severity_threshold: string | null;
-            status: string | null;
-            timezone: string | null;
-            watchlist_ids: string[] | null;
+            ai_summary?: boolean;
+            name?: string;
+            scheduled_time?: string;
+            send_on_empty?: boolean;
+            severity_threshold?: string;
+            status?: string;
+            timezone?: string;
+            watchlist_ids?: string[];
+        };
+        PatchSCIMConfigBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/PatchSCIMConfigBody.json
+             */
+            readonly $schema?: string;
+            default_role?: string;
+            enabled?: boolean;
+        };
+        PatchSCIMGroupMappingBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/PatchSCIMGroupMappingBody.json
+             */
+            readonly $schema?: string;
+            mapped_group_id?: string | null;
+            mapped_role?: string;
         };
         PatchSSOBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/PatchSSOBody.json
+             * @example /api/v1/schemas/PatchSSOBody.json
              */
             readonly $schema?: string;
-            client_id: string | null;
-            client_secret: string | null;
-            display_name: string | null;
-            enabled: boolean | null;
-            issuer_url: string | null;
-            scopes: string[] | null;
+            client_id?: string;
+            client_secret?: string;
+            display_name?: string;
+            enabled?: boolean;
+            issuer_url?: string;
+            scopes?: string[];
         };
         PatchSavedSearchRequest: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/PatchSavedSearchRequest.json
+             * @example /api/v1/schemas/PatchSavedSearchRequest.json
              */
             readonly $schema?: string;
             is_shared?: boolean;
@@ -2465,41 +3517,31 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/PatchWatchlistBody.json
+             * @example /api/v1/schemas/PatchWatchlistBody.json
              */
             readonly $schema?: string;
-            description: string | null;
-            group_id: string | null;
-            name: string | null;
-        };
-        "Pause-feedResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/Pause-feedResponse.json
-             */
-            readonly $schema?: string;
-            feed: string;
-            status: string;
+            description?: string;
+            group_id?: string | null;
+            name?: string;
         };
         PutSSODomainsBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/PutSSODomainsBody.json
+             * @example /api/v1/schemas/PutSSODomainsBody.json
              */
             readonly $schema?: string;
-            domains: string[] | null;
+            domains: string[];
         };
         ReferenceResponse: {
-            tags: string[] | null;
+            tags: string[];
             url: string;
         };
         RegisterInputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/RegisterInputBody.json
+             * @example /api/v1/schemas/RegisterInputBody.json
              */
             readonly $schema?: string;
             /** @description Display name (optional) */
@@ -2516,17 +3558,27 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/RegisterOutputBody.json
+             * @example /api/v1/schemas/RegisterOutputBody.json
              */
             readonly $schema?: string;
             org_id?: string;
             user_id: string;
         };
+        ReplaceWatchlistItemsBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/ReplaceWatchlistItemsBody.json
+             */
+            readonly $schema?: string;
+            /** @description The complete list of items the watchlist should hold. An empty array removes every item. */
+            items: components["schemas"]["CreateWatchlistItemBody"][];
+        };
         ReportEntry: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ReportEntry.json
+             * @example /api/v1/schemas/ReportEntry.json
              */
             readonly $schema?: string;
             ai_summary: boolean;
@@ -2542,13 +3594,13 @@ export interface components {
             status: string;
             timezone: string;
             updated_at: string;
-            watchlist_ids: string[] | null;
+            watchlist_ids: string[];
         };
         ResendVerificationOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ResendVerificationOutputBody.json
+             * @example /api/v1/schemas/ResendVerificationOutputBody.json
              */
             readonly $schema?: string;
             message: string;
@@ -2557,7 +3609,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ResetPasswordInputBody.json
+             * @example /api/v1/schemas/ResetPasswordInputBody.json
              */
             readonly $schema?: string;
             /** @description New password (min 16 characters) */
@@ -2565,30 +3617,42 @@ export interface components {
             /** @description Password reset token (hex-encoded) */
             token: string;
         };
-        "Resume-feedResponse": {
+        ResetPasswordOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/Resume-feedResponse.json
+             * @example /api/v1/schemas/ResetPasswordOutputBody.json
              */
             readonly $schema?: string;
-            feed: string;
-            status: string;
+            /** @description Available MFA methods (only when pending contains mfa_challenge) */
+            methods?: string[];
+            /** @description Remaining auth steps (empty = no MFA required) */
+            pending: string[];
         };
         RotateSecretResponse: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/RotateSecretResponse.json
+             * @example /api/v1/schemas/RotateSecretResponse.json
              */
             readonly $schema?: string;
             signing_secret: string;
+        };
+        RotateTokenResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/RotateTokenResponse.json
+             */
+            readonly $schema?: string;
+            token: string;
+            token_prefix: string;
         };
         SavedSearchEntry: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SavedSearchEntry.json
+             * @example /api/v1/schemas/SavedSearchEntry.json
              */
             readonly $schema?: string;
             created_at: string;
@@ -2599,199 +3663,264 @@ export interface components {
             query_json: unknown;
             updated_at: string;
         };
-        SavedSearchExecuteResponse: {
+        ScimConfigResponse: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SavedSearchExecuteResponse.json
+             * @example /api/v1/schemas/ScimConfigResponse.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["CVEItem"][] | null;
-            next_cursor?: string;
+            created_at: string;
+            default_role: string;
+            enabled: boolean;
+            id: string;
+            org_id: string;
+            token?: string;
+            token_prefix: string;
+            updated_at?: string;
+        };
+        ScimGroupItem: {
+            created_at: string;
+            display_name: string;
+            external_id: string | null;
+            id: string;
+            mapped_group_id: string | null;
+            mapped_role: string | null;
+            /** Format: int64 */
+            member_count: number;
+        };
+        ScimGroupResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/ScimGroupResponse.json
+             */
+            readonly $schema?: string;
+            created_at: string;
+            display_name: string;
+            external_id: string | null;
+            id: string;
+            mapped_group_id: string | null;
+            mapped_role: string | null;
+            updated_at: string;
+        };
+        SecurityEventRow: {
+            actor_email?: string;
+            actor_ip?: string;
+            /** Format: date-time */
+            created_at: string;
+            details?: unknown;
+            event_type: string;
+            id: string;
+            org_id?: string;
+            severity: string;
+            user_id?: string;
         };
         SpecListAPIKeysOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecListAPIKeysOutputBody.json
+             * @example /api/v1/schemas/SpecListAPIKeysOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["ApiKeyEntry"][] | null;
+            items: components["schemas"]["ApiKeyEntry"][];
         };
         SpecListAlertEventsOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecListAlertEventsOutputBody.json
+             * @example /api/v1/schemas/SpecListAlertEventsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["AlertEventEntry"][] | null;
+            items: components["schemas"]["AlertEventEntry"][];
             next_cursor?: string;
         };
         SpecListAlertRulesOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecListAlertRulesOutputBody.json
+             * @example /api/v1/schemas/SpecListAlertRulesOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["AlertRuleEntry"][] | null;
+            items: components["schemas"]["AlertRuleEntry"][];
             next_cursor?: string;
         };
         SpecListAuditLogOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecListAuditLogOutputBody.json
+             * @example /api/v1/schemas/SpecListAuditLogOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["AuditLogListEntry"][] | null;
+            items: components["schemas"]["AuditLogListEntry"][];
             next_cursor?: string;
         };
         SpecListChannelsOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecListChannelsOutputBody.json
+             * @example /api/v1/schemas/SpecListChannelsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["ChannelEntry"][] | null;
+            items: components["schemas"]["ChannelEntry"][];
         };
         SpecListDeliveriesOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecListDeliveriesOutputBody.json
+             * @example /api/v1/schemas/SpecListDeliveriesOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["DeliveryEntry"][] | null;
+            items: components["schemas"]["DeliveryEntry"][];
             next_cursor?: string;
         };
         SpecListGroupMembersOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecListGroupMembersOutputBody.json
+             * @example /api/v1/schemas/SpecListGroupMembersOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["GroupMemberEntry"][] | null;
+            items: components["schemas"]["GroupMemberEntry"][];
         };
         SpecListGroupsOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecListGroupsOutputBody.json
+             * @example /api/v1/schemas/SpecListGroupsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["GroupEntry"][] | null;
+            items: components["schemas"]["GroupEntry"][];
         };
         SpecListInvitationsOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecListInvitationsOutputBody.json
+             * @example /api/v1/schemas/SpecListInvitationsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["InvitationEntry"][] | null;
+            items: components["schemas"]["InvitationEntry"][];
         };
         SpecListMembersOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecListMembersOutputBody.json
+             * @example /api/v1/schemas/SpecListMembersOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["MemberEntry"][] | null;
+            items: components["schemas"]["MemberEntry"][];
         };
         SpecListReportChannelsOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecListReportChannelsOutputBody.json
+             * @example /api/v1/schemas/SpecListReportChannelsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["ChannelEntry"][] | null;
+            items: components["schemas"]["ChannelEntry"][];
         };
         SpecListReportsOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecListReportsOutputBody.json
+             * @example /api/v1/schemas/SpecListReportsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["ReportEntry"][] | null;
+            items: components["schemas"]["ReportEntry"][];
         };
         SpecListRuleChannelsOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecListRuleChannelsOutputBody.json
+             * @example /api/v1/schemas/SpecListRuleChannelsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["ChannelEntry"][] | null;
+            items: components["schemas"]["ChannelEntry"][];
         };
         SpecListSavedSearchesOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecListSavedSearchesOutputBody.json
+             * @example /api/v1/schemas/SpecListSavedSearchesOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["SavedSearchEntry"][] | null;
+            items: components["schemas"]["SavedSearchEntry"][];
         };
         SpecListWatchlistItemsOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecListWatchlistItemsOutputBody.json
+             * @example /api/v1/schemas/SpecListWatchlistItemsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["WatchlistItemEntry"][] | null;
+            items: components["schemas"]["WatchlistItemEntry"][];
             next_cursor?: string;
         };
         SpecListWatchlistsOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecListWatchlistsOutputBody.json
+             * @example /api/v1/schemas/SpecListWatchlistsOutputBody.json
              */
             readonly $schema?: string;
-            items: components["schemas"]["WatchlistEntry"][] | null;
+            items: components["schemas"]["WatchlistEntry"][];
             next_cursor?: string;
+        };
+        SpecMemberActionOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/SpecMemberActionOutputBody.json
+             */
+            readonly $schema?: string;
+            status: string;
+            user_id: string;
         };
         SpecPutSSODomainsOutputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SpecPutSSODomainsOutputBody.json
+             * @example /api/v1/schemas/SpecPutSSODomainsOutputBody.json
              */
             readonly $schema?: string;
-            domains: string[] | null;
+            domains: string[];
+        };
+        SpecUpdateOrgMFASettingsOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/SpecUpdateOrgMFASettingsOutputBody.json
+             */
+            readonly $schema?: string;
+            mfa_remember_device_allowed: boolean;
+            /** Format: int32 */
+            mfa_remember_device_days: number;
+            mfa_required_all: boolean;
         };
         SsoResponse: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SsoResponse.json
+             * @example /api/v1/schemas/SsoResponse.json
              */
             readonly $schema?: string;
             client_id: string;
             client_secret: string;
             created_at: string;
             display_name: string;
-            domains: string[] | null;
+            domains: string[];
             enabled: boolean;
             id: string;
             issuer_url: string;
             org_id: string;
-            scopes: string[] | null;
+            scopes: string[];
             updated_at: string;
         };
         SummarizeResponse: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SummarizeResponse.json
+             * @example /api/v1/schemas/SummarizeResponse.json
              */
             readonly $schema?: string;
             cached: boolean;
@@ -2799,11 +3928,11 @@ export interface components {
             model: string;
             summary: string;
         };
-        TestChannelResponse: {
+        TestChannelResult: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/TestChannelResponse.json
+             * @example /api/v1/schemas/TestChannelResult.json
              */
             readonly $schema?: string;
             error?: string;
@@ -2813,7 +3942,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/TierResponse.json
+             * @example /api/v1/schemas/TierResponse.json
              */
             readonly $schema?: string;
             limits: {
@@ -2821,82 +3950,66 @@ export interface components {
             };
             tier: string;
         };
-        "Trigger-feedResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/Trigger-feedResponse.json
-             */
-            readonly $schema?: string;
-            job_id: string;
-        };
         UpdateGroupBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/UpdateGroupBody.json
+             * @example /api/v1/schemas/UpdateGroupBody.json
              */
             readonly $schema?: string;
             description?: string;
             name?: string;
         };
-        UpdateMemberRoleBody: {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/UpdateMemberRoleBody.json
-             */
-            readonly $schema?: string;
-            role: string;
-        };
-        UpdateMemberRoleResponseBody: {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/UpdateMemberRoleResponseBody.json
-             */
-            readonly $schema?: string;
-            role: string;
-            user_id: string;
-        };
         UpdateOrgBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/UpdateOrgBody.json
+             * @example /api/v1/schemas/UpdateOrgBody.json
              */
             readonly $schema?: string;
             name?: string;
+        };
+        UpdateOrgMFASettingsBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/UpdateOrgMFASettingsBody.json
+             */
+            readonly $schema?: string;
+            mfa_remember_device_allowed?: boolean;
+            /** Format: int32 */
+            mfa_remember_device_days?: number;
+            mfa_required_all?: boolean;
         };
         ValidateRuleBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ValidateRuleBody.json
+             * @example /api/v1/schemas/ValidateRuleBody.json
              */
             readonly $schema?: string;
             conditions: unknown;
             logic: string;
-            watchlist_ids: string[] | null;
+            watchlist_ids: string[];
         };
         ValidateRuleResponse: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/ValidateRuleResponse.json
+             * @example /api/v1/schemas/ValidateRuleResponse.json
              */
             readonly $schema?: string;
-            errors: components["schemas"]["DslErrorEntry"][] | null;
+            errors: components["schemas"]["DslErrorEntry"][];
             has_epss_condition: boolean;
             is_epss_only: boolean;
             valid: boolean;
-            warnings: components["schemas"]["DslErrorEntry"][] | null;
+            warnings: components["schemas"]["DslErrorEntry"][];
         };
         VerifyEmailInputBody: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/VerifyEmailInputBody.json
+             * @example /api/v1/schemas/VerifyEmailInputBody.json
              */
             readonly $schema?: string;
             /** @description Email verification token (hex-encoded) */
@@ -2906,7 +4019,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/VerifyEmailOutputBody.json
+             * @example /api/v1/schemas/VerifyEmailOutputBody.json
              */
             readonly $schema?: string;
             message: string;
@@ -2915,7 +4028,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/WatchlistEntry.json
+             * @example /api/v1/schemas/WatchlistEntry.json
              */
             readonly $schema?: string;
             created_at: string;
@@ -2931,16 +4044,41 @@ export interface components {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/WatchlistItemEntry.json
+             * @example /api/v1/schemas/WatchlistItemEntry.json
              */
             readonly $schema?: string;
             cpe_normalized?: string;
             created_at: string;
+            cve_id?: string;
             ecosystem?: string;
             id: string;
-            item_type: string;
+            /** @enum {string} */
+            item_type: "package" | "cpe" | "cve";
             namespace?: string;
             package_name?: string;
+        };
+        WatchlistItemsReplaced: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/WatchlistItemsReplaced.json
+             */
+            readonly $schema?: string;
+            /**
+             * Format: int64
+             * @description Items that were not on the watchlist and were added
+             */
+            added: number;
+            /**
+             * Format: int64
+             * @description Items that were on the watchlist, not in the request, and were removed
+             */
+            removed: number;
+            /**
+             * Format: int64
+             * @description Items that were already on the watchlist and were left as they are
+             */
+            unchanged: number;
         };
     };
     responses: never;
@@ -3068,7 +4206,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-bulk-retry-deliveriesResponse"];
+                    "application/json": components["schemas"]["AdminBulkRetryResult"];
                 };
             };
             /** @description Error */
@@ -3099,7 +4237,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-retry-deliveryResponse"];
+                    "application/json": components["schemas"]["AdminDeliveryRetryResult"];
                 };
             };
             /** @description Error */
@@ -3224,7 +4362,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Pause-feedResponse"];
+                    "application/json": components["schemas"]["AdminFeedStateResponse"];
                 };
             };
             /** @description Error */
@@ -3255,7 +4393,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Resume-feedResponse"];
+                    "application/json": components["schemas"]["AdminFeedStateResponse"];
                 };
             };
             /** @description Error */
@@ -3280,13 +4418,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Accepted */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Trigger-feedResponse"];
+                    "application/json": components["schemas"]["AdminJobResponse"];
                 };
             };
             /** @description Error */
@@ -3343,7 +4481,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["Admin-patch-orgRequest"];
+                "application/json": components["schemas"]["AdminPatchOrgBody"];
             };
         };
         responses: {
@@ -3409,13 +4547,86 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminJobResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "admin-reload-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
             /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-reindexResponse"];
+                    "application/json": components["schemas"]["AdminReloadResult"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "admin-list-security-events": {
+        parameters: {
+            query?: {
+                /** @description Filter by event type */
+                event_type?: string;
+                /** @description Filter by severity */
+                severity?: string;
+                /** @description Filter by actor email */
+                actor_email?: string;
+                /** @description Filter events after timestamp (RFC3339) */
+                since?: string;
+                /** @description Filter events before timestamp (RFC3339) */
+                until?: string;
+                /** @description Pagination cursor */
+                cursor?: string;
+                /** @description Max items per page (1-100, default 50) */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListResponseSecurityEventRow"];
                 };
             };
             /** @description Error */
@@ -3478,7 +4689,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-disable-userResponse"];
+                    "application/json": components["schemas"]["AdminUserStatusResponse"];
                 };
             };
             /** @description Error */
@@ -3509,7 +4720,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-enable-userResponse"];
+                    "application/json": components["schemas"]["AdminUserStatusResponse"];
                 };
             };
             /** @description Error */
@@ -3540,7 +4751,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-reset-passwordResponse"];
+                    "application/json": components["schemas"]["AdminUserStatusResponse"];
                 };
             };
             /** @description Error */
@@ -3571,7 +4782,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-unlock-userResponse"];
+                    "application/json": components["schemas"]["AdminUserStatusResponse"];
                 };
             };
             /** @description Error */
@@ -3600,7 +4811,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-versionResponse"];
+                    "application/json": components["schemas"]["AdminVersionInfo"];
                 };
             };
             /** @description Error */
@@ -3622,6 +4833,8 @@ export interface operations {
             cookie?: {
                 /** @description Access token cookie */
                 access_token?: string;
+                /** @description Pending token cookie (restricted session) */
+                mfa_pending_token?: string;
             };
         };
         requestBody: {
@@ -3633,9 +4846,12 @@ export interface operations {
             /** @description OK */
             200: {
                 headers: {
+                    "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ChangePasswordOutputBody"];
+                };
             };
             /** @description Error */
             default: {
@@ -3784,7 +5000,10 @@ export interface operations {
             query?: never;
             header?: never;
             path?: never;
-            cookie?: never;
+            cookie?: {
+                /** @description Remember-device token (optional) */
+                mfa_device_token?: string;
+            };
         };
         requestBody: {
             content: {
@@ -3798,7 +5017,9 @@ export interface operations {
                     "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["LoginOutputBody"];
+                };
             };
             /** @description Error */
             default: {
@@ -3861,6 +5082,317 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MeOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-challenge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                mfa_pending_token?: string;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaChallengeInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-email-otp-confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                access_token?: string;
+                mfa_pending_token?: string;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaEmailOTPConfirmInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaEmailOTPConfirmOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-email-otp-setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                access_token?: string;
+                mfa_pending_token?: string;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-methods-list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                access_token?: string;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaMethodsOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-method-remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MFA method to remove */
+                method: "totp" | "email_otp";
+            };
+            cookie?: {
+                access_token?: string;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaRemoveMethodInputBody"];
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-recovery-codes-regenerate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                access_token?: string;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaRegenerateCodesInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaRegenerateCodesOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-totp-confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                access_token?: string;
+                mfa_pending_token?: string;
+                mfa_enroll_token?: string;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaTOTPConfirmInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaTOTPConfirmOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-totp-setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                access_token?: string;
+                mfa_pending_token?: string;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaTOTPSetupOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                mfa_pending_token?: string;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaVerifyInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaVerifyOutputBody"];
                 };
             };
             /** @description Error */
@@ -4015,9 +5547,12 @@ export interface operations {
             /** @description OK */
             200: {
                 headers: {
+                    "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ResetPasswordOutputBody"];
+                };
             };
             /** @description Error */
             default: {
@@ -4069,14 +5604,14 @@ export interface operations {
                 /** @description Full-text search query (supports quoted phrases and negation) */
                 q?: string;
                 /** @description Filter by severity: critical, high, medium, low, unknown */
-                severity?: string[] | null;
+                severity?: string[];
                 /** @description Filter CVEs modified on or after this date (ISO 8601); empty = no filter */
                 date_from?: string;
                 /** @description Filter CVEs modified on or before this date (ISO 8601); empty = no filter */
                 date_to?: string;
                 /** @description Filter by CWE ID (e.g. CWE-79); empty = no filter */
                 cwe_id?: string;
-                /** @description Filter by affected package ecosystem; empty = no filter */
+                /** @description Filter by affected package ecosystem, using OSV's names; a name without a release matches every release; empty = no filter */
                 ecosystem?: string;
                 /** @description Filter by affected package name (requires ecosystem); empty = no filter */
                 package_name?: string;
@@ -4192,8 +5727,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -4307,7 +5842,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["NlSearchResponse"];
+                    "application/json": components["schemas"]["NlSearchResult"];
                 };
             };
             /** @description Error */
@@ -4364,8 +5899,16 @@ export interface operations {
                 last_match_state?: string;
                 /** @description Filter events since timestamp (RFC3339) */
                 since?: string;
-                /** @description Pagination cursor */
+                /** @description Pagination cursor for the default, descending order: the next_cursor of the previous page. */
                 cursor?: string;
+                /** @description desc (default): newest first by first fire, paged with cursor. asc: feed order, for polling, paged with after. */
+                order?: "desc" | "asc";
+                /** @description With order=asc: the next_cursor of the previous response. Omit to start from the oldest event. */
+                after?: string;
+                /** @description Events per page; at most 100 with expand=rule. */
+                limit?: number;
+                /** @description Comma-separated context to embed in each event, read in the same query: cve (severity, CVSS, KEV, EPSS, status) and rule (name and the watchlist items that match the CVE). Example: cve,rule. */
+                expand?: string;
             };
             header?: never;
             path: {
@@ -4449,8 +5992,18 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
+                headers: {
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertRuleEntry"];
+                };
+            };
+            /** @description Accepted: the rule is activating while its initial scan runs */
+            202: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -4794,8 +6347,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -4942,8 +6495,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -5153,7 +6706,42 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TestChannelResponse"];
+                    "application/json": components["schemas"]["TestChannelResult"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "check-components": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CheckRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckResults"];
                 };
             };
             /** @description Error */
@@ -5324,8 +6912,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -5568,8 +7156,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Accepted */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5636,9 +7224,10 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Accepted */
+            202: {
                 headers: {
+                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -5800,7 +7389,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UpdateMemberRoleBody"];
+                "application/json": components["schemas"]["PatchMemberBody"];
             };
         };
         responses: {
@@ -5810,7 +7399,177 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["UpdateMemberRoleResponseBody"];
+                    "application/json": components["schemas"]["PatchMemberResponseBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "force-member-password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+                /** @description Target member's user ID */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpecMemberActionOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "require-member-mfa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+                /** @description Target member's user ID */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpecMemberActionOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "unrequire-member-mfa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+                /** @description Target member's user ID */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "reset-member-mfa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+                /** @description Target member's user ID */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpecMemberActionOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "update-org-mfa-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateOrgMFASettingsBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpecUpdateOrgMFASettingsOutputBody"];
                 };
             };
             /** @description Error */
@@ -5872,8 +7631,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -6152,8 +7911,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -6302,7 +8061,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SavedSearchExecuteResponse"];
+                    "application/json": components["schemas"]["ListResponseCVEItem"];
                 };
             };
             /** @description Error */
@@ -6364,8 +8123,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -6487,6 +8246,271 @@ export interface operations {
             };
         };
     };
+    "link-sso-identity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Found */
+            302: {
+                headers: {
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "get-scim-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScimConfigResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "create-scim-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScimConfigResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "delete-scim-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "patch-scim-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PatchSCIMConfigBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScimConfigResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "list-scim-groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListSCIMGroupsResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "patch-scim-group-mapping": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+                /** @description SCIM group ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PatchSCIMGroupMappingBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScimGroupResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "rotate-scim-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RotateTokenResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "get-org-tier": {
         parameters: {
             query?: never;
@@ -6569,8 +8593,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -6733,6 +8757,44 @@ export interface operations {
             };
         };
     };
+    "replace-watchlist-items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+                /** @description Watchlist ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplaceWatchlistItemsBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistItemsReplaced"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "create-watchlist-item": {
         parameters: {
             query?: never;
@@ -6751,8 +8813,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -6794,6 +8856,35 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    whoami: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CallerIdentity"];
+                };
             };
             /** @description Error */
             default: {

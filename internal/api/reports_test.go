@@ -440,7 +440,7 @@ func TestBindChannelToReport(t *testing.T) {
 	// List channels should show 1.
 	listResp := doListReportChannels(t, ctx, ts, token, reg.OrgID, created.ID)
 	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
-	var list listResponse[channelEntry]
+	var list listResponse[ChannelEntry]
 	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
@@ -1009,7 +1009,7 @@ func TestUnbindChannelFromReport(t *testing.T) {
 	// List channels should show 0.
 	listResp := doListReportChannels(t, ctx, ts, token, reg.OrgID, created.ID)
 	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
-	var list listResponse[channelEntry]
+	var list listResponse[ChannelEntry]
 	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}

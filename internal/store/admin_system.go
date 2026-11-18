@@ -56,6 +56,7 @@ func (s *Store) AdminListAuditEntries(ctx context.Context, p AdminAuditListParam
 				ID:         r.ID,
 				OrgID:      r.OrgID,
 				ActorID:    fromNullUUID(r.ActorID),
+				APIKeyID:   fromNullUUID(r.ApiKeyID),
 				ActorEmail: r.ActorEmail.String,
 				Action:     r.Action,
 				EntityType: r.EntityType,

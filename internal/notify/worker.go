@@ -23,6 +23,10 @@ import (
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
+// kindResolution is the notification_deliveries.kind of a resolution notification, and
+// the event_type its webhook body names.
+const kindResolution = "resolution"
+
 // WorkerConfig holds delivery worker tuning parameters (sourced from config.Config).
 type WorkerConfig struct {
 	ClaimBatchSize      int
@@ -181,12 +185,12 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 	start := time.Now()
 	ch, err := w.store.GetNotificationChannelForDelivery(ctx, row.ChannelID)
 	if err != nil || ch == nil {
-		msg := "channel lookup failed"
+		failure := store.DeliveryFailure{Detail: "channel lookup failed", ForOrg: "channel lookup failed"}
 		if err != nil {
-			msg = fmt.Sprintf("channel lookup failed: %v", err)
+			failure.Detail = fmt.Sprintf("channel lookup failed: %v", err)
 		}
 		w.log.Error("get channel for delivery", "channel_id", row.ChannelID, "err", err)
-		w.exhaust(ctx, row.ID, msg)
+		w.exhaust(ctx, row.ID, failure)
 		metrics.NotificationDeliveriesTotal.WithLabelValues("unknown", "failure").Inc()
 		metrics.NotificationDeliveryDuration.WithLabelValues("unknown").Observe(time.Since(start).Seconds())
 		return
@@ -199,7 +203,8 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 	case "email":
 		sendErr = w.deliverEmail(ctx, row, ch)
 	default:
-		w.exhaust(ctx, row.ID, fmt.Sprintf("unsupported channel type: %s", ch.Type))
+		msg := fmt.Sprintf("unsupported channel type: %s", ch.Type)
+		w.exhaust(ctx, row.ID, store.DeliveryFailure{Detail: msg, ForOrg: msg})
 		metrics.NotificationDeliveriesTotal.WithLabelValues(ch.Type, "failure").Inc()
 		metrics.NotificationDeliveryDuration.WithLabelValues(ch.Type).Observe(time.Since(start).Seconds())
 		return
@@ -214,10 +219,12 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 		return
 	}
 
+	failure := store.DeliveryFailure{Detail: sendErr.Error(), ForOrg: ErrorForOrg(sendErr).Error()}
+
 	// Permanent errors should exhaust immediately — retrying will never help.
 	if isPermanentDeliveryError(sendErr) {
 		w.log.Warn("permanent delivery failure", "id", row.ID, "type", ch.Type, "err", sendErr)
-		w.exhaust(ctx, row.ID, sendErr.Error())
+		w.exhaust(ctx, row.ID, failure)
 		metrics.NotificationDeliveriesTotal.WithLabelValues(ch.Type, "exhausted").Inc()
 		metrics.NotificationDeliveryDuration.WithLabelValues(ch.Type).Observe(time.Since(start).Seconds())
 		return
@@ -226,14 +233,14 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 	nextAttempt := int(row.AttemptCount) + 1
 	w.log.Warn("delivery failed", "id", row.ID, "type", ch.Type, "err", sendErr, "attempt", nextAttempt)
 	if nextAttempt >= w.cfg.MaxAttempts {
-		w.exhaust(ctx, row.ID, sendErr.Error())
+		w.exhaust(ctx, row.ID, failure)
 		metrics.NotificationDeliveriesTotal.WithLabelValues(ch.Type, "exhausted").Inc()
 		metrics.NotificationDeliveryDuration.WithLabelValues(ch.Type).Observe(time.Since(start).Seconds())
 		return
 	}
 
 	backoff := w.backoffSeconds(nextAttempt)
-	if err := w.store.RetryDelivery(ctx, row.ID, backoff, sendErr.Error()); err != nil {
+	if err := w.store.RetryDelivery(ctx, row.ID, backoff, failure); err != nil {
 		w.log.Error("retry delivery", "id", row.ID, "err", err)
 	}
 
@@ -243,63 +250,89 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 }
 
 func (w *Worker) deliverWebhook(ctx context.Context, row store.ClaimedDelivery, ch *store.NotificationChannelForDeliveryRow) error {
-	var config struct {
-		URL           string            `json:"url"`
-		CustomHeaders map[string]string `json:"custom_headers"`
+	body, err := webhookBody(row)
+	if err != nil {
+		return &permanentDeliveryError{err: fmt.Errorf("build webhook body: %w", err)}
 	}
-	_ = json.Unmarshal(ch.Config, &config) //nolint:errcheck // empty URL on bad JSON causes Send to fail → retry/exhaust handles it
+	// Config errors are permanent: the channel data won't change between retries.
+	cfg, err := ChannelWebhookConfig(ch)
+	if err != nil {
+		return &permanentDeliveryError{err: fmt.Errorf("parse webhook config: %w", err)}
+	}
+	return Send(ctx, w.client, cfg, body)
+}
 
-	return Send(ctx, w.client, WebhookConfig{
-		URL:                    config.URL,
-		SigningSecret:          ch.SigningSecret.String,
-		SigningSecretSecondary: ch.SigningSecretSecondary.String,
-		CustomHeaders:          config.CustomHeaders,
-	}, row.Payload)
+// webhookBody returns the request body for a delivery. A resolution's stored payload is an
+// array like an alert's, so it is sent inside an object that names the event: a receiver
+// written for alert arrays must not read a resolved CVE as a new match.
+func webhookBody(row store.ClaimedDelivery) ([]byte, error) {
+	if row.Kind != kindResolution {
+		return row.Payload, nil
+	}
+	return json.Marshal(struct {
+		EventType string          `json:"event_type"`
+		CVEs      json.RawMessage `json:"cves"`
+	}{EventType: kindResolution, CVEs: row.Payload})
+}
+
+// ruleIdentity returns the name and ID that an email about a rule's delivery shows.
+func (w *Worker) ruleIdentity(ctx context.Context, row store.ClaimedDelivery) (name, id string) {
+	name = "Alert Rule"
+	if !row.RuleID.Valid {
+		return name, ""
+	}
+	if ruleName, err := w.store.GetAlertRuleName(ctx, row.RuleID.UUID); err == nil && ruleName != "" {
+		name = ruleName
+	}
+	return name, row.RuleID.UUID.String()
 }
 
 func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch *store.NotificationChannelForDeliveryRow) error {
 	// Parse channel config for recipients. Config errors are permanent — the
 	// channel data won't change between retries.
-	var emailCfg struct {
-		Recipients []string `json:"recipients"`
-	}
-	if err := json.Unmarshal(ch.Config, &emailCfg); err != nil {
+	emailCfg, err := ParseEmailSettings(ch.Config)
+	if err != nil {
 		return &permanentDeliveryError{err: fmt.Errorf("parse email config: %w", err)}
 	}
-	if len(emailCfg.Recipients) == 0 {
-		return &permanentDeliveryError{err: fmt.Errorf("email channel has no recipients")}
+	if err := CheckEmailRecipients(emailCfg.Recipients); err != nil {
+		return &permanentDeliveryError{err: fmt.Errorf("check email recipients: %w", err)}
 	}
-
-	// Deserialize payload into CVE snapshots.
-	var snaps []cveSnapshot
-	if err := json.Unmarshal(row.Payload, &snaps); err != nil {
-		return fmt.Errorf("unmarshal delivery payload: %w", err)
-	}
-
-	summaries := snapshotsToCVESummaries(snaps, w.externalURL)
 
 	var subject, htmlBody, textBody string
 	var renderErr error
 
 	switch row.Kind {
 	case "alert":
-		ruleName := "Alert Rule"
-		if row.RuleID.Valid {
-			if name, err := w.store.GetAlertRuleName(ctx, row.RuleID.UUID); err == nil && name != "" {
-				ruleName = name
-			}
+		// An alert payload is a JSON array of CVE snapshots.
+		var snaps []cveSnapshot
+		if err := json.Unmarshal(row.Payload, &snaps); err != nil {
+			return fmt.Errorf("unmarshal delivery payload: %w", err)
 		}
-		ruleID := ""
-		if row.RuleID.Valid {
-			ruleID = row.RuleID.UUID.String()
-		}
+		summaries := snapshotsToCVESummaries(snaps, w.externalURL)
+		ruleName, ruleID := w.ruleIdentity(ctx, row)
 		subject, htmlBody, textBody, renderErr = RenderAlert(AlertTemplateData{
 			RuleName:    ruleName,
 			RuleID:      ruleID,
 			CVEs:        summaries,
 			CVErtOpsURL: w.externalURL,
 		})
+	case kindResolution:
+		var items []resolutionSnapshot
+		if err := json.Unmarshal(row.Payload, &items); err != nil {
+			return fmt.Errorf("unmarshal delivery payload: %w", err)
+		}
+		ruleName, ruleID := w.ruleIdentity(ctx, row)
+		subject, htmlBody, textBody, renderErr = RenderResolution(ResolutionTemplateData{
+			RuleName:    ruleName,
+			RuleID:      ruleID,
+			CVEs:        resolutionsToSummaries(items, w.externalURL),
+			CVErtOpsURL: w.externalURL,
+		})
 	case "digest":
+		var digest digestPayload
+		if err := json.Unmarshal(row.Payload, &digest); err != nil {
+			return fmt.Errorf("unmarshal delivery payload: %w", err)
+		}
 		reportName := "Digest Report"
 		if row.ReportID.Valid {
 			if name, err := w.store.GetScheduledReportName(ctx, row.ReportID.UUID); err == nil && name != "" {
@@ -310,21 +343,7 @@ func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch
 		if org, err := w.store.GetOrgByID(ctx, row.OrgID); err == nil && org != nil {
 			orgName = org.Name
 		}
-		totalCount := len(summaries)
-		truncated := totalCount > 25
-		if truncated {
-			summaries = summaries[:25]
-		}
-		subject, htmlBody, textBody, renderErr = RenderDigest(DigestTemplateData{
-			OrgName:     orgName,
-			ReportName:  reportName,
-			Date:        time.Now().UTC().Format("2006-01-02"),
-			CVEs:        summaries,
-			TotalCount:  totalCount,
-			Truncated:   truncated,
-			ViewAllURL:  w.externalURL,
-			CVErtOpsURL: w.externalURL,
-		})
+		subject, htmlBody, textBody, renderErr = RenderDigest(digestTemplateData(digest, reportName, orgName, w.externalURL))
 	default:
 		return &permanentDeliveryError{err: fmt.Errorf("unsupported delivery kind for email: %s", row.Kind)}
 	}
@@ -375,8 +394,8 @@ func isPermanentDeliveryError(err error) bool {
 	return false
 }
 
-func (w *Worker) exhaust(ctx context.Context, id uuid.UUID, lastError string) {
-	if err := w.store.ExhaustDelivery(ctx, id, lastError); err != nil {
+func (w *Worker) exhaust(ctx context.Context, id uuid.UUID, failure store.DeliveryFailure) {
+	if err := w.store.ExhaustDelivery(ctx, id, failure); err != nil {
 		w.log.Error("exhaust delivery", "id", id, "err", err)
 	}
 }

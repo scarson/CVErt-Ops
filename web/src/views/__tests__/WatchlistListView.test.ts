@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mount, flushPromises, VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import WatchlistListView from '@/views/WatchlistListView.vue'
 
 const mockPush = vi.fn<(...args: unknown[]) => unknown>()
 
@@ -77,7 +78,6 @@ function bodyText(): string {
 let wrapper: VueWrapper
 
 async function mountView() {
-  const { default: WatchlistListView } = await import('@/views/WatchlistListView.vue')
   wrapper = mount(WatchlistListView, {
     attachTo: document.body,
   })

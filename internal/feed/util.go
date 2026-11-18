@@ -66,6 +66,11 @@ func StripNullBytesJSON(b []byte) []byte {
 // cveIDPattern matches CVE IDs in the canonical format CVE-YYYY-NNNNN+.
 var cveIDPattern = regexp.MustCompile(`^CVE-\d{4}-\d+$`)
 
+// IsCVEID reports whether s has the canonical CVE ID format.
+func IsCVEID(s string) bool {
+	return cveIDPattern.MatchString(s)
+}
+
 // MaxDownloadSize is the upper bound for DownloadToTemp. Package-level var for testability.
 var MaxDownloadSize int64 = 5 << 30 // 5 GiB
 

@@ -111,7 +111,7 @@ func TestRequireAuthenticated_JWT_Valid(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL, nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -140,7 +140,7 @@ func TestRequireAuthenticated_JWT_Expired_401(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL, nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -263,7 +263,7 @@ func TestRequireAuthenticated_MalformedJWT_401(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL, nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: "not-a-valid-jwt"})
+	req.AddCookie(requestCookie("access_token", "not-a-valid-jwt"))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -293,7 +293,7 @@ func TestRequireAuthenticated_JWT_WrongSecret_401(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL, nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -392,8 +392,8 @@ func TestRequireAuthenticated_ForcePasswordReset_BlocksNonAuthEndpoints(t *testi
 
 	// Use httptest.NewRecorder to control the request URL path.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/orgs/some-org/cves", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/orgs/some-org/cves", nil)
+	req.AddCookie(requestCookie("access_token", token))
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusForbidden {
@@ -449,8 +449,8 @@ func TestRequireAuthenticated_ForcePasswordReset_AllowsChangePassword(t *testing
 	}))
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/auth/change-password", nil)
+	req.AddCookie(requestCookie("access_token", token))
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -490,8 +490,8 @@ func TestRequireAuthenticated_ForcePasswordReset_AllowsMe(t *testing.T) {
 	}))
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/auth/me", nil)
+	req.AddCookie(requestCookie("access_token", token))
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -531,8 +531,8 @@ func TestRequireAuthenticated_ForcePasswordReset_AllowsMFARoutes(t *testing.T) {
 	}))
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/mfa/methods", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/auth/mfa/methods", nil)
+	req.AddCookie(requestCookie("access_token", token))
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -676,7 +676,7 @@ func TestRequireAuthenticated_DisabledUser_JWT_401(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL, nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -719,8 +719,8 @@ func TestRequireAuthenticated_PendingToken_RejectedAsAccess(t *testing.T) {
 
 	// Present the pending token on a normal protected endpoint.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/orgs/some-org/cves", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: pendingToken})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/orgs/some-org/cves", nil)
+	req.AddCookie(requestCookie("access_token", pendingToken))
 	handler.ServeHTTP(rec, req)
 
 	// The pending token must NOT grant access to normal endpoints.
@@ -772,8 +772,8 @@ func TestRequireAuthenticated_ReadsFromConfigHolder(t *testing.T) {
 
 	// Request with the new-secret token BEFORE reload → should fail.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/test", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/test", nil)
+	req.AddCookie(requestCookie("access_token", token))
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("before reload: got %d, want 401", rec.Code)
@@ -786,8 +786,8 @@ func TestRequireAuthenticated_ReadsFromConfigHolder(t *testing.T) {
 
 	// Same token AFTER reload → should succeed.
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/test", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/test", nil)
+	req.AddCookie(requestCookie("access_token", token))
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Errorf("after reload: got %d, want 200", rec.Code)

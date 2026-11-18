@@ -61,6 +61,9 @@ type Cursor struct {
 	WindowStart time.Time `json:"window_start"`
 	WindowEnd   time.Time `json:"window_end"`
 	StartIndex  int       `json:"start_index"`
+	// CaughtUp is true once a walk has reached the present. A cleared cursor
+	// starts false, so a refill reports NVD data as incomplete until it finishes.
+	CaughtUp bool `json:"caught_up,omitempty"`
 }
 
 // Adapter implements feed.Adapter for the NVD API 2.0.
@@ -95,26 +98,61 @@ func New(client *http.Client) *Adapter {
 // Fetch fetches one page of CVEs from the NVD API. It uses the cursor to
 // determine the current date window and page offset. On each successful page,
 // it returns a non-nil NextCursor pointing to the next page or window.
-// When all windows up to now are exhausted, NextCursor is nil.
+// When all windows up to now are exhausted, NextCursor is a "caught up" cursor
+// and LastPage is true.
+//
+// The ingest handler ends a run on an empty page, and NVD has no modifications in
+// its earliest windows, so Fetch walks past empty windows to the next page with
+// data. Each request passes through the rate limiter, and the walk ends because
+// every window starts later than the one before it.
 func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.FetchResult, error) {
 	cur, err := parseCursor(cursorJSON)
 	if err != nil {
 		return nil, fmt.Errorf("nvd: parse cursor: %w", err)
 	}
 
+	for {
+		patches, nextCursor, lastPage, err := a.fetchPage(ctx, cur)
+		if err != nil {
+			return nil, err
+		}
+		if len(patches) == 0 && !lastPage {
+			cur = *nextCursor
+			continue
+		}
+
+		nextCursorJSON, err := json.Marshal(nextCursor)
+		if err != nil {
+			return nil, fmt.Errorf("nvd: marshal next cursor: %w", err)
+		}
+		return &feed.FetchResult{
+			Patches: patches,
+			SourceMeta: feed.SourceMeta{
+				SourceName: SourceName,
+				FetchedAt:  time.Now().UTC(),
+			},
+			NextCursor: nextCursorJSON,
+			LastPage:   lastPage,
+		}, nil
+	}
+}
+
+// fetchPage requests the page cur points at and returns its patches, the cursor
+// after it, and whether it is the final page of this run.
+func (a *Adapter) fetchPage(ctx context.Context, cur Cursor) ([]feed.CanonicalPatch, *Cursor, bool, error) {
 	if err := a.rateLimiter.Wait(ctx); err != nil {
-		return nil, fmt.Errorf("nvd: rate limit: %w", err)
+		return nil, nil, false, fmt.Errorf("nvd: rate limit: %w", err)
 	}
 
 	resp, nvdTimestamp, err := a.doRequest(ctx, cur)
 	if err != nil {
-		return nil, err
+		return nil, nil, false, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain for connection reuse
-		return nil, fmt.Errorf("nvd: HTTP %d for window [%s, %s] startIndex=%d",
+		return nil, nil, false, fmt.Errorf("nvd: HTTP %d for window [%s, %s] startIndex=%d",
 			resp.StatusCode,
 			cur.WindowStart.Format(time.RFC3339),
 			cur.WindowEnd.Format(time.RFC3339),
@@ -125,7 +163,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 	const maxNVDResponseSize = 50 << 20 // 50 MB
 	patches, totalResults, responseTimestamp, err := parseNVDResponse(io.LimitReader(resp.Body, maxNVDResponseSize))
 	if err != nil {
-		return nil, fmt.Errorf("nvd: parse response: %w", err)
+		return nil, nil, false, fmt.Errorf("nvd: parse response: %w", err)
 	}
 
 	// Prefer response-body timestamp over HTTP Date header for clock-skew safety.
@@ -138,22 +176,8 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		effectiveNow = time.Now().UTC()
 	}
 
-	// Determine NextCursor.
 	nextCursor, lastPage := computeNextCursor(cur, totalResults, effectiveNow)
-	nextCursorJSON, err := json.Marshal(nextCursor)
-	if err != nil {
-		return nil, fmt.Errorf("nvd: marshal next cursor: %w", err)
-	}
-
-	return &feed.FetchResult{
-		Patches: patches,
-		SourceMeta: feed.SourceMeta{
-			SourceName: SourceName,
-			FetchedAt:  time.Now().UTC(),
-		},
-		NextCursor: nextCursorJSON,
-		LastPage:   lastPage,
-	}, nil
+	return patches, nextCursor, lastPage, nil
 }
 
 // doRequest builds and executes the NVD API request for the given cursor.
@@ -243,19 +267,24 @@ func computeNextCursor(cur Cursor, totalResults int, effectiveNow time.Time) (*C
 			WindowStart: cur.WindowStart,
 			WindowEnd:   cur.WindowEnd,
 			StartIndex:  nextStartIndex,
+			CaughtUp:    cur.CaughtUp,
 		}, false
 	}
 
 	// Current window exhausted — compute the next window.
 	// Apply 15-minute overlap to catch eventual-consistency stragglers.
 	nextWindowStart := cur.WindowEnd.Add(-overlapDuration)
-	if nextWindowStart.After(effectiveNow) || !effectiveNow.After(cur.WindowEnd) {
-		// All windows processed. Return a "caught up" cursor so the handler
-		// persists a valid checkpoint instead of regressing to the previous page.
+	if effectiveNow.Sub(cur.WindowEnd) <= overlapDuration {
+		// All windows processed. effectiveNow advances on every response, so it is
+		// usually slightly past WindowEnd here; a further window would only re-read
+		// this one. Return a "caught up" cursor so the handler persists a valid
+		// checkpoint instead of regressing to the previous page. The next run starts
+		// from it, so modifications after WindowEnd are still read.
 		return &Cursor{
 			WindowStart: cur.WindowEnd.Add(-overlapDuration),
 			WindowEnd:   effectiveNow,
 			StartIndex:  0,
+			CaughtUp:    true,
 		}, true
 	}
 
@@ -268,6 +297,7 @@ func computeNextCursor(cur Cursor, totalResults int, effectiveNow time.Time) (*C
 		WindowStart: nextWindowStart,
 		WindowEnd:   nextWindowEnd,
 		StartIndex:  0,
+		CaughtUp:    cur.CaughtUp,
 	}, false
 }
 
@@ -286,15 +316,27 @@ type nvdVulnWrapper struct {
 
 // nvdCVE is the per-CVE object in the NVD API 2.0 response.
 type nvdCVE struct {
-	ID           string           `json:"id"`
-	VulnStatus   string           `json:"vulnStatus"`
-	Published    string           `json:"published"`
-	LastModified string           `json:"lastModified"`
-	Descriptions []nvdDescription `json:"descriptions"`
-	Metrics      nvdMetrics       `json:"metrics"`
-	Weaknesses   []nvdWeakness    `json:"weaknesses"`
-	Configurations []nvdConfig    `json:"configurations"`
-	References   []nvdReference   `json:"references"`
+	ID             string           `json:"id"`
+	VulnStatus     string           `json:"vulnStatus"`
+	Published      string           `json:"published"`
+	LastModified   string           `json:"lastModified"`
+	Descriptions   []nvdDescription `json:"descriptions"`
+	Metrics        nvdMetrics       `json:"metrics"`
+	Weaknesses     []nvdWeakness    `json:"weaknesses"`
+	Configurations []nvdConfig      `json:"configurations"`
+	References     []nvdReference   `json:"references"`
+	// SourceIdentifier names the CVE's CNA, which is one of the sources in Affected.
+	SourceIdentifier string `json:"sourceIdentifier"`
+	// Affected stays raw so that malformed data costs the product data and not
+	// the whole CVE: see cnaAffected.
+	Affected json.RawMessage `json:"affected,omitempty"`
+}
+
+// nvdAffected is one element of cve.affected[]: a source and that source's copy
+// of a CVE 5 affected[] array.
+type nvdAffected struct {
+	Source       string          `json:"source"`
+	AffectedData json.RawMessage `json:"affectedData"`
 }
 
 type nvdDescription struct {
@@ -311,7 +353,7 @@ type nvdMetrics struct {
 }
 
 type nvdCVSSMetric struct {
-	Source   string  `json:"source"`
+	Source   string      `json:"source"`
 	CVSSData nvdCVSSData `json:"cvssData"`
 }
 
@@ -338,6 +380,10 @@ type nvdCPEMatch struct {
 	Criteria              string `json:"criteria"`
 	MatchCriteriaID       string `json:"matchCriteriaId"`
 	Vulnerable            bool   `json:"vulnerable"`
+	VersionStartIncluding string `json:"versionStartIncluding,omitempty"`
+	VersionStartExcluding string `json:"versionStartExcluding,omitempty"`
+	VersionEndIncluding   string `json:"versionEndIncluding,omitempty"`
+	VersionEndExcluding   string `json:"versionEndExcluding,omitempty"`
 }
 
 type nvdReference struct {
@@ -402,6 +448,13 @@ func parseNVDResponse(body interface{ Read([]byte) (int, error) }) (
 						slog.Warn("JSON syntax error in feed stream, stopping parse",
 							"feed", SourceName, "error", err)
 						return patches, totalResults, responseTimestamp, nil
+					}
+					// Only a type error leaves the decoder past the record. Any other
+					// error, such as a body cut short, is sticky: every later Decode
+					// returns it again, so the page fails and is fetched again.
+					var typeErr *json.UnmarshalTypeError
+					if !errors.As(err, &typeErr) {
+						return nil, 0, time.Time{}, fmt.Errorf("decode vulnerability: %w", err)
 					}
 					slog.Warn("skipping malformed record in feed stream",
 						"feed", SourceName, "error", err)
@@ -484,7 +537,9 @@ func cveToCanonical(cve nvdCVE) *feed.CanonicalPatch {
 		})
 	}
 
-	// CPEs from configurations (deduplicated by normalized form).
+	// CPEs from configurations. AffectedCPEs holds each criteria string once and
+	// includes vulnerable: false entries, because it is a material_hash input and
+	// what CPE watchlist items match. CPEMatches holds every entry with its range.
 	cpeSeen := make(map[string]struct{})
 	for _, cfg := range cve.Configurations {
 		for _, node := range cfg.Nodes {
@@ -493,6 +548,15 @@ func cveToCanonical(cve nvdCVE) *feed.CanonicalPatch {
 					continue
 				}
 				normalized := strings.ToLower(strings.Clone(feed.StripNullBytes(match.Criteria)))
+				patch.CPEMatches = append(patch.CPEMatches, feed.CPEMatch{
+					CPE:                   strings.Clone(feed.StripNullBytes(match.Criteria)),
+					CPENormalized:         normalized,
+					VersionStartIncluding: strings.Clone(feed.StripNullBytes(match.VersionStartIncluding)),
+					VersionStartExcluding: strings.Clone(feed.StripNullBytes(match.VersionStartExcluding)),
+					VersionEndIncluding:   strings.Clone(feed.StripNullBytes(match.VersionEndIncluding)),
+					VersionEndExcluding:   strings.Clone(feed.StripNullBytes(match.VersionEndExcluding)),
+					Vulnerable:            match.Vulnerable,
+				})
 				if _, ok := cpeSeen[normalized]; ok {
 					continue
 				}
@@ -505,11 +569,35 @@ func cveToCanonical(cve nvdCVE) *feed.CanonicalPatch {
 		}
 	}
 
+	patch.CNAAffected = cnaAffected(cve)
+
 	// CVSS: prefer v3.1 over v3.0; add v4.0 if available.
 	// NVD source "nvd@nist.gov" is preferred; use first entry if no NVD source.
 	applyNVDCVSS(patch, cve.Metrics)
 
 	return patch
+}
+
+// cnaAffected returns the CNA's product and version data that NVD relays in
+// cve.affected[], which is present before NVD analyses a CVE. The element whose
+// source is the CVE's sourceIdentifier is the CNA's own; other elements come from
+// other organisations and are skipped.
+func cnaAffected(cve nvdCVE) []feed.CNAAffected {
+	if len(cve.Affected) == 0 || cve.SourceIdentifier == "" {
+		return nil
+	}
+	var relayed []nvdAffected
+	if err := json.Unmarshal(cve.Affected, &relayed); err != nil {
+		slog.Warn("skipping malformed affected array", "feed", SourceName, "cve_id", cve.ID, "error", err)
+		return nil
+	}
+	var entries []feed.CNAAffected
+	for _, r := range relayed {
+		if r.Source == cve.SourceIdentifier {
+			entries = append(entries, feed.ParseCNAAffected(r.AffectedData, cve.ID)...)
+		}
+	}
+	return entries
 }
 
 // applyNVDCVSS sets CVSS fields on patch, preferring v3.1 over v3.0 and the
@@ -572,4 +660,3 @@ func pickPreferred(entries []nvdCVSSMetric) *nvdCVSSMetric {
 	}
 	return nil
 }
-

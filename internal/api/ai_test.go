@@ -8,14 +8,18 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/metrics"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
@@ -1069,5 +1073,109 @@ func TestNLSearchHandler_EmptyResultsArray(t *testing.T) {
 	resultsJSON := string(raw["results"])
 	if resultsJSON != "[]" {
 		t.Errorf("results should be empty array [], got %s", resultsJSON)
+	}
+}
+
+// countingLLM is the mock LLM client that also counts GenerateStructuredQuery
+// calls, so a test can tell whether a request reached the LLM.
+type countingLLM struct {
+	*ai.MockClient
+	queries atomic.Int32
+}
+
+func (c *countingLLM) GenerateStructuredQuery(ctx context.Context, prompt string) (ai.GenerateResult, error) {
+	c.queries.Add(1)
+	return c.MockClient.GenerateStructuredQuery(ctx, prompt)
+}
+
+// TestNLSearchHandler_InvalidCursor verifies that NL search with a cursor the
+// store cannot decode answers 400 "invalid cursor" before any AI work: on a
+// cache miss it uses no quota, makes no LLM call, writes no ai_request_log row
+// and does not count in AIRequestsTotal. It does not call t.Parallel: it reads
+// the process-wide AIRequestsTotal counter, which parallel AI tests also change.
+func TestNLSearchHandler_InvalidCursor(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	llm := &countingLLM{MockClient: ai.NewMockClient()}
+	_, ts := newAITestServerWithLLM(t, db, llm)
+	reg := doRegister(t, ctx, ts, "nlsearch-cursor@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "nlsearch-cursor@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	// search sends query with cursor; each case uses its own query, so every
+	// request is a cache miss.
+	search := func(t *testing.T, query, cursor string) *http.Response {
+		t.Helper()
+		target := ts.URL + "/api/v1/orgs/" + reg.OrgID + "/ai/nl-search?cursor=" + url.QueryEscape(cursor)
+		body := fmt.Sprintf(`{"query":%q}`, query)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("build nl-search request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Cookie", "access_token="+token)
+		req.Header.Set("X-Requested-By", "CVErt-Ops")
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+		if err != nil {
+			t.Fatalf("nl-search request: %v", err)
+		}
+		return resp
+	}
+	// usage returns the org's nl_search quota count and ai_request_log rows.
+	usage := func(t *testing.T) (quota, logRows int) {
+		t.Helper()
+		if err := db.DB().QueryRowContext(ctx,
+			`SELECT COALESCE(SUM(count), 0) FROM ai_usage_counters
+			 WHERE org_id = $1 AND feature = 'nl_search'`, reg.OrgID,
+		).Scan(&quota); err != nil {
+			t.Fatalf("query ai_usage_counters: %v", err)
+		}
+		if err := db.DB().QueryRowContext(ctx,
+			`SELECT count(*) FROM ai_request_log
+			 WHERE org_id = $1 AND feature = 'nl_search'`, reg.OrgID,
+		).Scan(&logRows); err != nil {
+			t.Fatalf("query ai_request_log: %v", err)
+		}
+		return quota, logRows
+	}
+
+	// The valid cursor shows that a cache miss is observable: one quota unit,
+	// one LLM call and one ai_request_log row.
+	t.Run("valid cursor", func(t *testing.T) {
+		resp := search(t, "cursor test valid", dslCursorCases.valid)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("status = %d, want 200", resp.StatusCode)
+		}
+		if quota, logRows := usage(t); quota != 1 || logRows != 1 || llm.queries.Load() != 1 {
+			t.Errorf("after one cache miss: quota = %d, log rows = %d, LLM calls = %d; want 1, 1, 1",
+				quota, logRows, llm.queries.Load())
+		}
+	})
+
+	quotaBefore, logRowsBefore := usage(t)
+	callsBefore := llm.queries.Load()
+	errorsBefore := promtestutil.ToFloat64(metrics.AIRequestsTotal.WithLabelValues("nl_search", "error"))
+	t.Run("malformed cursor", func(t *testing.T) {
+		resp := search(t, "cursor test malformed", dslCursorCases.malformed)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		assertInvalidCursorProblem(t, resp)
+	})
+	t.Run("edited cursor", func(t *testing.T) {
+		resp := search(t, "cursor test edited", dslCursorCases.edited)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		assertInvalidCursorProblem(t, resp)
+	})
+	if quota, logRows := usage(t); quota != quotaBefore || logRows != logRowsBefore {
+		t.Errorf("invalid cursors changed quota %d -> %d and ai_request_log rows %d -> %d, want no change",
+			quotaBefore, quota, logRowsBefore, logRows)
+	}
+	if calls := llm.queries.Load(); calls != callsBefore {
+		t.Errorf("invalid cursors made %d LLM calls, want 0", calls-callsBefore)
+	}
+	if got := promtestutil.ToFloat64(metrics.AIRequestsTotal.WithLabelValues("nl_search", "error")) - errorsBefore; got != 0 {
+		t.Errorf("AIRequestsTotal{nl_search,error} rose by %v for invalid cursors, want 0", got)
 	}
 }

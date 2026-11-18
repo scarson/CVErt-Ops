@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<!-- HTML fixture for the performance-audit evals: a plain document exercising the
+     HTML companion pack + the images-media and fonts modules + the Rendering-path
+     notes. See expected-findings.md (do NOT read it as the agent under test). -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Shop — Today's Deals</title>
+
+  <!-- PLANTED #1 (payload-startup): a parser-blocking <script> in <head> with no
+       async/defer halts HTML parsing while it downloads + runs. Use defer/async or
+       move it; this one is also a heavy third-party tag. -->
+  <script src="https://cdn.example.com/analytics.js"></script>
+
+  <!-- PLANTED #2 (payload-startup): render-blocking stylesheet that also pulls more
+       CSS via @import, serializing the fetches into a waterfall. Inline critical CSS;
+       replace @import with top-level <link>. -->
+  <link rel="stylesheet" href="/css/app.css">
+
+  <!-- PLANTED #4 (fonts module): @font-face with no font-display (defaults to block →
+       FOIT, invisible text up to ~3s) and the critical font is not preloaded (it's
+       discovered late, in CSS). -->
+  <style>
+    @import url("/css/theme.css");           /* @import waterfall (part of #2) */
+    @font-face {
+      font-family: "Brand";
+      src: url("/fonts/brand.woff2") format("woff2");
+      /* no font-display */
+    }
+    body { font-family: "Brand", sans-serif; }
+  </style>
+</head>
+<body>
+  <!-- PLANTED #3 (images module): the hero is the LCP element, but it is
+       loading="lazy" (deferred until layout) AND has no width/height (→ CLS as it
+       loads). Don't lazy-load the LCP image; set dimensions to reserve space. -->
+  <img src="/img/hero-4000w.jpg" loading="lazy" alt="Deal of the day" class="hero">
+
+  <h1>Today's Deals</h1>
+
+  <!-- DECOY (should NOT be flagged): a below-the-fold thumbnail that IS correctly
+       lazy-loaded and sized. This is the right use of loading="lazy"; flagging it
+       (e.g. "remove lazy-loading") is a precision/checklist failure. -->
+  <img src="/img/footer-promo.jpg" loading="lazy" width="320" height="180"
+       alt="Newsletter" class="below-fold">
+
+  <!-- BEYOND-THE-PACK (floor-not-ceiling): a full-resolution product image embedded
+       as a base64 data: URI directly in the markup. It bloats the HTML document
+       (so the parser stalls and the bytes can't be cached or prioritized separately),
+       defeats the preload scanner, and can't be a responsive srcset candidate. The
+       agent must reason about the several compounding costs, not just "image big". -->
+  <img src="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ...AAuLi4uLi4uLi8v...(80KB)..." alt="Featured">
+</body>
+</html>

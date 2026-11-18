@@ -31,14 +31,14 @@ type createReportBody struct {
 }
 
 type patchReportBody struct {
-	Name              *string   `json:"name"`
-	ScheduledTime     *string   `json:"scheduled_time"`
-	Timezone          *string   `json:"timezone"`
-	SeverityThreshold *string   `json:"severity_threshold"`
-	WatchlistIDs      *[]string `json:"watchlist_ids"`
-	SendOnEmpty       *bool     `json:"send_on_empty"`
-	AISummary         *bool     `json:"ai_summary"`
-	Status            *string   `json:"status"`
+	Name              *string   `json:"name,omitempty"`
+	ScheduledTime     *string   `json:"scheduled_time,omitempty"`
+	Timezone          *string   `json:"timezone,omitempty"`
+	SeverityThreshold *string   `json:"severity_threshold,omitempty"`
+	WatchlistIDs      *[]string `json:"watchlist_ids,omitempty"`
+	SendOnEmpty       *bool     `json:"send_on_empty,omitempty"`
+	AISummary         *bool     `json:"ai_summary,omitempty"`
+	Status            *string   `json:"status,omitempty"`
 }
 
 type reportEntry struct {
@@ -48,8 +48,8 @@ type reportEntry struct {
 	ScheduledTime     string   `json:"scheduled_time"`
 	Timezone          string   `json:"timezone"`
 	NextRunAt         string   `json:"next_run_at"`
-	LastRunAt         *string  `json:"last_run_at,omitempty"`
-	SeverityThreshold *string  `json:"severity_threshold,omitempty"`
+	LastRunAt         *string  `json:"last_run_at,omitzero" nullable:"false"`
+	SeverityThreshold *string  `json:"severity_threshold,omitzero" nullable:"false"`
 	WatchlistIDs      []string `json:"watchlist_ids"`
 	SendOnEmpty       bool     `json:"send_on_empty"`
 	AISummary         bool     `json:"ai_summary"`
@@ -108,8 +108,7 @@ func (srv *Server) createReportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req createReportBody
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
@@ -245,8 +244,7 @@ func (srv *Server) patchReportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req patchReportBody
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -519,14 +517,14 @@ func (srv *Server) listReportChannelsHandler(w http.ResponseWriter, r *http.Requ
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	items := make([]channelEntry, len(rows))
+	items := make([]ChannelEntry, len(rows))
 	for i, row := range rows {
-		items[i] = channelEntry{
+		items[i] = ChannelEntry{
 			ID:        row.ID.String(),
 			OrgID:     row.OrgID.String(),
 			Name:      row.Name,
 			Type:      row.Type,
-			Config:    row.Config,
+			Config:    channelResponseConfig(row.Config),
 			CreatedAt: row.CreatedAt.Format(time.RFC3339),
 			UpdatedAt: row.UpdatedAt.Format(time.RFC3339),
 		}

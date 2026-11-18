@@ -64,6 +64,9 @@ func buildSchema() {
 	b.WriteString("- Date values must be RFC 3339 format (e.g., \"2024-01-01T00:00:00Z\").\n")
 	b.WriteString("- For numeric ranges, use gte/lte (e.g., cvss_v3_score gte 7.0).\n")
 	b.WriteString("- Use \"and\" logic unless the user explicitly says \"or\".\n")
+	b.WriteString("- \"affected.cpe_product\" takes \"vendor:product\" from a CPE name, such as \"nodejs:node.js\".\n")
+	b.WriteString("- In an \"and\" rule, \"affected.ecosystem\" and \"affected.package\" describe the same package, so name the package's ecosystem with it.\n")
+	b.WriteString("- \"affected.package\" with \"eq\" matches a whole package name.\n")
 
 	schemaDesc = b.String()
 	h := sha256.Sum256([]byte(schemaDesc))

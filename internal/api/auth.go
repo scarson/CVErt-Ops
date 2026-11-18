@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -47,7 +48,7 @@ func pgErrCode(err error) string {
 // authCookies returns Set-Cookie header values for the access and refresh tokens.
 // refresh_token is scoped to /api/v1/auth to limit its transmission surface.
 func authCookies(accessToken, refreshToken string, secure bool) []string {
-	access := &http.Cookie{
+	access := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "access_token",
 		Value:    accessToken,
 		Path:     "/",
@@ -56,7 +57,7 @@ func authCookies(accessToken, refreshToken string, secure bool) []string {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(accessTokenTTL.Seconds()),
 	}
-	refresh := &http.Cookie{
+	refresh := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "refresh_token",
 		Value:    refreshToken,
 		Path:     "/api/v1/auth",
@@ -70,7 +71,7 @@ func authCookies(accessToken, refreshToken string, secure bool) []string {
 
 // clearAuthCookies returns Set-Cookie headers that immediately expire both auth cookies.
 func clearAuthCookies(secure bool) []string {
-	access := &http.Cookie{
+	access := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "access_token",
 		Value:    "",
 		Path:     "/",
@@ -79,7 +80,7 @@ func clearAuthCookies(secure bool) []string {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	}
-	refresh := &http.Cookie{
+	refresh := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "refresh_token",
 		Value:    "",
 		Path:     "/api/v1/auth",
@@ -234,7 +235,7 @@ func sha256Hex(s string) string {
 
 // pendingTokenCookies creates the mfa_pending_token Set-Cookie header.
 func pendingTokenCookies(token string, secure bool, ttl time.Duration) []string {
-	c := &http.Cookie{
+	c := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "mfa_pending_token",
 		Value:    token,
 		Path:     "/api/v1/auth",
@@ -248,7 +249,7 @@ func pendingTokenCookies(token string, secure bool, ttl time.Duration) []string 
 
 // clearPendingTokenCookie expires the mfa_pending_token cookie.
 func clearPendingTokenCookie(secure bool) string {
-	c := &http.Cookie{
+	c := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "mfa_pending_token",
 		Value:    "",
 		Path:     "/api/v1/auth",
@@ -258,6 +259,13 @@ func clearPendingTokenCookie(secure bool) string {
 		MaxAge:   -1,
 	}
 	return c.String()
+}
+
+// clearSignInCookies expires the cookies of an in-progress sign-in (the
+// pending token and the TOTP enrollment token). Sent whenever full tokens are
+// issued or the session ends, so a half-finished sign-in cannot outlive it.
+func clearSignInCookies(secure bool) []string {
+	return []string{clearPendingTokenCookie(secure), clearEnrollmentCookie(secure)}
 }
 
 // loginHandler handles POST /api/v1/auth/login.
@@ -317,18 +325,7 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 				Details:    map[string]any{"reason": "account locked"},
 			})
 		}
-		retrySeconds := int(retryAfter.Seconds())
-		if retrySeconds < 1 {
-			retrySeconds = 1
-		}
-		return nil, huma.Error429TooManyRequests(
-			"account temporarily locked due to too many failed login attempts",
-			&huma.ErrorDetail{
-				Message:  "retry_after_seconds",
-				Location: "header",
-				Value:    retrySeconds,
-			},
-		)
+		return nil, accountLockedError(retryAfter)
 	}
 
 	// Timing normalization: always spend argon2 time regardless of whether the user exists.
@@ -391,9 +388,6 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		}
 		return nil, huma.Error401Unauthorized("invalid credentials")
 	}
-
-	// Successful login — reset lockout counter.
-	srv.lockout.RecordSuccess(ctx, input.Body.Email)
 
 	// ── MFA / restricted session checks ──────────────────────────────
 	var pending []string
@@ -463,6 +457,14 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		}
 	}
 
+	// Reset the lockout counter only when no MFA challenge remains. Password
+	// and MFA failures share the counter, so a reset on the password alone
+	// would let someone holding the password log in again to clear failed
+	// MFA guesses. mfaVerifyHandler resets it once the challenge passes.
+	if !slices.Contains(pending, "mfa_challenge") {
+		srv.lockout.RecordSuccess(ctx, input.Body.Email)
+	}
+
 	// Non-fatal — last_login_at is informational only.
 	if err := srv.store.UpdateLastLogin(ctx, user.ID); err != nil {
 		slog.WarnContext(ctx, "login: update last login", "error", err)
@@ -501,7 +503,12 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		out.Body.UserID = user.ID
 		out.Body.Pending = pending
 		out.Body.Methods = methods
-		out.SetCookie = pendingTokenCookies(pendingToken, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL)
+		// Expire any full session in this browser so the pending steps cannot
+		// be resolved against another user's access token.
+		out.SetCookie = append(
+			pendingTokenCookies(pendingToken, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL),
+			clearAuthCookies(srv.cfg.CookieSecure)...,
+		)
 		return out, nil
 	}
 
@@ -535,7 +542,10 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 	out := &loginOutput{}
 	out.Body.UserID = user.ID
 	out.Body.Pending = []string{}
-	out.SetCookie = authCookies(accessToken, refreshToken, srv.cfg.CookieSecure)
+	out.SetCookie = append(
+		authCookies(accessToken, refreshToken, srv.cfg.CookieSecure),
+		clearSignInCookies(srv.cfg.CookieSecure)...,
+	)
 	return out, nil
 }
 
@@ -685,7 +695,10 @@ func (srv *Server) logoutHandler(ctx context.Context, input *logoutInput) (*logo
 			}
 		}
 	}
-	return &logoutOutput{SetCookie: clearAuthCookies(srv.cfg.CookieSecure)}, nil
+	return &logoutOutput{SetCookie: append(
+		clearAuthCookies(srv.cfg.CookieSecure),
+		clearSignInCookies(srv.cfg.CookieSecure)...,
+	)}, nil
 }
 
 // ── Me ────────────────────────────────────────────────────────────────────────
@@ -710,6 +723,7 @@ type meOutput struct {
 		DisplayName        string     `json:"display_name"`
 		IsSiteAdmin        bool       `json:"is_site_admin"`
 		ForcePasswordReset bool       `json:"force_password_reset"`
+		HasPassword        bool       `json:"has_password" doc:"False for accounts that sign in only through an external identity provider"`
 		Orgs               []orgEntry `json:"orgs"`
 	}
 }
@@ -748,6 +762,7 @@ func (srv *Server) meHandler(ctx context.Context, input *meInput) (*meOutput, er
 	out.Body.DisplayName = user.DisplayName
 	out.Body.IsSiteAdmin = isSiteAdmin
 	out.Body.ForcePasswordReset = user.ForcePasswordReset
+	out.Body.HasPassword = user.PasswordHash.Valid
 	out.Body.Orgs = make([]orgEntry, 0, len(orgRows))
 	for _, row := range orgRows {
 		out.Body.Orgs = append(out.Body.Orgs, orgEntry{
@@ -784,7 +799,7 @@ type changePasswordOutput struct {
 // changePasswordHandler handles POST /api/v1/auth/change-password.
 // Supports two modes:
 //   - Normal: access_token + current_password → verify old password, set new one.
-//   - Restricted: mfa_pending_token with "password_reset" → skip current_password
+//   - Restricted: mfa_pending_token whose first pending item is "password_reset" → skip current_password
 //     (password may be compromised). Issues full tokens or reissues pending token.
 func (srv *Server) changePasswordHandler(ctx context.Context, input *changePasswordInput) (*changePasswordOutput, error) {
 	var (
@@ -793,7 +808,9 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 		isRestricted  bool
 	)
 
-	// Resolve auth context: access token or pending token with "password_reset".
+	// Resolve auth context: access token or pending token whose next step is
+	// "password_reset". Earlier steps (mfa_challenge) must be cleared first so
+	// a password-only holder cannot change the password before proving MFA.
 	if input.AccessToken != "" {
 		claims, err := auth.ParseAccessToken(input.AccessToken, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
 		if err == nil {
@@ -801,17 +818,14 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 		}
 	}
 	if userID == uuid.Nil && input.MFAPendingToken != "" {
-		claims, err := auth.ParsePendingToken(input.MFAPendingToken, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
-		if err == nil {
-			for _, p := range claims.Pending {
-				if p == "password_reset" {
-					userID = claims.UserID
-					pendingClaims = claims
-					isRestricted = true
-					break
-				}
-			}
+		claims, err := srv.validatePendingToken(input.MFAPendingToken, "password_reset")
+		if err != nil {
+			return nil, typedProblem(http.StatusUnauthorized, problemTypePendingSessionInvalid,
+				"invalid or expired pending token")
 		}
+		userID = claims.UserID
+		pendingClaims = claims
+		isRestricted = true
 	}
 	if userID == uuid.Nil {
 		return nil, huma.Error401Unauthorized("authentication required")
@@ -821,6 +835,11 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 	if err != nil || user == nil {
 		slog.ErrorContext(ctx, "change-password: get user", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
+	}
+	// Verify token_version matches DB (prevents stale tokens after admin actions).
+	if isRestricted && int(user.TokenVersion) != pendingClaims.TokenVersion {
+		return nil, typedProblem(http.StatusUnauthorized, problemTypePendingSessionInvalid,
+			"session invalidated — please log in again")
 	}
 	if !user.PasswordHash.Valid {
 		return nil, huma.Error400BadRequest("account uses OAuth authentication — password change not supported")
@@ -845,7 +864,7 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 			return nil, huma.Error500InternalServerError("internal error")
 		}
 		if !ok {
-			return nil, huma.Error401Unauthorized("current password incorrect")
+			return nil, typedProblem(http.StatusUnauthorized, problemTypeInvalidPassword, "current password incorrect")
 		}
 	}
 
@@ -939,7 +958,6 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 			return nil, tokErr
 		}
 		out.SetCookie = cookies
-		out.SetCookie = append(out.SetCookie, clearPendingTokenCookie(srv.cfg.CookieSecure))
 	}
 
 	return out, nil

@@ -1,8 +1,12 @@
+// ABOUTME: Unit tests for the merge resolver's per-field precedence across source rows.
+// ABOUTME: Covers status, CVSS, packages, CPE match ranges, CNA affected entries and unknown sources.
 package merge
 
 import (
 	"database/sql"
 	"encoding/json"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -27,6 +31,27 @@ func makeSourceWithDate(sourceName string, patch feed.CanonicalPatch, t time.Tim
 	return s
 }
 
+// makeSourceWithID is makeSource for a source row with a native advisory ID.
+func makeSourceWithID(sourceName, sourceID string, patch feed.CanonicalPatch) generated.CveSource {
+	s := makeSource(sourceName, patch)
+	s.SourceID = sourceID
+	return s
+}
+
+func TestResolveSeveralRowsOfOneSourceUnionTheirRanges(t *testing.T) {
+	t.Parallel()
+	r, err := resolve([]generated.CveSource{
+		makeSourceWithID(SourceOSV, "PYSEC-2", feed.CanonicalPatch{CVEID: "CVE-1", AffectedPackages: []feed.AffectedPackage{{Ecosystem: "PyPI", PackageName: "x", Introduced: "2.0", Fixed: "2.5"}}}),
+		makeSourceWithID(SourceOSV, "GHSA-1", feed.CanonicalPatch{CVEID: "CVE-1", AffectedPackages: []feed.AffectedPackage{{Ecosystem: "PyPI", PackageName: "x", Introduced: "0", Fixed: "1.0"}}}),
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(r.AffectedPackages) != 2 {
+		t.Fatalf("AffectedPackages = %+v, want both ranges", r.AffectedPackages)
+	}
+}
+
 // strPtr is a convenience helper for *string literals in test data.
 func strPtr(s string) *string { return &s }
 
@@ -35,6 +60,71 @@ func f64Ptr(f float64) *float64 { return &f }
 
 // boolPtr is a convenience helper for *bool literals in test data.
 func boolPtr(b bool) *bool { return &b }
+
+// ── CPE matches + CNA affected ────────────────────────────────────────────────
+
+func TestResolveCPEMatchesKeepEveryDistinctEntry(t *testing.T) {
+	t.Parallel()
+
+	const cpe = "cpe:2.3:a:nodejs:node.js:*:*:*:*:-:*:*:*"
+	branch24 := feed.CPEMatch{CPE: cpe, CPENormalized: cpe, VersionStartIncluding: "24.0.0", VersionEndExcluding: "24.22.1", Vulnerable: true}
+	branch22 := feed.CPEMatch{CPE: cpe, CPENormalized: cpe, VersionStartIncluding: "22.0.0", VersionEndExcluding: "22.23.4", Vulnerable: true}
+	branch22NotVulnerable := branch22
+	branch22NotVulnerable.Vulnerable = false
+
+	r, err := resolve([]generated.CveSource{
+		makeSource(SourceNVD, feed.CanonicalPatch{
+			CVEID:      "CVE-1",
+			CPEMatches: []feed.CPEMatch{branch24, branch22, branch24, branch22NotVulnerable},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	want := []feed.CPEMatch{branch22NotVulnerable, branch22, branch24}
+	if !slices.Equal(r.CPEMatches, want) {
+		t.Errorf("CPEMatches = %+v, want %+v", r.CPEMatches, want)
+	}
+}
+
+func TestResolveCNAAffectedKeepsEverySourcesEntries(t *testing.T) {
+	t.Parallel()
+
+	widget := feed.CNAAffected{Vendor: "Acme", Product: "Widget", Versions: []feed.CNAVersion{{Version: "1.0", Status: "affected"}}}
+	widgetEarlierCopy := feed.CNAAffected{Vendor: "Acme", Product: "Widget", Versions: []feed.CNAVersion{{Version: "0.9", Status: "affected"}}}
+	gadget := feed.CNAAffected{Vendor: "Acme", Product: "Gadget", DefaultStatus: "unaffected"}
+	mitre := makeSource(SourceMITRE, feed.CanonicalPatch{CVEID: "CVE-1", CNAAffected: []feed.CNAAffected{widget, gadget, widget}})
+	nvd := makeSource(SourceNVD, feed.CanonicalPatch{CVEID: "CVE-1", CNAAffected: []feed.CNAAffected{widgetEarlierCopy}})
+	mitreWidget := makeSource(SourceMITRE, feed.CanonicalPatch{CVEID: "CVE-1", CNAAffected: []feed.CNAAffected{widget}})
+	nvdWidget := makeSource(SourceNVD, feed.CanonicalPatch{CVEID: "CVE-1", CNAAffected: []feed.CNAAffected{widget}})
+	nvdEmpty := makeSource(SourceNVD, feed.CanonicalPatch{CVEID: "CVE-1"})
+	mitreEmpty := makeSource(SourceMITRE, feed.CanonicalPatch{CVEID: "CVE-1"})
+
+	tests := []struct {
+		name    string
+		sources []generated.CveSource
+		want    []feed.CNAAffected
+	}{
+		// Ordered by JSON form: Gadget sorts before Widget, and version "0.9" before "1.0".
+		{"MITRE's entries and NVD's differing copy are both kept", []generated.CveSource{nvd, mitre}, []feed.CNAAffected{gadget, widgetEarlierCopy, widget}},
+		{"NVD's copy used when MITRE has none", []generated.CveSource{mitreEmpty, nvd}, []feed.CNAAffected{widgetEarlierCopy}},
+		{"an entry both sources hold is kept once", []generated.CveSource{nvdWidget, mitreWidget}, []feed.CNAAffected{widget}},
+		{"no source has entries", []generated.CveSource{mitreEmpty, nvdEmpty}, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r, err := resolve(tc.sources)
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			if !reflect.DeepEqual(r.CNAAffected, tc.want) {
+				t.Errorf("CNAAffected = %+v, want %+v", r.CNAAffected, tc.want)
+			}
+		})
+	}
+}
 
 // ── Status + IsWithdrawn ──────────────────────────────────────────────────────
 
@@ -88,11 +178,10 @@ func TestResolveIsWithdrawnFromPrimarySource(t *testing.T) {
 	}
 }
 
-func TestResolveIsWithdrawnORLogic(t *testing.T) {
+func TestResolveWithdrawnAdvisoryDoesNotTombstone(t *testing.T) {
 	t.Parallel()
 
-	// MITRE (primary) says NOT withdrawn; GHSA says withdrawn.
-	// OR logic should still set IsWithdrawn.
+	// MITRE (primary) says NOT withdrawn; GHSA withdrew its own advisory.
 	sources := []generated.CveSource{
 		makeSource(SourceMITRE, feed.CanonicalPatch{CVEID: "CVE-1", Status: "Published", IsWithdrawn: false}),
 		makeSource(SourceGHSA, feed.CanonicalPatch{CVEID: "CVE-1", IsWithdrawn: true}),
@@ -101,8 +190,36 @@ func TestResolveIsWithdrawnORLogic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if !r.IsWithdrawn {
-		t.Error("IsWithdrawn should be true when any source marks withdrawal (OR logic)")
+	if r.IsWithdrawn {
+		t.Error("IsWithdrawn should be false when only an advisory is withdrawn")
+	}
+}
+
+func TestResolveEveryRowWithdrawnTombstones(t *testing.T) {
+	t.Parallel()
+	r, err := resolve([]generated.CveSource{
+		makeSource(SourceGHSA, feed.CanonicalPatch{CVEID: "CVE-1", IsWithdrawn: true, Status: "withdrawn"}),
+		makeSource(SourceOSV, feed.CanonicalPatch{CVEID: "CVE-1", IsWithdrawn: true, Status: "withdrawn"}),
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !r.IsWithdrawn || r.Status != "withdrawn" {
+		t.Errorf("IsWithdrawn = %v, Status = %q, want true and withdrawn", r.IsWithdrawn, r.Status)
+	}
+}
+
+func TestResolveWithdrawnGHSADoesNotTombstoneLiveOSV(t *testing.T) {
+	t.Parallel()
+	r, err := resolve([]generated.CveSource{
+		makeSource(SourceGHSA, feed.CanonicalPatch{CVEID: "CVE-1", IsWithdrawn: true, Status: "withdrawn"}),
+		makeSource(SourceOSV, feed.CanonicalPatch{CVEID: "CVE-1"}),
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if r.IsWithdrawn || r.Status != "" {
+		t.Errorf("IsWithdrawn = %v, Status = %q, want false and empty", r.IsWithdrawn, r.Status)
 	}
 }
 
@@ -373,10 +490,10 @@ func TestResolveRefDistinctURLsKept(t *testing.T) {
 
 // ── Affected packages ─────────────────────────────────────────────────────────
 
-func TestResolvePkgOSVWinsOverGHSA(t *testing.T) {
+func TestResolveKeepsBothFixesForOneIntroduced(t *testing.T) {
 	t.Parallel()
 
-	// Same ecosystem+package+introduced from two sources: OSV entry should win.
+	// Same ecosystem+package+introduced from two sources, with different fixes.
 	osvPkg := feed.AffectedPackage{
 		Ecosystem: "PyPI", PackageName: "requests", Introduced: "2.0.0", Fixed: "2.28.0",
 	}
@@ -391,11 +508,25 @@ func TestResolvePkgOSVWinsOverGHSA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if len(r.AffectedPackages) != 1 {
-		t.Fatalf("AffectedPackages count = %d, want 1 (deduped)", len(r.AffectedPackages))
+	if len(r.AffectedPackages) != 2 || r.AffectedPackages[0].Fixed != "2.27.0" || r.AffectedPackages[1].Fixed != "2.28.0" {
+		t.Fatalf("AffectedPackages = %+v, want fixes 2.27.0 and 2.28.0", r.AffectedPackages)
 	}
-	if r.AffectedPackages[0].Fixed != "2.28.0" {
-		t.Errorf("AffectedPackages[0].Fixed = %q, want %q (OSV wins over GHSA)", r.AffectedPackages[0].Fixed, "2.28.0")
+}
+
+func TestResolveIdenticalRangeKeepsOSVRow(t *testing.T) {
+	t.Parallel()
+	events := json.RawMessage(`[{"introduced":"2.0.0"},{"fixed":"2.28.0"}]`)
+	osvPkg := feed.AffectedPackage{Ecosystem: "PyPI", PackageName: "requests", Introduced: "2.0.0", Fixed: "2.28.0", Events: events}
+	ghsaPkg := feed.AffectedPackage{Ecosystem: "PyPI", PackageName: "requests", Introduced: "2.0.0", Fixed: "2.28.0"}
+	r, err := resolve([]generated.CveSource{
+		makeSource(SourceGHSA, feed.CanonicalPatch{CVEID: "CVE-1", AffectedPackages: []feed.AffectedPackage{ghsaPkg}}),
+		makeSource(SourceOSV, feed.CanonicalPatch{CVEID: "CVE-1", AffectedPackages: []feed.AffectedPackage{osvPkg}}),
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(r.AffectedPackages) != 1 || r.AffectedPackages[0].Events == nil {
+		t.Fatalf("AffectedPackages = %+v, want the OSV row", r.AffectedPackages)
 	}
 }
 
@@ -652,8 +783,8 @@ func TestFirstStrFallsBackToUnknownSource(t *testing.T) {
 	t.Parallel()
 
 	patches := map[string]feed.CanonicalPatch{
-		SourceNVD:  {CVEID: "CVE-1", Status: ""},
-		"custom":   {CVEID: "CVE-1", Status: "Custom-Status"},
+		SourceNVD: {CVEID: "CVE-1", Status: ""},
+		"custom":  {CVEID: "CVE-1", Status: "Custom-Status"},
 	}
 	got := firstStr(patches, func(p feed.CanonicalPatch) string { return p.Status }, statusPriority)
 	if got != "Custom-Status" {
@@ -838,10 +969,9 @@ func TestResolveStatusMITREWinsOverRedHat(t *testing.T) {
 	}
 }
 
-func TestResolvePkgRedHatWinsOverMSRC(t *testing.T) {
+func TestResolveKeepsDifferentFixesFromRedHatAndMSRC(t *testing.T) {
 	t.Parallel()
 
-	// For packages, Red Hat is ahead of MSRC in pkgPriority.
 	rhPkg := feed.AffectedPackage{
 		Ecosystem: "RPM", PackageName: "openssl", Introduced: "1.0.0", Fixed: "1.1.1k",
 	}
@@ -856,11 +986,8 @@ func TestResolvePkgRedHatWinsOverMSRC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if len(r.AffectedPackages) != 1 {
-		t.Fatalf("AffectedPackages count = %d, want 1 (deduped)", len(r.AffectedPackages))
-	}
-	if r.AffectedPackages[0].Fixed != "1.1.1k" {
-		t.Errorf("AffectedPackages[0].Fixed = %q, want %q (Red Hat wins over MSRC for packages)", r.AffectedPackages[0].Fixed, "1.1.1k")
+	if len(r.AffectedPackages) != 2 || r.AffectedPackages[0].Fixed != "1.1.1j" || r.AffectedPackages[1].Fixed != "1.1.1k" {
+		t.Fatalf("AffectedPackages = %+v, want fixes 1.1.1j and 1.1.1k", r.AffectedPackages)
 	}
 }
 
@@ -872,8 +999,8 @@ func TestResolve_PrioritySlicesNotCorrupted(t *testing.T) {
 	vec := "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
 
 	unknownPatch := feed.CanonicalPatch{
-		CVEID:       "CVE-2025-7777",
-		CVSSv3Score: &score,
+		CVEID:        "CVE-2025-7777",
+		CVSSv3Score:  &score,
 		CVSSv3Vector: &vec,
 	}
 

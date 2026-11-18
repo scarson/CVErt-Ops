@@ -7,24 +7,130 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/scarson/cvert-ops/internal/feed"
 )
+
+func TestPackagesFromVersions(t *testing.T) {
+	t.Parallel()
+	noBounds := func(eco, name string) []feed.AffectedPackage {
+		return []feed.AffectedPackage{{Ecosystem: eco, PackageName: name, RangeType: "VERSIONS"}}
+	}
+	t.Run("one row per listed version when there are no ranges", func(t *testing.T) {
+		t.Parallel()
+		got := packagesFromVersions("RubyGems", "sprout", []string{"0.7.246", "0.7.247"}, nil)
+		want := []feed.AffectedPackage{
+			{Ecosystem: "RubyGems", PackageName: "sprout", RangeType: "VERSIONS", Introduced: "0.7.246", LastAffected: "0.7.246"},
+			{Ecosystem: "RubyGems", PackageName: "sprout", RangeType: "VERSIONS", Introduced: "0.7.247", LastAffected: "0.7.247"},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("got %+v, want %+v", got, want)
+		}
+	})
+	t.Run("no versions and no ranges keeps the package with no bounds", func(t *testing.T) {
+		t.Parallel()
+		if got := packagesFromVersions("npm", "x", nil, nil); !reflect.DeepEqual(got, noBounds("npm", "x")) {
+			t.Errorf("got %+v", got)
+		}
+	})
+	t.Run("blank and null-byte versions are skipped", func(t *testing.T) {
+		t.Parallel()
+		got := packagesFromVersions("npm", "x", []string{"", "1.0.0\x00"}, nil)
+		if len(got) != 1 || got[0].Introduced != "1.0.0" {
+			t.Errorf("got %+v", got)
+		}
+	})
+	t.Run("a listed version outside the ranges is kept", func(t *testing.T) {
+		t.Parallel()
+		ranges := []feed.AffectedPackage{{Ecosystem: "npm", PackageName: "x", RangeType: "SEMVER", Introduced: "1.0.0", Fixed: "2.0.0"}}
+		got := packagesFromVersions("npm", "x", []string{"1.5.0", "3.0.0"}, ranges)
+		if len(got) != 1 || got[0].Introduced != "3.0.0" || got[0].LastAffected != "3.0.0" {
+			t.Errorf("got %+v, want only 3.0.0", got)
+		}
+	})
+	t.Run("versions are kept when the only range is GIT", func(t *testing.T) {
+		t.Parallel()
+		ranges := []feed.AffectedPackage{{Ecosystem: "PyPI", PackageName: "x", RangeType: "GIT", Introduced: "0"}}
+		if got := packagesFromVersions("PyPI", "x", []string{"1.0"}, ranges); len(got) != 1 {
+			t.Errorf("got %+v, want one row", got)
+		}
+	})
+	t.Run("a SEMVER range cannot cover a version where the native order differs", func(t *testing.T) {
+		t.Parallel()
+		ranges := []feed.AffectedPackage{{Ecosystem: "PyPI", PackageName: "x", RangeType: "SEMVER", Introduced: "1.0.0", Fixed: "2.0.0"}}
+		if got := packagesFromVersions("PyPI", "x", []string{"1.0.0-1"}, ranges); len(got) != 1 || got[0].Introduced != "1.0.0-1" {
+			t.Errorf("got %+v, want the listed version kept", got)
+		}
+	})
+	t.Run("an ecosystem with no comparator adds nothing beside its ranges", func(t *testing.T) {
+		t.Parallel()
+		ranges := []feed.AffectedPackage{{Ecosystem: "Bitnami", PackageName: "x", RangeType: "SEMVER", Introduced: "0", Fixed: "2.0.0"}}
+		if got := packagesFromVersions("Bitnami", "x", []string{"3.0.0"}, ranges); got != nil {
+			t.Errorf("got %+v, want nil", got)
+		}
+	})
+	t.Run("exactly the limit is kept", func(t *testing.T) {
+		t.Parallel()
+		versions := make([]string, maxListedVersionRows)
+		for i := range versions {
+			versions[i] = fmt.Sprintf("1.0.%d", i)
+		}
+		if got := packagesFromVersions("npm", "x", versions, nil); len(got) != maxListedVersionRows {
+			t.Errorf("got %d rows, want %d", len(got), maxListedVersionRows)
+		}
+	})
+	t.Run("too many rows becomes one row with no bounds", func(t *testing.T) {
+		t.Parallel()
+		versions := make([]string, maxListedVersionRows+1)
+		for i := range versions {
+			versions[i] = fmt.Sprintf("1.0.%d", i)
+		}
+		if got := packagesFromVersions("npm", "x", versions, nil); !reflect.DeepEqual(got, noBounds("npm", "x")) {
+			t.Errorf("got %d rows", len(got))
+		}
+	})
+}
+
+func TestParseAdvisory_ListedVersions(t *testing.T) {
+	t.Parallel()
+	t.Run("versions with no ranges become exact rows", func(t *testing.T) {
+		t.Parallel()
+		patch, err := parseAdvisory(strings.NewReader(`{"id":"GHSA-v1","affected":[{"package":{"ecosystem":"RubyGems","name":"sprout"},"versions":["0.7.246"]}]}`))
+		if err != nil {
+			t.Fatalf("parseAdvisory: %v", err)
+		}
+		if len(patch.AffectedPackages) != 1 || patch.AffectedPackages[0].LastAffected != "0.7.246" {
+			t.Errorf("packages = %+v", patch.AffectedPackages)
+		}
+	})
+	t.Run("a range and an extra listed version produce both", func(t *testing.T) {
+		t.Parallel()
+		patch, err := parseAdvisory(strings.NewReader(`{"id":"GHSA-v2","affected":[{"package":{"ecosystem":"npm","name":"x"},
+			"ranges":[{"type":"SEMVER","events":[{"introduced":"1.0.0"},{"fixed":"2.0.0"}]}],"versions":["1.5.0","3.0.0"]}]}`))
+		if err != nil {
+			t.Fatalf("parseAdvisory: %v", err)
+		}
+		if len(patch.AffectedPackages) != 2 || patch.AffectedPackages[1].Introduced != "3.0.0" {
+			t.Errorf("packages = %+v", patch.AffectedPackages)
+		}
+	})
+}
 
 func TestIsAdvisoryEntry(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
+		name  string
 		input string
-		want bool
+		want  bool
 	}{
 		{"json suffix", "Go/GHSA-abc-123.json", true},
 		{"txt suffix", "Go/GHSA-abc-123.txt", false},
@@ -642,10 +748,10 @@ func TestAdapterRateLimiterNonNil(t *testing.T) {
 	if a == nil {
 		t.Fatal("New returned nil")
 	}
-	if a.rateLimiter == nil {
+	if a.pager.RateLimiter == nil {
 		t.Fatal("rateLimiter is nil — adapter would panic on Wait")
 	}
-	if a.client == nil {
+	if a.pager.Client == nil {
 		t.Fatal("client is nil — adapter would panic on Fetch")
 	}
 }
@@ -747,10 +853,7 @@ func TestFetch_Success(t *testing.T) {
 		},
 	})
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/zip")
-		_, _ = w.Write(zipData)
-	}))
+	ts := httptest.NewServer(newTestBucket(zipData, backfillCSV))
 	defer ts.Close()
 
 	adapter := newTestAdapter(ts)
@@ -786,52 +889,6 @@ func TestFetch_Success(t *testing.T) {
 	}
 }
 
-func TestFetch_IncrementalSkipsOldEntries(t *testing.T) {
-	t.Parallel()
-
-	oldTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	newTime := time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC)
-
-	oldHeader := &zip.FileHeader{Modified: oldTime, Method: zip.Deflate}
-	newHeader := &zip.FileHeader{Modified: newTime, Method: zip.Deflate}
-
-	zipData := buildOSVZip(t, []zipEntry{
-		{
-			name:    "Go/GHSA-old0-old0-old0.json",
-			content: minimalOSVAdvisoryJSON("GHSA-old0-old0-old0", nil),
-			header:  oldHeader,
-		},
-		{
-			name:    "Go/GHSA-new0-new0-new0.json",
-			content: minimalOSVAdvisoryJSON("GHSA-new0-new0-new0", nil),
-			header:  newHeader,
-		},
-	})
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/zip")
-		_, _ = w.Write(zipData)
-	}))
-	defer ts.Close()
-
-	// Cursor: last_modified = 2024-03-01 (between old and new entries).
-	cursorTime := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
-	cursorJSON, _ := json.Marshal(Cursor{LastModified: cursorTime})
-
-	adapter := newTestAdapter(ts)
-	result, err := adapter.Fetch(context.Background(), cursorJSON)
-	if err != nil {
-		t.Fatalf("Fetch returned error: %v", err)
-	}
-
-	if len(result.Patches) != 1 {
-		t.Fatalf("Patches len = %d, want 1 (old entry should be skipped)", len(result.Patches))
-	}
-	if result.Patches[0].SourceID != "GHSA-new0-new0-new0" {
-		t.Errorf("SourceID = %q, want %q", result.Patches[0].SourceID, "GHSA-new0-new0-new0")
-	}
-}
-
 func TestFetch_HTTPError(t *testing.T) {
 	t.Parallel()
 
@@ -860,10 +917,7 @@ func TestFetch_AliasResolution(t *testing.T) {
 		},
 	})
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/zip")
-		_, _ = w.Write(zipData)
-	}))
+	ts := httptest.NewServer(newTestBucket(zipData, backfillCSV))
 	defer ts.Close()
 
 	adapter := newTestAdapter(ts)
@@ -898,10 +952,7 @@ func TestFetch_NonJSONEntriesSkipped(t *testing.T) {
 		},
 	})
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/zip")
-		_, _ = w.Write(zipData)
-	}))
+	ts := httptest.NewServer(newTestBucket(zipData, backfillCSV))
 	defer ts.Close()
 
 	adapter := newTestAdapter(ts)
@@ -915,5 +966,47 @@ func TestFetch_NonJSONEntriesSkipped(t *testing.T) {
 	}
 	if result.Patches[0].SourceID != "GHSA-json-only-0001" {
 		t.Errorf("SourceID = %q, want %q", result.Patches[0].SourceID, "GHSA-json-only-0001")
+	}
+}
+
+// A first backfill is returned in pages, so the feed handler checkpoints each
+// page and a later job resumes the pass instead of restarting it.
+func TestFetch_FirstBackfillIsPaged(t *testing.T) {
+	t.Parallel()
+
+	zipData := buildOSVZip(t, []zipEntry{
+		{name: "PyPI/PYSEC-2024-3.json", content: minimalOSVAdvisoryJSON("PYSEC-2024-3", nil)},
+		{name: "Go/GO-2024-1.json", content: minimalOSVAdvisoryJSON("GO-2024-1", []string{"CVE-2024-1111"})},
+		{name: "npm/GHSA-aaaa-bbbb-cccc.json", content: minimalOSVAdvisoryJSON("GHSA-aaaa-bbbb-cccc", nil)},
+	})
+	ts := httptest.NewServer(newTestBucket(zipData, backfillCSV))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	if adapter.pager.PageSize != feed.ArchivePageSize {
+		t.Errorf("PageSize = %d, want feed.ArchivePageSize (%d)", adapter.pager.PageSize, feed.ArchivePageSize)
+	}
+	adapter.pager.PageSize = 2
+	var closer io.Closer = adapter
+	defer closer.Close() //nolint:errcheck
+
+	page1, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Fetch page 1: %v", err)
+	}
+	if page1.LastPage || len(page1.Patches) != 2 || page1.Patches[0].CVEID != "CVE-2024-1111" {
+		t.Fatalf("page 1: LastPage=%v patches=%d; want 2 patches starting with Go/GO-2024-1 as CVE-2024-1111, not last",
+			page1.LastPage, len(page1.Patches))
+	}
+	page2, err := adapter.Fetch(context.Background(), page1.NextCursor)
+	if err != nil {
+		t.Fatalf("Fetch page 2: %v", err)
+	}
+	// Byte order puts "PyPI/" before "npm/".
+	if !page2.LastPage || len(page2.Patches) != 1 || page2.Patches[0].SourceID != "GHSA-aaaa-bbbb-cccc" {
+		t.Fatalf("page 2: LastPage=%v patches=%d; want only GHSA-aaaa-bbbb-cccc on the last page", page2.LastPage, len(page2.Patches))
+	}
+	if page2.SourceMeta.SourceName != SourceName {
+		t.Errorf("SourceName = %q, want %q", page2.SourceMeta.SourceName, SourceName)
 	}
 }

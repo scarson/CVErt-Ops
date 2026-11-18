@@ -58,8 +58,7 @@ func (srv *Server) createGroupHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req createGroupBody
-	if detail := decodeJSON(r, &req); detail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", detail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
@@ -171,8 +170,7 @@ func (srv *Server) updateGroupHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req updateGroupBody
-	if detail := decodeJSON(r, &req); detail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", detail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -346,8 +344,7 @@ func (srv *Server) addGroupMemberHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req addGroupMemberBody
-	if detail := decodeJSON(r, &req); detail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", detail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -344,6 +345,81 @@ func TestWatchlistItem_UnknownEcosystem(t *testing.T) {
 	}
 }
 
+// TestWatchlistItem_UnknownEcosystemListsCanonicalNames verifies the 422 for a name
+// outside the vocabulary tells the caller which names are accepted.
+func TestWatchlistItem_UnknownEcosystemListsCanonicalNames(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+	token, orgID, wlID := watchlistFixture(t, ctx, ts, "alice@example.com")
+
+	resp := doCreateWatchlistItem(t, ctx, ts, token, orgID, wlID,
+		`{"item_type":"package","ecosystem":"cargo","package_name":"serde"}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("cargo: got %d, want 422", resp.StatusCode)
+	}
+	var problem struct {
+		Errors []struct {
+			Message  string `json:"message"`
+			Location string `json:"location"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if len(problem.Errors) == 0 {
+		t.Fatal("expected at least one error detail")
+	}
+	if !strings.Contains(problem.Errors[0].Message, "crates.io") {
+		t.Errorf("errors[0].message = %q, want it to name crates.io", problem.Errors[0].Message)
+	}
+	if problem.Errors[0].Location != "body.ecosystem" {
+		t.Errorf("errors[0].location = %q, want body.ecosystem", problem.Errors[0].Location)
+	}
+}
+
+// TestWatchlistItem_StoresEcosystemAndPackageAsSent verifies an accepted package item
+// is returned with the spelling the caller sent.
+func TestWatchlistItem_StoresEcosystemAndPackageAsSent(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+	token, orgID, wlID := watchlistFixture(t, ctx, ts, "alice@example.com")
+
+	tests := []struct {
+		name, ecosystem, packageName string
+	}{
+		{"ecosystem with a release", "Debian:13", "openssl"},
+		{"package name with separators and capitals", "PyPI", "Foo_Bar"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"item_type":"package","ecosystem":%q,"package_name":%q}`, tt.ecosystem, tt.packageName)
+			resp := doCreateWatchlistItem(t, ctx, ts, token, orgID, wlID, body)
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			if resp.StatusCode != http.StatusCreated {
+				t.Fatalf("got %d, want 201", resp.StatusCode)
+			}
+			var item struct {
+				Ecosystem   string `json:"ecosystem"`
+				PackageName string `json:"package_name"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&item); err != nil {
+				t.Fatalf("decode item: %v", err)
+			}
+			if item.Ecosystem != tt.ecosystem {
+				t.Errorf("ecosystem = %q, want %q", item.Ecosystem, tt.ecosystem)
+			}
+			if item.PackageName != tt.packageName {
+				t.Errorf("package_name = %q, want %q", item.PackageName, tt.packageName)
+			}
+		})
+	}
+}
+
 // TestWatchlistItem_MalformedCPE verifies 422 for a CPE that doesn't start with cpe:2.3:.
 func TestWatchlistItem_MalformedCPE(t *testing.T) {
 	t.Parallel()
@@ -533,7 +609,7 @@ func TestWatchlist_CrossOrgReadWriteIsolation(t *testing.T) {
 
 	// Bob cannot add items to Alice's watchlist.
 	addItemResp := doCreateWatchlistItem(t, ctx, ts, bobToken, aliceReg.OrgID, aliceWL.ID,
-		`{"item_type":"package","ecosystem":"pypi","package_name":"requests"}`)
+		`{"item_type":"package","ecosystem":"PyPI","package_name":"requests"}`)
 	defer addItemResp.Body.Close() //nolint:errcheck,gosec // G104
 	if addItemResp.StatusCode != http.StatusForbidden {
 		t.Errorf("cross-org add item: got %d, want 403", addItemResp.StatusCode)
@@ -583,6 +659,142 @@ func TestWatchlist_PatchEmptyName(t *testing.T) {
 	defer patchResp2.Body.Close() //nolint:errcheck,gosec // G104
 	if patchResp2.StatusCode != http.StatusUnprocessableEntity {
 		t.Errorf("patch whitespace name: got %d, want 422", patchResp2.StatusCode)
+	}
+}
+
+// TestWatchlist_PatchGroupID verifies that PATCH keeps the group when group_id
+// is omitted, clears it when group_id is null, and sets it when given an ID.
+func TestWatchlist_PatchGroupID(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	groupResp := doCreateGroup(t, ctx, ts, token, aliceReg.OrgID, "Engineering", "Engineering team")
+	defer groupResp.Body.Close() //nolint:errcheck,gosec // G104
+	if groupResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create group: got %d, want 201", groupResp.StatusCode)
+	}
+	var group groupEntry
+	if err := json.NewDecoder(groupResp.Body).Decode(&group); err != nil {
+		t.Fatalf("decode group: %v", err)
+	}
+
+	createResp := doCreateWatchlist(t, ctx, ts, token, aliceReg.OrgID,
+		`{"name":"Grouped","group_id":"`+group.ID+`"}`)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
+	}
+	var wl watchlistEntry
+	if err := json.NewDecoder(createResp.Body).Decode(&wl); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	patch := func(body string) watchlistEntry {
+		t.Helper()
+		resp := doPatchWatchlist(t, ctx, ts, token, aliceReg.OrgID, wl.ID, body)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("patch %s: got %d, want 200", body, resp.StatusCode)
+		}
+		var got watchlistEntry
+		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+			t.Fatalf("decode patch: %v", err)
+		}
+		return got
+	}
+
+	// Omitted group_id keeps the group.
+	if got := patch(`{"name":"Renamed"}`); got.GroupID == nil || *got.GroupID != group.ID {
+		t.Errorf("after rename: group_id = %v, want %s", got.GroupID, group.ID)
+	}
+
+	// group_id null clears the group.
+	if got := patch(`{"group_id":null}`); got.GroupID != nil {
+		t.Errorf("after null: group_id = %s, want none", *got.GroupID)
+	}
+
+	// group_id with an ID sets the group.
+	if got := patch(`{"group_id":"` + group.ID + `"}`); got.GroupID == nil || *got.GroupID != group.ID {
+		t.Errorf("after set: group_id = %v, want %s", got.GroupID, group.ID)
+	}
+}
+
+// TestWatchlist_GroupMustBelongToOrg verifies that create and PATCH reject a
+// group_id that names another org's group, a deleted group or no group.
+func TestWatchlist_GroupMustBelongToOrg(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	aliceLogin := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer aliceLogin.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLogin, "access_token")
+
+	otherOrg := db.MustCreateOrg(t, ctx, "Other Org")
+	otherGroup := db.MustCreateGroup(t, ctx, otherOrg.ID, "Other Team", "another org's group")
+
+	aliceOrgID := mustParseUUID(t, aliceReg.OrgID)
+	deletedGroup := db.MustCreateGroup(t, ctx, aliceOrgID, "Disbanded", "deleted group").ID.String()
+	delResp := doDeleteGroup(t, ctx, ts, aliceToken, aliceReg.OrgID, deletedGroup)
+	defer delResp.Body.Close() //nolint:errcheck,gosec // G104
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete group: got %d, want 204", delResp.StatusCode)
+	}
+
+	createResp := doCreateWatchlist(t, ctx, ts, aliceToken, aliceReg.OrgID, `{"name":"Ungrouped"}`)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
+	}
+	var wl watchlistEntry
+	if err := json.NewDecoder(createResp.Body).Decode(&wl); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		groupID string
+	}{
+		{name: "other org", groupID: otherGroup.ID.String()},
+		{name: "deleted", groupID: deletedGroup},
+		{name: "nonexistent", groupID: uuid.NewString()},
+	}
+	for _, tt := range tests {
+		t.Run("create/"+tt.name, func(t *testing.T) {
+			resp := doCreateWatchlist(t, ctx, ts, aliceToken, aliceReg.OrgID,
+				`{"name":"WL `+tt.name+`","group_id":"`+tt.groupID+`"}`)
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Errorf("got %d, want 422", resp.StatusCode)
+			}
+		})
+		t.Run("patch/"+tt.name, func(t *testing.T) {
+			resp := doPatchWatchlist(t, ctx, ts, aliceToken, aliceReg.OrgID, wl.ID,
+				`{"group_id":"`+tt.groupID+`"}`)
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Errorf("got %d, want 422", resp.StatusCode)
+			}
+		})
+	}
+
+	getResp := doGetWatchlist(t, ctx, ts, aliceToken, aliceReg.OrgID, wl.ID)
+	defer getResp.Body.Close() //nolint:errcheck,gosec // G104
+	var got watchlistEntry
+	if err := json.NewDecoder(getResp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if got.GroupID != nil {
+		t.Errorf("group_id = %s after rejected patches, want none", *got.GroupID)
 	}
 }
 
@@ -1189,8 +1401,10 @@ func TestWatchlistItemCursorOpaque(t *testing.T) {
 		t.Fatalf("list page 1: got %d, want 200", page1Resp.StatusCode)
 	}
 	var page1 struct {
-		Items      []struct{ ID string `json:"id"` } `json:"items"`
-		NextCursor string                             `json:"next_cursor"`
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		NextCursor string `json:"next_cursor"`
 	}
 	if err := json.NewDecoder(page1Resp.Body).Decode(&page1); err != nil {
 		t.Fatalf("decode page 1: %v", err)
@@ -1214,8 +1428,10 @@ func TestWatchlistItemCursorOpaque(t *testing.T) {
 		t.Fatalf("list page 2: got %d, want 200", page2Resp.StatusCode)
 	}
 	var page2 struct {
-		Items      []struct{ ID string `json:"id"` } `json:"items"`
-		NextCursor string                             `json:"next_cursor"`
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		NextCursor string `json:"next_cursor"`
 	}
 	if err := json.NewDecoder(page2Resp.Body).Decode(&page2); err != nil {
 		t.Fatalf("decode page 2: %v", err)
@@ -1240,4 +1456,3 @@ func TestWatchlistItemCursorOpaque(t *testing.T) {
 		t.Errorf("page 2 next_cursor = %q, want empty (no more pages)", page2.NextCursor)
 	}
 }
-

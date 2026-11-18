@@ -5,6 +5,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -36,8 +38,7 @@ func (srv *Server) scimCreateGroup(w http.ResponseWriter, r *http.Request) {
 	slog.InfoContext(ctx, "scim create group", slog.String("org_id", orgID.String()))
 
 	var body scimGroupRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeSCIMError(w, http.StatusBadRequest, "invalidValue", "invalid JSON body")
+	if !decodeSCIMBody(w, r, &body, "invalidValue") {
 		return
 	}
 
@@ -217,8 +218,7 @@ func (srv *Server) scimReplaceGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body scimGroupRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeSCIMError(w, http.StatusBadRequest, "invalidValue", "invalid JSON body")
+	if !decodeSCIMBody(w, r, &body, "invalidValue") {
 		return
 	}
 
@@ -344,8 +344,7 @@ func (srv *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var patch SCIMPatchOp
-	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
-		writeSCIMError(w, http.StatusBadRequest, "invalidValue", "invalid JSON body")
+	if !decodeSCIMBody(w, r, &patch, "invalidValue") {
 		return
 	}
 
@@ -368,7 +367,13 @@ func (srv *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request) {
 		switch opLower {
 		case "add":
 			if pathLower == "members" {
-				userIDs := extractMemberValues(op.Value)
+				userIDs, err := extractMemberValues(op.Value)
+				if err != nil {
+					// The error names JSON pointers, member names and Go types, never member values.
+					slog.DebugContext(ctx, "scim: patch add members value refused", "error", err)
+					writeSCIMError(w, http.StatusBadRequest, "invalidValue", "invalid members value")
+					return
+				}
 				for _, userID := range userIDs {
 					if addErr := srv.store.AddSCIMGroupMember(ctx, group.ID, userID, orgID); addErr != nil {
 						slog.ErrorContext(ctx, "scim: patch add member", "user_id", userID, "error", addErr)
@@ -379,7 +384,13 @@ func (srv *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request) {
 			}
 
 		case "remove":
-			userIDs := srv.extractRemoveTargets(op)
+			userIDs, err := srv.extractRemoveTargets(op)
+			if err != nil {
+				// The error names JSON pointers, member names and Go types, never member values.
+				slog.DebugContext(ctx, "scim: patch remove members value refused", "error", err)
+				writeSCIMError(w, http.StatusBadRequest, "invalidValue", "invalid members value")
+				return
+			}
 			for _, userID := range userIDs {
 				if rmErr := srv.store.RemoveSCIMGroupMember(ctx, orgID, group.ID, userID); rmErr != nil {
 					slog.ErrorContext(ctx, "scim: patch remove member", "user_id", userID, "error", rmErr)
@@ -566,43 +577,56 @@ func (srv *Server) processGroupMemberRemove(ctx context.Context, orgID, userID, 
 }
 
 // extractMemberValues parses member references from a SCIM PATCH value field.
-// Handles both: [{value: "uuid"}, ...] and single {value: "uuid"}.
-func extractMemberValues(raw json.RawMessage) []uuid.UUID {
-	// Try array of member objects.
+// Handles both: [{value: "uuid"}, ...] and single {value: "uuid"}. An absent
+// or null value has no members. Members are decoded with scimJSONOptions, so a
+// member object that names one attribute twice (in any spelling) is an error,
+// as is a value that is neither an array nor an object. Member values that are
+// not UUIDs are skipped.
+func extractMemberValues(raw json.RawMessage) ([]uuid.UUID, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
 	var members []SCIMGroupMember
-	if err := json.Unmarshal(raw, &members); err == nil {
-		result := make([]uuid.UUID, 0, len(members))
-		for _, m := range members {
-			uid, err := uuid.Parse(m.Value)
-			if err == nil {
-				result = append(result, uid)
-			}
+	switch jsontext.Value(raw).Kind() {
+	case jsontext.KindNull:
+		return nil, nil
+	case jsontext.KindBeginArray:
+		if err := jsonv2.Unmarshal(raw, &members, scimJSONOptions); err != nil {
+			return nil, fmt.Errorf("decode members array: %w", err)
 		}
-		return result
+	case jsontext.KindBeginObject:
+		var single SCIMGroupMember
+		if err := jsonv2.Unmarshal(raw, &single, scimJSONOptions); err != nil {
+			return nil, fmt.Errorf("decode member object: %w", err)
+		}
+		members = []SCIMGroupMember{single}
+	default:
+		return nil, fmt.Errorf("members value must be an array or an object, got %s", jsontext.Value(raw).Kind())
 	}
 
-	// Try single member object.
-	var single SCIMGroupMember
-	if err := json.Unmarshal(raw, &single); err == nil {
-		uid, err := uuid.Parse(single.Value)
+	result := make([]uuid.UUID, 0, len(members))
+	for _, m := range members {
+		uid, err := uuid.Parse(m.Value)
 		if err == nil {
-			return []uuid.UUID{uid}
+			result = append(result, uid)
 		}
 	}
-
-	return nil
+	return result, nil
 }
 
 // extractRemoveTargets extracts user UUIDs from a remove operation.
 // Supports two formats:
 //  1. Standard: path = members[value eq "user-uuid"]
 //  2. Entra ID: path = "members", value = [{value: "user-uuid"}, ...]
-func (srv *Server) extractRemoveTargets(op SCIMPatchOperation) []uuid.UUID {
+//
+// It returns extractMemberValues' error for a format 2 value it refuses.
+func (srv *Server) extractRemoveTargets(op SCIMPatchOperation) ([]uuid.UUID, error) {
 	// Format 1: path filter expression.
 	if matches := memberFilterRE.FindStringSubmatch(op.Path); len(matches) == 2 {
 		uid, err := uuid.Parse(matches[1])
 		if err == nil {
-			return []uuid.UUID{uid}
+			return []uuid.UUID{uid}, nil
 		}
 	}
 
@@ -611,7 +635,7 @@ func (srv *Server) extractRemoveTargets(op SCIMPatchOperation) []uuid.UUID {
 		return extractMemberValues(op.Value)
 	}
 
-	return nil
+	return nil, nil
 }
 
 // matchesSCIMGroupFilter checks if a group matches the given SCIM filter expressions.

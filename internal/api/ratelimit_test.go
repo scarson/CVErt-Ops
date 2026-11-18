@@ -62,9 +62,9 @@ func TestAuthRateLimit_Returns429AfterBurst(t *testing.T) {
 		rateLimiter: newIPRateLimiter(rate.Limit(100), 2, time.Minute),
 	}
 	t.Cleanup(srv.Close)
-	handler := srv.authRateLimit()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := clientIPMiddleware(nil)(srv.authRateLimit()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	}))
+	})))
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 
@@ -95,9 +95,9 @@ func TestAuthRateLimit_RetryAfterHeader(t *testing.T) {
 		rateLimiter: newIPRateLimiter(rate.Limit(100), 1, time.Minute),
 	}
 	t.Cleanup(srv.Close)
-	handler := srv.authRateLimit()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := clientIPMiddleware(nil)(srv.authRateLimit()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	}))
+	})))
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 
@@ -105,7 +105,7 @@ func TestAuthRateLimit_RetryAfterHeader(t *testing.T) {
 	// First request: allowed (burst=1).
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL, nil)
 	resp, _ := ts.Client().Do(req) //nolint:gosec // G704 false positive
-	resp.Body.Close() //nolint:errcheck,gosec // G104: body close in test
+	resp.Body.Close()              //nolint:errcheck,gosec // G104: body close in test
 
 	// Second request: rate limited → must include Retry-After header.
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL, nil)
@@ -129,12 +129,12 @@ func TestAuthRateLimit_RetryAfterHeader(t *testing.T) {
 func TestClientIPMiddleware_SetsContextIP(t *testing.T) {
 	t.Parallel()
 	var gotIP string
-	handler := clientIPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := clientIPMiddleware(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotIP, _ = r.Context().Value(ctxClientIP).(string)
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
 	req.RemoteAddr = "192.168.1.100:12345"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -148,16 +148,16 @@ func TestClientIPMiddleware_SetsContextIP(t *testing.T) {
 }
 
 // TestClientIPMiddleware_NoPort verifies that clientIPMiddleware handles
-// RemoteAddr without a port (net.SplitHostPort fails, falls back to raw value).
+// RemoteAddr that is a bare IP without a port.
 func TestClientIPMiddleware_NoPort(t *testing.T) {
 	t.Parallel()
 	var gotIP string
-	handler := clientIPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := clientIPMiddleware(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotIP, _ = r.Context().Value(ctxClientIP).(string)
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
 	req.RemoteAddr = "10.0.0.1"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -172,12 +172,12 @@ func TestClientIPMiddleware_NoPort(t *testing.T) {
 func TestClientIPMiddleware_IPv6(t *testing.T) {
 	t.Parallel()
 	var gotIP string
-	handler := clientIPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := clientIPMiddleware(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotIP, _ = r.Context().Value(ctxClientIP).(string)
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
 	req.RemoteAddr = "[::1]:8080"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -251,12 +251,12 @@ func TestAuthRateLimit_ExtractsIPFromHostPort(t *testing.T) {
 		rateLimiter: newIPRateLimiter(rate.Limit(100), 1, time.Minute),
 	}
 
-	handler := srv.authRateLimit()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := clientIPMiddleware(nil)(srv.authRateLimit()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	}))
+	})))
 
 	// Request from same IP but different ports should share the same bucket.
-	req1 := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req1 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
 	req1.RemoteAddr = "172.16.0.1:11111"
 	rec1 := httptest.NewRecorder()
 	handler.ServeHTTP(rec1, req1)
@@ -264,7 +264,7 @@ func TestAuthRateLimit_ExtractsIPFromHostPort(t *testing.T) {
 		t.Fatalf("first request: got %d, want 200", rec1.Code)
 	}
 
-	req2 := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req2 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
 	req2.RemoteAddr = "172.16.0.1:22222"
 	rec2 := httptest.NewRecorder()
 	handler.ServeHTTP(rec2, req2)

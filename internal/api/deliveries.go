@@ -53,29 +53,34 @@ func checkReplayLimit(orgID uuid.UUID) bool {
 
 // ── Response types ────────────────────────────────────────────────────────────
 
-// deliveryEntry is the list item shape (no payload to keep list responses small).
-type deliveryEntry struct {
+// DeliveryEntry is the list item shape (no payload to keep list responses small).
+// It is exported so huma documents its fields where deliveryDetail embeds it.
+type DeliveryEntry struct {
 	ID              string  `json:"id"`
 	OrgID           string  `json:"org_id"`
 	RuleID          string  `json:"rule_id"`
 	ChannelID       string  `json:"channel_id"`
 	Kind            string  `json:"kind"`
-	ReportID        *string `json:"report_id,omitempty"`
+	ReportID        *string `json:"report_id,omitzero" nullable:"false"`
 	Status          string  `json:"status"`
 	AttemptCount    int32   `json:"attempt_count"`
 	SendAfter       string  `json:"send_after"`
-	LastAttemptedAt *string `json:"last_attempted_at,omitempty"`
-	DeliveredAt     *string `json:"delivered_at,omitempty"`
-	LastError       *string `json:"last_error,omitempty"`
+	LastAttemptedAt *string `json:"last_attempted_at,omitzero" nullable:"false"`
+	DeliveredAt     *string `json:"delivered_at,omitzero" nullable:"false"`
+	LastError       *string `json:"last_error,omitzero" nullable:"false"`
 	CreatedAt       string  `json:"created_at"`
 	UpdatedAt       string  `json:"updated_at"`
 }
 
-// deliveryDetail extends deliveryEntry with the full payload.
+// deliveryDetail extends DeliveryEntry with the full payload.
 type deliveryDetail struct {
-	deliveryEntry
+	DeliveryEntry
 	Payload json.RawMessage `json:"payload"`
 }
+
+// firstPageCursorTime is the created_at bound for a delivery list request with no cursor.
+// It is later than any created_at a delivery can have.
+var firstPageCursorTime = time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC)
 
 // deliveryCursor encodes the keyset pagination position for delivery lists.
 type deliveryCursor struct {
@@ -124,8 +129,10 @@ func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Keyset cursor.
-	cursorTime := time.Now().UTC()
+	// Keyset cursor. With no cursor, the bound is later than any created_at so the first
+	// page starts at the newest row. created_at comes from the database clock, which can
+	// lead the app clock, so the bound must not come from time.Now().
+	cursorTime := firstPageCursorTime
 	cursorID := uuid.Max
 	if c := q.Get("cursor"); c != "" {
 		var cur deliveryCursor
@@ -160,9 +167,9 @@ func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request)
 		rows = rows[:limit]
 	}
 
-	items := make([]deliveryEntry, len(rows))
+	items := make([]DeliveryEntry, len(rows))
 	for i, row := range rows {
-		entry := deliveryEntry{
+		entry := DeliveryEntry{
 			ID:           row.ID.String(),
 			OrgID:        row.OrgID.String(),
 			RuleID:       row.RuleID.UUID.String(),
@@ -186,8 +193,8 @@ func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request)
 			s := row.DeliveredAt.Time.Format(time.RFC3339)
 			entry.DeliveredAt = &s
 		}
-		if row.LastError.Valid {
-			s := row.LastError.String
+		if row.LastErrorForOrg.Valid {
+			s := row.LastErrorForOrg.String
 			entry.LastError = &s
 		}
 		items[i] = entry
@@ -231,7 +238,7 @@ func (srv *Server) getDeliveryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entry := deliveryEntry{
+	entry := DeliveryEntry{
 		ID:           row.ID.String(),
 		OrgID:        row.OrgID.String(),
 		RuleID:       row.RuleID.UUID.String(),
@@ -255,13 +262,13 @@ func (srv *Server) getDeliveryHandler(w http.ResponseWriter, r *http.Request) {
 		s := row.DeliveredAt.Time.Format(time.RFC3339)
 		entry.DeliveredAt = &s
 	}
-	if row.LastError.Valid {
-		s := row.LastError.String
+	if row.LastErrorForOrg.Valid {
+		s := row.LastErrorForOrg.String
 		entry.LastError = &s
 	}
 
 	writeJSON(w, http.StatusOK, deliveryDetail{
-		deliveryEntry: entry,
+		DeliveryEntry: entry,
 		Payload:       row.Payload,
 	})
 }

@@ -6,11 +6,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -191,6 +194,26 @@ func TestComputeNextCursor(t *testing.T) {
 		}
 	})
 
+	t.Run("window end within the overlap of effectiveNow returns caught-up cursor", func(t *testing.T) {
+		t.Parallel()
+		cur := Cursor{
+			WindowStart: baseTime.Add(-48 * time.Hour),
+			WindowEnd:   baseTime,
+		}
+		effectiveNow := baseTime.Add(2 * time.Second)
+		next, lastPage := computeNextCursor(cur, 100, effectiveNow)
+		if !lastPage {
+			t.Error("expected lastPage=true: a next window would only re-read this one")
+		}
+		if !next.WindowStart.Equal(baseTime.Add(-overlapDuration)) {
+			t.Errorf("WindowStart = %v, want %v", next.WindowStart, baseTime.Add(-overlapDuration))
+		}
+		// The next run starts here, so modifications after baseTime are not skipped.
+		if !next.WindowEnd.Equal(effectiveNow) {
+			t.Errorf("WindowEnd = %v, want %v", next.WindowEnd, effectiveNow)
+		}
+	})
+
 	t.Run("15 minute overlap applied to next window start", func(t *testing.T) {
 		t.Parallel()
 		windowEnd := baseTime
@@ -237,6 +260,95 @@ func TestComputeNextCursor(t *testing.T) {
 			t.Fatalf("WindowEnd = %v, want %v (capped to effectiveNow)", next.WindowEnd, effectiveNow)
 		}
 	})
+}
+
+// CaughtUp says the first full walk has reached the present, which the version
+// check endpoint reads as NVD data being complete. Once set it stays set.
+func TestComputeNextCursor_CaughtUp(t *testing.T) {
+	t.Parallel()
+
+	baseTime := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	window := func(caughtUp bool) Cursor {
+		return Cursor{WindowStart: baseTime.Add(-48 * time.Hour), WindowEnd: baseTime, CaughtUp: caughtUp}
+	}
+
+	t.Run("partway through a window", func(t *testing.T) {
+		t.Parallel()
+		next, lastPage := computeNextCursor(window(false), 5000, baseTime.Add(time.Hour))
+		if lastPage || next.CaughtUp {
+			t.Errorf("lastPage = %v, CaughtUp = %v, want both false", lastPage, next.CaughtUp)
+		}
+	})
+
+	t.Run("next window of a first walk", func(t *testing.T) {
+		t.Parallel()
+		next, lastPage := computeNextCursor(window(false), 100, baseTime.Add(72*time.Hour))
+		if lastPage || next.CaughtUp {
+			t.Errorf("lastPage = %v, CaughtUp = %v, want both false", lastPage, next.CaughtUp)
+		}
+	})
+
+	t.Run("all windows processed", func(t *testing.T) {
+		t.Parallel()
+		next, lastPage := computeNextCursor(window(false), 100, baseTime)
+		if !lastPage || !next.CaughtUp {
+			t.Errorf("lastPage = %v, CaughtUp = %v, want both true", lastPage, next.CaughtUp)
+		}
+	})
+
+	t.Run("more pages keep CaughtUp", func(t *testing.T) {
+		t.Parallel()
+		next, _ := computeNextCursor(window(true), 5000, baseTime.Add(time.Hour))
+		if !next.CaughtUp {
+			t.Error("CaughtUp = false after the more-pages path, want true")
+		}
+	})
+
+	t.Run("next window keeps CaughtUp", func(t *testing.T) {
+		t.Parallel()
+		next, lastPage := computeNextCursor(window(true), 100, baseTime.Add(72*time.Hour))
+		if lastPage {
+			t.Fatal("lastPage = true, want the next-window path")
+		}
+		if !next.CaughtUp {
+			t.Error("CaughtUp = false after the next-window path, want true")
+		}
+	})
+}
+
+func TestCursorCaughtUpJSON(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	b, err := json.Marshal(Cursor{WindowStart: start, WindowEnd: start.Add(time.Hour), CaughtUp: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(b, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["caught_up"] != true {
+		t.Errorf("JSON = %s, want caught_up true", b)
+	}
+	cur, err := parseCursor(b)
+	if err != nil {
+		t.Fatalf("parseCursor: %v", err)
+	}
+	if !cur.CaughtUp {
+		t.Error("parseCursor lost caught_up")
+	}
+
+	b, err = json.Marshal(Cursor{WindowStart: start, WindowEnd: start.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "caught_up") {
+		t.Errorf("JSON = %s, want caught_up omitted while false", b)
+	}
+	if zeroValueCursor().CaughtUp {
+		t.Error("a cleared cursor starts caught up, want false")
+	}
 }
 
 func TestParseNVDResponse(t *testing.T) {
@@ -419,6 +531,37 @@ func TestParseNVDResponse(t *testing.T) {
 		}
 		if !strings.Contains(buf.String(), "skipping malformed record") {
 			t.Errorf("expected warning log about skipped record, got: %s", buf.String())
+		}
+	})
+
+	t.Run("body that ends inside a record returns an error", func(t *testing.T) {
+		t.Parallel()
+		// A connection closed mid-page: the decoder's error is sticky, so a
+		// skip-and-continue loop would spin on the unread record forever.
+		body := `{
+			"totalResults": 2,
+			"vulnerabilities": [
+				{"cve": {"id": "CVE-2024-0001", "descriptions": [{"lang": "en", "value": "Good record"}]}},
+				{"cve": {"id": "CVE-2024-00`
+		type result struct {
+			patches []feed.CanonicalPatch
+			err     error
+		}
+		done := make(chan result, 1)
+		go func() {
+			patches, _, _, err := parseNVDResponse(strings.NewReader(body))
+			done <- result{patches, err}
+		}()
+		select {
+		case r := <-done:
+			if !errors.Is(r.err, io.ErrUnexpectedEOF) {
+				t.Fatalf("err = %v, want io.ErrUnexpectedEOF", r.err)
+			}
+			if r.patches != nil {
+				t.Fatalf("patches = %d, want none from a truncated page", len(r.patches))
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("parseNVDResponse did not return on a truncated body")
 		}
 	})
 
@@ -747,6 +890,53 @@ func TestCveToCanonical(t *testing.T) {
 			t.Errorf("CPENormalized = %q, want lowercase", p.AffectedCPEs[0].CPENormalized)
 		}
 	})
+}
+
+func TestCveToCanonical_MalformedAffectedKeepsTheCVE(t *testing.T) {
+	t.Parallel()
+
+	for _, affected := range []string{`"not an array"`, `[{"source": 7}]`} {
+		p := cveToCanonical(nvdCVE{
+			ID:               "CVE-2024-5008",
+			SourceIdentifier: "cna@example.com",
+			Affected:         json.RawMessage(affected),
+		})
+		if p == nil || p.CVEID != "CVE-2024-5008" {
+			t.Fatalf("affected %s: patch = %+v, want the CVE kept", affected, p)
+		}
+		if len(p.CNAAffected) != 0 {
+			t.Errorf("affected %s: CNAAffected = %+v, want none", affected, p.CNAAffected)
+		}
+	}
+}
+
+func TestCveToCanonical_CPEMatchesStripNullBytes(t *testing.T) {
+	t.Parallel()
+
+	p := cveToCanonical(nvdCVE{
+		ID: "CVE-2024-5007",
+		Configurations: []nvdConfig{{Nodes: []nvdNode{{CPEMatch: []nvdCPEMatch{{
+			Criteria:              "cpe:2.3:a:vendor:\x00product:*:*:*:*:*:*:*:*",
+			VersionStartIncluding: "1.\x000",
+			VersionStartExcluding: "1.\x001",
+			VersionEndIncluding:   "2.\x000",
+			VersionEndExcluding:   "2.\x001",
+			Vulnerable:            true,
+		}}}}}},
+	})
+
+	want := feed.CPEMatch{
+		CPE:                   "cpe:2.3:a:vendor:product:*:*:*:*:*:*:*:*",
+		CPENormalized:         "cpe:2.3:a:vendor:product:*:*:*:*:*:*:*:*",
+		VersionStartIncluding: "1.0",
+		VersionStartExcluding: "1.1",
+		VersionEndIncluding:   "2.0",
+		VersionEndExcluding:   "2.1",
+		Vulnerable:            true,
+	}
+	if len(p.CPEMatches) != 1 || p.CPEMatches[0] != want {
+		t.Errorf("CPEMatches = %+v, want [%+v]", p.CPEMatches, want)
+	}
 }
 
 func TestCveToCanonical_NullByteStripping(t *testing.T) {
@@ -1292,6 +1482,194 @@ func TestFetch_LastPage(t *testing.T) {
 	}
 	if len(result.Patches) != 2 {
 		t.Fatalf("len(Patches) = %d, want 2", len(result.Patches))
+	}
+}
+
+const emptyNVDResponse = `{"totalResults":0,"timestamp":"2025-06-01T12:00:00.000","vulnerabilities":[]}`
+
+// newScriptedAdapter returns an adapter whose server answers each request with
+// respond(n), n counting from 1, and a function reporting the lastModStartDate
+// values it received.
+func newScriptedAdapter(t *testing.T, respond func(n int) string) (*Adapter, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var starts []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		starts = append(starts, r.URL.Query().Get("lastModStartDate"))
+		n := len(starts)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(respond(n)))
+	}))
+	t.Cleanup(ts.Close)
+
+	adapter := &Adapter{
+		client:      &http.Client{Transport: &redirectTransport{targetURL: ts.URL, inner: http.DefaultTransport}},
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+	}
+	return adapter, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), starts...)
+	}
+}
+
+// The handler ends a run on an empty page, and NVD has no modifications in its
+// earliest windows, so Fetch walks past empty windows to the next page with data.
+func TestFetch_WalksPastEmptyWindows(t *testing.T) {
+	t.Parallel()
+
+	adapter, starts := newScriptedAdapter(t, func(n int) string {
+		if n <= 2 {
+			return emptyNVDResponse
+		}
+		return validNVDResponse
+	})
+	cursorJSON, _ := json.Marshal(Cursor{
+		WindowStart: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		WindowEnd:   time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+	})
+
+	result, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(result.Patches) != 2 {
+		t.Fatalf("len(Patches) = %d, want 2", len(result.Patches))
+	}
+	if result.LastPage {
+		t.Error("LastPage = true, want false: later windows remain")
+	}
+	got := starts()
+	if len(got) != 3 {
+		t.Fatalf("requests = %d, want 3: %v", len(got), got)
+	}
+	if got[0] >= got[1] || got[1] >= got[2] {
+		t.Errorf("window starts do not advance: %v", got)
+	}
+}
+
+// Walking past empty windows must carry CaughtUp, or a later run would report
+// NVD data as incomplete again.
+func TestFetch_WalkPastEmptyWindowsKeepsCaughtUp(t *testing.T) {
+	t.Parallel()
+
+	adapter, _ := newScriptedAdapter(t, func(n int) string {
+		if n <= 2 {
+			return emptyNVDResponse
+		}
+		return validNVDResponse
+	})
+	cursorJSON, err := json.Marshal(Cursor{
+		WindowStart: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		WindowEnd:   time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+		CaughtUp:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	// The final page sets CaughtUp whatever the input says, so the carry is only
+	// tested while the result comes from a page before it.
+	if result.LastPage {
+		t.Fatal("LastPage = true, want a page before the end of the walk")
+	}
+	var next Cursor
+	if err := json.Unmarshal(result.NextCursor, &next); err != nil {
+		t.Fatalf("NextCursor: %v", err)
+	}
+	if !next.CaughtUp {
+		t.Errorf("NextCursor = %s, want caught_up true", result.NextCursor)
+	}
+}
+
+func TestFetch_FirstWalkEndsCaughtUp(t *testing.T) {
+	t.Parallel()
+
+	adapter, _ := newScriptedAdapter(t, func(int) string { return emptyNVDResponse })
+	cursorJSON, err := json.Marshal(Cursor{
+		WindowStart: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		WindowEnd:   time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if !result.LastPage {
+		t.Fatal("LastPage = false, want true")
+	}
+	var next Cursor
+	if err := json.Unmarshal(result.NextCursor, &next); err != nil {
+		t.Fatalf("NextCursor: %v", err)
+	}
+	if !next.CaughtUp {
+		t.Errorf("NextCursor = %s, want caught_up true at the end of the walk", result.NextCursor)
+	}
+}
+
+func TestFetch_AllWindowsEmptyEndsOnLastPage(t *testing.T) {
+	t.Parallel()
+
+	adapter, starts := newScriptedAdapter(t, func(int) string { return emptyNVDResponse })
+	cursorJSON, _ := json.Marshal(Cursor{
+		WindowStart: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		WindowEnd:   time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+	})
+
+	result, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if !result.LastPage {
+		t.Error("LastPage = false, want true: every window up to now is empty")
+	}
+	if len(result.Patches) != 0 {
+		t.Errorf("len(Patches) = %d, want 0", len(result.Patches))
+	}
+	if len(starts()) < 2 {
+		t.Errorf("requests = %d, want the walk to continue past the first window", len(starts()))
+	}
+}
+
+// NVD's timestamp advances on every response, so a window ending at the previous
+// response's timestamp is always slightly behind. The run must still end, or it
+// loops for as long as anything was modified in the last 15 minutes.
+func TestFetch_RunEndsWhenResponseTimestampAdvances(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	adapter, _ := newScriptedAdapter(t, func(n int) string {
+		timestamp := start.Add(time.Duration(n) * 2 * time.Second).Format("2006-01-02T15:04:05.000")
+		return strings.Replace(validNVDResponse, "2025-06-01T12:00:00.000", timestamp, 1)
+	})
+	cursor, _ := json.Marshal(Cursor{
+		WindowStart: start.Add(-48 * time.Hour),
+		WindowEnd:   start.Add(-time.Hour),
+	})
+
+	const maxCalls = 5
+	for call := 1; ; call++ {
+		if call > maxCalls {
+			t.Fatalf("no LastPage after %d calls", maxCalls)
+		}
+		result, err := adapter.Fetch(context.Background(), cursor)
+		if err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		if result.LastPage {
+			return
+		}
+		cursor = result.NextCursor
 	}
 }
 

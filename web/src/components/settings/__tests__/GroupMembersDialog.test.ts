@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mount, flushPromises, VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import GroupMembersDialog from '@/components/settings/GroupMembersDialog.vue'
 
 vi.mock('vue-router', () => ({
   useRoute: vi.fn<() => unknown>(() => ({ params: {} })),
@@ -93,8 +94,6 @@ function bodyText(): string {
 let wrapper: VueWrapper
 
 async function mountDialog(props: { open?: boolean; groupId?: string; groupName?: string } = {}) {
-  const { default: GroupMembersDialog } =
-    await import('@/components/settings/GroupMembersDialog.vue')
   wrapper = mount(GroupMembersDialog, {
     props: {
       open: true,

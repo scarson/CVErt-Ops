@@ -6,12 +6,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/scarson/cvert-ops/internal/feed"
 )
@@ -101,6 +104,40 @@ func TestParseKEV_ShortCircuit(t *testing.T) {
 	}
 	if len(patches) != 0 {
 		t.Errorf("expected empty patches on short-circuit, got %d", len(patches))
+	}
+}
+
+func TestParseKEV_BodyEndingInsideRecordReturnsError(t *testing.T) {
+	t.Parallel()
+
+	// A connection closed mid-catalog: the decoder's error is sticky, so a
+	// skip-and-continue loop would spin on the unread record forever.
+	body := `{
+		"catalogVersion": "2024.09.03",
+		"dateReleased": "2024-09-03",
+		"vulnerabilities": [
+			{"cveID": "CVE-2024-5555", "vendorProject": "Acme"},
+			{"cveID": "CVE-2024-55`
+
+	type result struct {
+		patches []feed.CanonicalPatch
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		patches, _, _, err := parseKEV(strings.NewReader(body), "")
+		done <- result{patches, err}
+	}()
+	select {
+	case r := <-done:
+		if !errors.Is(r.err, io.ErrUnexpectedEOF) {
+			t.Fatalf("err = %v, want io.ErrUnexpectedEOF", r.err)
+		}
+		if r.patches != nil {
+			t.Fatalf("patches = %d, want none from a truncated catalog", len(r.patches))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("parseKEV did not return on a truncated body")
 	}
 }
 

@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mount, flushPromises, VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import WatchlistDetailView from '@/views/WatchlistDetailView.vue'
 
 let mockRouteParams: Record<string, string> = { id: 'wl-123' }
 const mockPush = vi.fn<(...args: unknown[]) => unknown>()
@@ -134,7 +135,6 @@ async function clickTestId(testId: string) {
 let wrapper: VueWrapper
 
 async function mountView() {
-  const { default: WatchlistDetailView } = await import('@/views/WatchlistDetailView.vue')
   wrapper = mount(WatchlistDetailView, {
     attachTo: document.body,
   })
@@ -234,6 +234,37 @@ describe('WatchlistDetailView', () => {
       await flushPromises()
 
       expect(wrapper.text()).toContain('cpe:2.3:a:apache:log4j')
+    })
+
+    it('renders a CVE item by its ID', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([
+        { id: 'v1', item_type: 'cve', cve_id: 'CVE-2024-3094', created_at: '2025-01-12T00:00:00Z' },
+      ])
+      await mountView()
+      await flushPromises()
+
+      const row = wrapper.find('[data-testid="item-row-v1"]')
+      expect(row.find('[data-testid="item-identifier"]').text()).toBe('CVE-2024-3094')
+      expect(row.find('[data-testid="item-type-badge"]').text()).toBe('cve')
+    })
+
+    it('says when the table shows only part of a long watchlist', async () => {
+      mockWatchlistSuccess(makeWatchlist({ item_count: 1200 }))
+      mockItemsSuccess([makePackageItem()], 'next-page')
+      await mountView()
+      await flushPromises()
+
+      expect(wrapper.find('[data-testid="items-partial-note"]').text()).toContain('1 of 1200')
+    })
+
+    it('does not show the partial note when every item is on the page', async () => {
+      mockWatchlistSuccess(makeWatchlist({ item_count: 1 }))
+      mockItemsSuccess([makePackageItem()])
+      await mountView()
+      await flushPromises()
+
+      expect(wrapper.find('[data-testid="items-partial-note"]').exists()).toBe(false)
     })
 
     it('renders empty items state', async () => {
@@ -347,6 +378,8 @@ describe('WatchlistDetailView', () => {
         '/orgs/{org_id}/watchlists/{id}',
         expect.objectContaining({
           params: { path: { org_id: TEST_ORG_ID, id: 'wl-123' } },
+          // Only the changed field is sent: an omitted field keeps its value.
+          body: { name: 'Updated Name' },
         }),
       )
 

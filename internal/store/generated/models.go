@@ -20,6 +20,7 @@ type WatchlistItemType string
 const (
 	WatchlistItemTypePackage WatchlistItemType = "package"
 	WatchlistItemTypeCpe     WatchlistItemType = "cpe"
+	WatchlistItemTypeCve     WatchlistItemType = "cve"
 )
 
 func (e *WatchlistItemType) Scan(src interface{}) error {
@@ -111,23 +112,24 @@ type AlertEvent struct {
 	FirstFiredAt     time.Time
 	LastFiredAt      time.Time
 	TimesFired       int32
+	// Position in the alert-event feed. Draw it with nextval('alert_event_feed_seq') only while holding pg_advisory_xact_lock(1178944836, hashtext(org_id::text)).
+	FeedSeq int64
 }
 
 type AlertRule struct {
-	ID                       uuid.UUID
-	OrgID                    uuid.UUID
-	Name                     string
-	Logic                    string
-	Conditions               json.RawMessage
-	WatchlistIds             []uuid.UUID
-	DslVersion               int32
-	HasEpssCondition         bool
-	IsEpssOnly               bool
-	Status                   string
-	FireOnNonMaterialChanges bool
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
-	DeletedAt                sql.NullTime
+	ID               uuid.UUID
+	OrgID            uuid.UUID
+	Name             string
+	Logic            string
+	Conditions       json.RawMessage
+	WatchlistIds     []uuid.UUID
+	DslVersion       int32
+	HasEpssCondition bool
+	IsEpssOnly       bool
+	Status           string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	DeletedAt        sql.NullTime
 }
 
 type AlertRuleChannel struct {
@@ -177,30 +179,33 @@ type AuditLog struct {
 	NewState   pqtype.NullRawMessage
 	Metadata   pqtype.NullRawMessage
 	CreatedAt  time.Time
+	ApiKeyID   uuid.NullUUID
 }
 
 type CVE struct {
-	CveID                 string
-	Status                sql.NullString
-	DatePublished         sql.NullTime
-	DateModifiedSourceMax sql.NullTime
-	DateModifiedCanonical time.Time
-	DateFirstSeen         time.Time
-	DescriptionPrimary    sql.NullString
-	Severity              sql.NullString
-	CvssV3Score           sql.NullFloat64
-	CvssV3Vector          sql.NullString
-	CvssV3Source          sql.NullString
-	CvssV4Score           sql.NullFloat64
-	CvssV4Vector          sql.NullString
-	CvssV4Source          sql.NullString
-	CvssScoreDiverges     bool
-	CweIds                []string
-	ExploitAvailable      bool
-	InCisaKev             bool
-	EpssScore             sql.NullFloat64
-	DateEpssUpdated       sql.NullTime
-	MaterialHash          sql.NullString
+	CveID                  string
+	Status                 sql.NullString
+	DatePublished          sql.NullTime
+	DateModifiedSourceMax  sql.NullTime
+	DateModifiedCanonical  time.Time
+	DateFirstSeen          time.Time
+	DescriptionPrimary     sql.NullString
+	Severity               sql.NullString
+	CvssV3Score            sql.NullFloat64
+	CvssV3Vector           sql.NullString
+	CvssV3Source           sql.NullString
+	CvssV4Score            sql.NullFloat64
+	CvssV4Vector           sql.NullString
+	CvssV4Source           sql.NullString
+	CvssScoreDiverges      bool
+	CweIds                 []string
+	ExploitAvailable       bool
+	InCisaKev              bool
+	EpssScore              sql.NullFloat64
+	DateEpssUpdated        sql.NullTime
+	MaterialHash           sql.NullString
+	MatchInputsHash        sql.NullString
+	DateMatchInputsChanged sql.NullTime
 }
 
 type CveAffectedCpe struct {
@@ -221,6 +226,30 @@ type CveAffectedPackage struct {
 	Fixed        sql.NullString
 	LastAffected sql.NullString
 	Events       pqtype.NullRawMessage
+}
+
+type CveCnaAffected struct {
+	ID            uuid.UUID
+	CveID         string
+	Vendor        sql.NullString
+	Product       sql.NullString
+	PackageName   sql.NullString
+	CollectionUrl sql.NullString
+	DefaultStatus sql.NullString
+	Versions      json.RawMessage
+	PackageKey    sql.NullString
+}
+
+type CveCpeMatch struct {
+	ID                    uuid.UUID
+	CveID                 string
+	Cpe                   string
+	CpeNormalized         string
+	VersionStartIncluding sql.NullString
+	VersionStartExcluding sql.NullString
+	VersionEndIncluding   sql.NullString
+	VersionEndExcluding   sql.NullString
+	Vulnerable            bool
 }
 
 type CveRawPayload struct {
@@ -247,7 +276,7 @@ type CveSearchIndex struct {
 type CveSource struct {
 	CveID              string
 	SourceName         string
-	SourceID           sql.NullString
+	SourceID           string
 	NormalizedJson     json.RawMessage
 	SourceDateModified sql.NullTime
 	SourceUrl          sql.NullString
@@ -410,6 +439,8 @@ type NotificationDelivery struct {
 	UpdatedAt       time.Time
 	Kind            string
 	ReportID        uuid.NullUUID
+	LastErrorForOrg sql.NullString
+	BatchOpen       bool
 }
 
 type OrgInvitation struct {
@@ -502,6 +533,7 @@ type ScheduledReport struct {
 	DeletedAt         sql.NullTime
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	RescanSentCves    json.RawMessage
 }
 
 type ScimConfig struct {
@@ -630,4 +662,5 @@ type WatchlistItem struct {
 	CpeNormalized sql.NullString
 	CreatedAt     time.Time
 	DeletedAt     sql.NullTime
+	CveID         sql.NullString
 }

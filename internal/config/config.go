@@ -21,8 +21,9 @@ type Config struct {
 	DBMaxConnIdleTime        time.Duration `env:"DB_MAX_CONN_IDLE_TIME"  envDefault:"5m"`
 	DBStatementTimeoutMS     int           `env:"DB_STATEMENT_TIMEOUT_MS"      envDefault:"14000"`
 	DBLongStatementTimeoutMS int           `env:"DB_LONG_STATEMENT_TIMEOUT_MS" envDefault:"120000"`
-	// DBQueryExecMode: "simple_protocol" (PgBouncer-compatible) or "extended_protocol".
-	DBQueryExecMode string `env:"DB_QUERY_EXEC_MODE" envDefault:"simple_protocol"`
+	// DBQueryExecMode: "cache_describe" (PgBouncer-compatible) or "extended_protocol"
+	// (named prepared statements, for direct connections only).
+	DBQueryExecMode string `env:"DB_QUERY_EXEC_MODE" envDefault:"cache_describe"`
 
 	// ── Server ───────────────────────────────────────────────────────────────────
 	ListenAddr             string `env:"LISTEN_ADDR"              envDefault:":8080"`
@@ -124,6 +125,17 @@ type Config struct {
 	NotifyMaxAttempts         int `env:"NOTIFY_MAX_ATTEMPTS"           envDefault:"4"`
 	NotifyBackoffBaseSeconds  int `env:"NOTIFY_BACKOFF_BASE_SECONDS"   envDefault:"30"`
 
+	// Webhook hosts allowed on private networks, for self-hosted receivers such
+	// as an ntfy server on a LAN. Comma-separated. Empty (the default) keeps the
+	// SSRF policy: private addresses blocked, ports 80 and 443 only. A listed
+	// host may resolve only into WEBHOOK_PRIVATE_CIDRS, and may also use
+	// WEBHOOK_PRIVATE_PORTS. Parsed and validated by notify.ParsePrivateDestinations.
+	// Every org's channels may target a listed host, so on a multi-tenant
+	// deployment list only hosts every tenant may reach.
+	WebhookPrivateHosts string `env:"WEBHOOK_PRIVATE_HOSTS"`
+	WebhookPrivateCIDRs string `env:"WEBHOOK_PRIVATE_CIDRS"`
+	WebhookPrivatePorts string `env:"WEBHOOK_PRIVATE_PORTS"`
+
 	// ── Rate limiting ────────────────────────────────────────────────────────────
 	// Comma-separated CIDRs of trusted reverse proxies; empty = no proxy.
 	TrustedProxies    string        `env:"TRUSTED_PROXIES"`
@@ -150,7 +162,10 @@ type Config struct {
 	RetentionAuditLogDays        int `env:"RETENTION_AUDIT_LOG_DAYS"                envDefault:"365"`
 	RetentionJobQueueHours       int `env:"RETENTION_JOB_QUEUE_HOURS"               envDefault:"24"`
 	RetentionSecurityEventsDays  int `env:"RETENTION_SECURITY_EVENTS_DAYS"          envDefault:"90"`
-	RetentionMaxRuntimeSeconds   int `env:"RETENTION_MAX_RUNTIME_SECONDS"           envDefault:"300"`
+	// Days a soft-deleted watchlist item is kept before it is purged; values below 7
+	// are raised to 7 so the alert evaluators can still resolve removed CVEs.
+	RetentionWatchlistItemsDays int `env:"RETENTION_WATCHLIST_ITEMS_DAYS"          envDefault:"30"`
+	RetentionMaxRuntimeSeconds  int `env:"RETENTION_MAX_RUNTIME_SECONDS"           envDefault:"300"`
 
 	// ── Logging ──────────────────────────────────────────────────────────────────
 	LogLevel  string `env:"LOG_LEVEL"  envDefault:"info"`
@@ -165,6 +180,32 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// Migration holds the settings `cvert-ops migrate` reads. The migrate command
+// only connects to the database, so it does not require the rest of Config:
+// the one-shot migrate container never receives the JWT signing key.
+type Migration struct {
+	DatabaseURL        string `env:"DATABASE_URL,required"`
+	DatabaseURLMigrate string `env:"DATABASE_URL_MIGRATE"`
+}
+
+// LoadMigration parses and returns Migration from environment variables.
+func LoadMigration() (*Migration, error) {
+	cfg := &Migration{}
+	if err := env.Parse(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// URL returns the connection string migrations run on: DatabaseURLMigrate, or
+// DatabaseURL if that is unset.
+func (m *Migration) URL() string {
+	if m.DatabaseURLMigrate != "" {
+		return m.DatabaseURLMigrate
+	}
+	return m.DatabaseURL
 }
 
 // IsDevelopment reports whether the application is running in development mode.

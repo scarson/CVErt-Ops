@@ -25,17 +25,17 @@ type createSSOBody struct {
 	IssuerURL    string   `json:"issuer_url"`
 	ClientID     string   `json:"client_id"`
 	ClientSecret string   `json:"client_secret"`
-	Scopes       []string `json:"scopes"`
+	Scopes       []string `json:"scopes,omitempty" doc:"OIDC scopes to request. Omit to request openid, profile and email."`
 	Enabled      *bool    `json:"enabled"`
 }
 
 type patchSSOBody struct {
-	DisplayName  *string  `json:"display_name"`
-	IssuerURL    *string  `json:"issuer_url"`
-	ClientID     *string  `json:"client_id"`
-	ClientSecret *string  `json:"client_secret"`
-	Scopes       []string `json:"scopes"`
-	Enabled      *bool    `json:"enabled"`
+	DisplayName  *string  `json:"display_name,omitempty"`
+	IssuerURL    *string  `json:"issuer_url,omitempty"`
+	ClientID     *string  `json:"client_id,omitempty"`
+	ClientSecret *string  `json:"client_secret,omitempty"`
+	Scopes       []string `json:"scopes,omitempty"`
+	Enabled      *bool    `json:"enabled,omitempty"`
 }
 
 type ssoResponse struct {
@@ -139,8 +139,7 @@ func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req createSSOBody
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.DisplayName) == "" {
@@ -228,7 +227,8 @@ func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
-	writeLocation(w, r, row.ID.String())
+	// An org has a single SSO connection, addressed by the collection URL itself.
+	w.Header().Set("Location", strings.TrimSuffix(r.URL.Path, "/"))
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -306,8 +306,7 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req patchSSOBody
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -510,8 +509,7 @@ func (srv *Server) putSSODomainsHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req putSSODomainsBody
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -585,8 +583,7 @@ func validateDomain(d string) error {
 // Public endpoint (no auth). Extracts domain from email and looks up SSO connection.
 func (srv *Server) discoverHandler(w http.ResponseWriter, r *http.Request) {
 	var req discoverBody
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	email := strings.TrimSpace(req.Email)

@@ -152,6 +152,33 @@ func TestStripNullBytesJSONRemovesNulls(t *testing.T) {
 	}
 }
 
+// ── IsCVEID ───────────────────────────────────────────────────────────────────
+
+func TestIsCVEID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		id   string
+		want bool
+	}{
+		{"CVE-1999-0001", true},
+		{"CVE-2024-1234567", true},
+		{"", false},
+		{"cve-2024-1234", false},
+		{"CVE-24-1234", false},
+		{"CVE-2024-", false},
+		{"CVE-2024-1234\n", false},
+		{"CVE-2024-\xff", false},
+		{"GHSA-1234-5678-9012", false},
+	}
+
+	for _, tc := range tests {
+		if got := IsCVEID(tc.id); got != tc.want {
+			t.Errorf("IsCVEID(%q) = %v, want %v", tc.id, got, tc.want)
+		}
+	}
+}
+
 // ── ResolveCanonicalID ────────────────────────────────────────────────────────
 
 func TestResolveCanonicalIDReturnsAlias(t *testing.T) {
@@ -380,7 +407,7 @@ func TestUserAgentTransport_SetsUA(t *testing.T) {
 	}
 
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil) //nolint:gosec // G704: test URL
-	resp, err := client.Do(req)                                                    //nolint:gosec // G704: httptest URL
+	resp, err := client.Do(req)                                                     //nolint:gosec // G704: httptest URL
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -113,6 +114,46 @@ func TestEPSSHandler_Error(t *testing.T) {
 	}
 	if logs[0].Status != "error" {
 		t.Errorf("log status = %q, want error", logs[0].Status)
+	}
+}
+
+// The failure must reach the database even though the job context has expired.
+func TestEPSSHandler_DeadlineDuringApply_RecordsFailure(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	captureLogs(t)
+	ctx, expire := newExpiringJobContext(t)
+
+	applyFn := func(ctx context.Context, _ *sql.DB, _ json.RawMessage) (json.RawMessage, error) {
+		expire()
+		return nil, ctx.Err()
+	}
+
+	err := EPSSHandler(db.Store, applyFn)(ctx, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("handler error = %v, want context.DeadlineExceeded", err)
+	}
+
+	bg := context.Background()
+	state, err := db.GetFeedSyncState(bg, "epss")
+	if err != nil {
+		t.Fatalf("GetFeedSyncState: %v", err)
+	}
+	if state == nil {
+		t.Fatal("feed sync state was not recorded")
+	}
+	if state.ConsecutiveFailures != 1 {
+		t.Errorf("ConsecutiveFailures = %d, want 1", state.ConsecutiveFailures)
+	}
+	if state.BackoffUntil == nil {
+		t.Error("BackoffUntil should be set after failure")
+	}
+
+	logs, err := db.ListRecentFeedFetchLogs(bg, "epss", 1)
+	if err != nil {
+		t.Fatalf("ListRecentFeedFetchLogs: %v", err)
+	}
+	if len(logs) != 1 || logs[0].Status != "error" {
+		t.Errorf("fetch logs = %+v, want one with status error", logs)
 	}
 }
 

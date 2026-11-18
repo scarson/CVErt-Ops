@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/scarson/cvert-ops/internal/store"
 )
 
 func TestExpandSeverityThreshold(t *testing.T) {
@@ -223,5 +225,85 @@ func TestComputeNextRunAt(t *testing.T) {
 	_, err = ComputeNextRunAt("bad-time", "UTC")
 	if err == nil {
 		t.Error("ComputeNextRunAt with invalid time should return error")
+	}
+}
+
+func TestSentInRescanWindow(t *testing.T) {
+	t.Parallel()
+	cursor := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	floor := cursor.Add(-digestRescanWindow)
+
+	previous := []store.DigestSentCVE{
+		{CVEID: "CVE-PREV-IN", DateModifiedCanonical: floor.Add(time.Microsecond)},
+		{CVEID: "CVE-PREV-AT-FLOOR", DateModifiedCanonical: floor},
+	}
+	cves := []store.DigestCVEsRow{
+		{CveID: "CVE-RUN-IN", DateModifiedCanonical: cursor.Add(-time.Second)},
+		{CveID: "CVE-RUN-AFTER-CURSOR", DateModifiedCanonical: cursor.Add(time.Second)},
+		{CveID: "CVE-RUN-OLD", DateModifiedCanonical: floor.Add(-time.Hour)},
+	}
+
+	got := sentInRescanWindow(previous, cves, cursor)
+
+	// The next scan selects date_modified_canonical > floor, so only versions
+	// strictly after the floor are kept.
+	want := []store.DigestSentCVE{
+		{CVEID: "CVE-PREV-IN", DateModifiedCanonical: floor.Add(time.Microsecond)},
+		{CVEID: "CVE-RUN-IN", DateModifiedCanonical: cursor.Add(-time.Second)},
+		{CVEID: "CVE-RUN-AFTER-CURSOR", DateModifiedCanonical: cursor.Add(time.Second)},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("sentInRescanWindow = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i].CVEID != want[i].CVEID || !got[i].DateModifiedCanonical.Equal(want[i].DateModifiedCanonical) {
+			t.Errorf("sentInRescanWindow[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSentInRescanWindow_NothingSent(t *testing.T) {
+	t.Parallel()
+	if got := sentInRescanWindow(nil, nil, time.Now()); len(got) != 0 {
+		t.Errorf("sentInRescanWindow(nil, nil) = %+v, want empty", got)
+	}
+}
+
+func TestDigestTemplateData(t *testing.T) {
+	t.Parallel()
+	snaps := func(n int) []cveSnapshot {
+		out := make([]cveSnapshot, n)
+		for i := range out {
+			out[i] = cveSnapshot{CVEID: fmt.Sprintf("CVE-2025-%04d", i)}
+		}
+		return out
+	}
+	cases := []struct {
+		name          string
+		payload       digestPayload
+		wantShown     int
+		wantTruncated bool
+	}{
+		{"all shown", digestPayload{TotalCount: 3, CVEs: snaps(3)}, 3, false},
+		{"exactly the email cap", digestPayload{TotalCount: 25, CVEs: snaps(25)}, 25, false},
+		{"more than the email cap", digestPayload{TotalCount: 30, CVEs: snaps(30)}, 25, true},
+		// The query cap cut the payload short: the total exceeds the CVEs carried.
+		{"query cap reached", digestPayload{TotalCount: 501, CVEs: snaps(500)}, 25, true},
+		{"empty", digestPayload{TotalCount: 0, CVEs: snaps(0)}, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := digestTemplateData(tc.payload, "Report", "Org", "https://cvert.example.com")
+			if len(got.CVEs) != tc.wantShown {
+				t.Errorf("shown CVEs = %d, want %d", len(got.CVEs), tc.wantShown)
+			}
+			if got.TotalCount != tc.payload.TotalCount {
+				t.Errorf("TotalCount = %d, want %d", got.TotalCount, tc.payload.TotalCount)
+			}
+			if got.Truncated != tc.wantTruncated {
+				t.Errorf("Truncated = %v, want %v", got.Truncated, tc.wantTruncated)
+			}
+		})
 	}
 }

@@ -8,7 +8,8 @@ Step-by-step verification for CVErt Ops version upgrades.
 - [ ] Check for breaking changes or new required environment variables
 - [ ] Back up the database:
   ```bash
-  pg_dump -Fc -h localhost -U cvert cvert_ops > backup_pre_upgrade_$(date +%Y%m%d).dump
+  docker compose -f docker/compose.yml -f docker/compose.prod.yml --env-file .env \
+    exec -T postgres pg_dump -Fc -U cvert_ops cvert_ops > backup_pre_upgrade_$(date +%Y%m%d).dump
   ```
 - [ ] Verify the backup is valid:
   ```bash
@@ -16,7 +17,8 @@ Step-by-step verification for CVErt Ops version upgrades.
   ```
 - [ ] Note the current migration version (for rollback):
   ```bash
-  psql -h localhost -U cvert -d cvert_ops \
+  docker compose -f docker/compose.yml -f docker/compose.prod.yml --env-file .env \
+    exec postgres psql -U cvert_ops -d cvert_ops \
     -c "SELECT version, dirty FROM schema_migrations;"
   ```
 - [ ] Note the current app version:
@@ -46,12 +48,12 @@ Step-by-step verification for CVErt Ops version upgrades.
 
 - [ ] Check liveness:
   ```bash
-  curl -s http://localhost:8080/healthz
+  curl -s https://your-domain.com/healthz
   # Expected: {"status":"alive"}
   ```
 - [ ] Check readiness:
   ```bash
-  curl -s http://localhost:8080/readyz
+  curl -s https://your-domain.com/readyz
   # Expected: {"status":"ready","checks":[...all pass...]}
   ```
 - [ ] Check version:
@@ -98,10 +100,12 @@ If any verification step fails:
    docker compose run --rm migrate \
      -path /migrations -database "$DATABASE_URL" down 1
    ```
+   If this rolls back migration 55 on a Docker Compose install, restore the table privileges it revoked: see the command under "Roll Back Database Migrations" in [Upgrading](../upgrading.md).
 3. Restore the previous image version
 4. If migration rollback fails, restore from backup:
    ```bash
-   pg_restore -h localhost -U cvert -d cvert_ops --clean backup_pre_upgrade_*.dump
+   docker compose -f docker/compose.yml -f docker/compose.prod.yml --env-file .env \
+     exec -T postgres pg_restore -U cvert_ops -d cvert_ops --clean --if-exists < backup_pre_upgrade.dump
    ```
 5. Restart with the previous version
 

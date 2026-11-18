@@ -94,6 +94,12 @@ export const routes: RouteRecordRaw[] = [
     component: () => import('@/views/GroupsView.vue'),
     meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true, title: 'Groups' },
   },
+  {
+    path: '/settings/account',
+    name: 'account',
+    component: () => import('@/views/AccountView.vue'),
+    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: false, title: 'Account' },
+  },
   // ── Admin routes (site admin only) ───────────────────────────
   {
     path: '/admin/dashboard',
@@ -177,6 +183,11 @@ export const authGuard: NavigationGuardWithThis<undefined> = async (to) => {
     (to.name === 'login' || to.name === 'register')
   ) {
     return { name: 'cve-search' }
+  }
+
+  // The server refuses everything but the password change until it happens.
+  if (auth.isAuthenticated && auth.user?.force_password_reset && to.name !== 'account') {
+    return { name: 'account' }
   }
 
   // Redirect to create-org if user has no orgs.

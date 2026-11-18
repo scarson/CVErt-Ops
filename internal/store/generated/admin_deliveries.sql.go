@@ -16,9 +16,11 @@ import (
 const adminBulkRetryFailed = `-- name: AdminBulkRetryFailed :execresult
 UPDATE notification_deliveries
 SET status        = 'pending',
+    batch_open    = false,
     attempt_count = 0,
     send_after    = now(),
     last_error    = NULL,
+    last_error_for_org = NULL,
     updated_at    = now()
 WHERE id IN (
     SELECT id FROM notification_deliveries
@@ -85,9 +87,11 @@ func (q *Queries) AdminGetDeliveryByID(ctx context.Context, id uuid.UUID) (Admin
 const adminRetryDelivery = `-- name: AdminRetryDelivery :execresult
 UPDATE notification_deliveries
 SET status        = 'pending',
+    batch_open    = false,
     attempt_count = 0,
     send_after    = now(),
     last_error    = NULL,
+    last_error_for_org = NULL,
     updated_at    = now()
 WHERE id = $1 AND status IN ('failed')
 `

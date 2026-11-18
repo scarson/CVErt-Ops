@@ -52,7 +52,7 @@ func (rl *orgRateLimiter) Allow(orgID uuid.UUID, r rate.Limit, burst int) bool {
 		rl.entries[orgID] = e
 	}
 	e.lastAt = rl.now()
-	return e.limiter.Allow()
+	return e.limiter.AllowN(rl.now(), 1)
 }
 
 // AllowN reports whether n events may happen for the given org. Used by the

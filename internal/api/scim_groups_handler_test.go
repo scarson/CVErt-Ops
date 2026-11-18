@@ -581,6 +581,198 @@ func TestSCIMPatchGroup_NotFound(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
+func TestSCIMPatchGroup_DuplicateAttributeRefused(t *testing.T) {
+	t.Parallel()
+	env := newSCIMGroupTestEnv(t)
+	ctx := context.Background()
+
+	createResp := env.scimRequest(t, "POST", "/Groups", map[string]any{
+		"schemas":     []string{"urn:ietf:params:scim:schemas:core:2.0:Group"},
+		"displayName": "DupAttrOriginal",
+	})
+	defer createResp.Body.Close()
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	var created SCIMGroup
+	require.NoError(t, json.NewDecoder(createResp.Body).Decode(&created))
+
+	// "value" and "VALUE" name one attribute twice.
+	body := `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],` +
+		`"Operations":[{"op":"replace","path":"displayName","value":"DupAttrA","VALUE":"DupAttrB"}]}`
+	patchResp := sendSCIMRawBody(t, http.DefaultClient, http.MethodPatch,
+		env.baseURL+"/Groups/"+created.ID, env.rawToken, body)
+	defer patchResp.Body.Close()
+
+	require.Equal(t, http.StatusBadRequest, patchResp.StatusCode)
+	assertSCIMContentType(t, patchResp)
+	scimErr := decodeSCIMErrorResponse(t, patchResp)
+	assert.Equal(t, "400", scimErr.Status)
+	assert.Equal(t, "invalidValue", scimErr.SCIMType)
+	assert.Equal(t, "invalid JSON body", scimErr.Detail)
+
+	group, err := env.db.GetSCIMGroup(ctx, env.orgID, uuid.MustParse(created.ID))
+	require.NoError(t, err, "GetSCIMGroup")
+	require.NotNil(t, group)
+	assert.Equal(t, "DupAttrOriginal", group.DisplayName)
+}
+
+// createSCIMGroupWithMembers creates a group through the API and returns its ID.
+func (env *scimGroupTestEnv) createSCIMGroupWithMembers(t *testing.T, displayName string, memberIDs ...uuid.UUID) uuid.UUID {
+	t.Helper()
+	members := make([]map[string]string, 0, len(memberIDs))
+	for _, id := range memberIDs {
+		members = append(members, map[string]string{"value": id.String()})
+	}
+	resp := env.scimRequest(t, "POST", "/Groups", map[string]any{
+		"schemas":     []string{"urn:ietf:params:scim:schemas:core:2.0:Group"},
+		"displayName": displayName,
+		"members":     members,
+	})
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	var created SCIMGroup
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+	return uuid.MustParse(created.ID)
+}
+
+// patchSCIMGroupRaw sends a single-operation PatchOp body to the group.
+func (env *scimGroupTestEnv) patchSCIMGroupRaw(t *testing.T, groupID uuid.UUID, operation string) *http.Response {
+	t.Helper()
+	body := `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[` + operation + `]}`
+	return sendSCIMRawBody(t, http.DefaultClient, http.MethodPatch,
+		env.baseURL+"/Groups/"+groupID.String(), env.rawToken, body)
+}
+
+// assertSCIMGroupMembers checks the group's stored members.
+func (env *scimGroupTestEnv) assertSCIMGroupMembers(t *testing.T, groupID uuid.UUID, want ...uuid.UUID) {
+	t.Helper()
+	got, err := env.db.ListSCIMGroupMembers(context.Background(), env.orgID, groupID)
+	require.NoError(t, err, "ListSCIMGroupMembers")
+	if want == nil {
+		want = []uuid.UUID{}
+	}
+	if got == nil {
+		got = []uuid.UUID{}
+	}
+	assert.ElementsMatch(t, want, got)
+}
+
+// assertInvalidMembersValue checks a 400 invalidValue "invalid members value" response.
+func assertInvalidMembersValue(t *testing.T, resp *http.Response) {
+	t.Helper()
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assertSCIMContentType(t, resp)
+	scimErr := decodeSCIMErrorResponse(t, resp)
+	assert.Equal(t, "400", scimErr.Status)
+	assert.Equal(t, "invalidValue", scimErr.SCIMType)
+	assert.Equal(t, "invalid members value", scimErr.Detail)
+}
+
+func TestSCIMPatchGroup_MemberValueNamedTwiceRefused(t *testing.T) {
+	t.Parallel()
+	env := newSCIMGroupTestEnv(t)
+	ctx := context.Background()
+
+	userA := env.createTestUser(t, ctx, "viewer")
+	userB := env.createTestUser(t, ctx, "viewer")
+
+	t.Run("add", func(t *testing.T) {
+		groupID := env.createSCIMGroupWithMembers(t, "MemberDupAdd")
+		resp := env.patchSCIMGroupRaw(t, groupID, fmt.Sprintf(
+			`{"op":"add","path":"members","value":[{"value":%q,"VALUE":%q}]}`, userA, userB))
+		defer resp.Body.Close()
+		assertInvalidMembersValue(t, resp)
+		env.assertSCIMGroupMembers(t, groupID)
+	})
+
+	t.Run("remove", func(t *testing.T) {
+		groupID := env.createSCIMGroupWithMembers(t, "MemberDupRemove", userA, userB)
+		resp := env.patchSCIMGroupRaw(t, groupID, fmt.Sprintf(
+			`{"op":"remove","path":"members","value":[{"value":%q,"VALUE":%q}]}`, userA, userB))
+		defer resp.Body.Close()
+		assertInvalidMembersValue(t, resp)
+		env.assertSCIMGroupMembers(t, groupID, userA, userB)
+	})
+
+	t.Run("add single member object", func(t *testing.T) {
+		groupID := env.createSCIMGroupWithMembers(t, "MemberDupAddSingle")
+		resp := env.patchSCIMGroupRaw(t, groupID, fmt.Sprintf(
+			`{"op":"add","path":"members","value":{"value":%q,"VALUE":%q}}`, userA, userB))
+		defer resp.Body.Close()
+		assertInvalidMembersValue(t, resp)
+		env.assertSCIMGroupMembers(t, groupID)
+	})
+
+	t.Run("add value that is neither array nor object", func(t *testing.T) {
+		groupID := env.createSCIMGroupWithMembers(t, "MemberValueString")
+		resp := env.patchSCIMGroupRaw(t, groupID, fmt.Sprintf(
+			`{"op":"add","path":"members","value":%q}`, userA))
+		defer resp.Body.Close()
+		assertInvalidMembersValue(t, resp)
+		env.assertSCIMGroupMembers(t, groupID)
+	})
+
+	t.Run("remove value that is neither array nor object", func(t *testing.T) {
+		groupID := env.createSCIMGroupWithMembers(t, "MemberRemoveString", userA)
+		resp := env.patchSCIMGroupRaw(t, groupID, fmt.Sprintf(
+			`{"op":"remove","path":"members","value":%q}`, userA))
+		defer resp.Body.Close()
+		assertInvalidMembersValue(t, resp)
+		env.assertSCIMGroupMembers(t, groupID, userA)
+	})
+}
+
+func TestSCIMPatchGroup_MemberValueAccepted(t *testing.T) {
+	t.Parallel()
+	env := newSCIMGroupTestEnv(t)
+	ctx := context.Background()
+
+	userA := env.createTestUser(t, ctx, "viewer")
+
+	t.Run("add array with one member", func(t *testing.T) {
+		groupID := env.createSCIMGroupWithMembers(t, "MemberAddArray")
+		resp := env.patchSCIMGroupRaw(t, groupID, fmt.Sprintf(
+			`{"op":"add","path":"members","value":[{"value":%q}]}`, userA))
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		env.assertSCIMGroupMembers(t, groupID, userA)
+	})
+
+	t.Run("add single member object with case-variant name", func(t *testing.T) {
+		groupID := env.createSCIMGroupWithMembers(t, "MemberAddSingle")
+		resp := env.patchSCIMGroupRaw(t, groupID, fmt.Sprintf(
+			`{"op":"add","path":"members","value":{"Value":%q}}`, userA))
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		env.assertSCIMGroupMembers(t, groupID, userA)
+	})
+
+	t.Run("add non-UUID member value is skipped", func(t *testing.T) {
+		groupID := env.createSCIMGroupWithMembers(t, "MemberAddNonUUID")
+		resp := env.patchSCIMGroupRaw(t, groupID,
+			`{"op":"add","path":"members","value":[{"value":"not-a-uuid"}]}`)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		env.assertSCIMGroupMembers(t, groupID)
+	})
+
+	t.Run("add members without value is a no-op", func(t *testing.T) {
+		groupID := env.createSCIMGroupWithMembers(t, "MemberAddNoValue", userA)
+		resp := env.patchSCIMGroupRaw(t, groupID, `{"op":"add","path":"members"}`)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		env.assertSCIMGroupMembers(t, groupID, userA)
+	})
+
+	t.Run("remove members with null value is a no-op", func(t *testing.T) {
+		groupID := env.createSCIMGroupWithMembers(t, "MemberRemoveNull", userA)
+		resp := env.patchSCIMGroupRaw(t, groupID, `{"op":"remove","path":"members","value":null}`)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		env.assertSCIMGroupMembers(t, groupID, userA)
+	})
+}
+
 func TestSCIMReplaceGroup_NotFound(t *testing.T) {
 	t.Parallel()
 	env := newSCIMGroupTestEnv(t)

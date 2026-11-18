@@ -4,7 +4,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -25,8 +24,10 @@ import (
 	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/audit"
+	"github.com/scarson/cvert-ops/internal/check"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/metrics"
+	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/secure"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/web"
@@ -51,33 +52,45 @@ type Server struct {
 	store                 *store.Store
 	cfg                   *config.Config
 	argon2Sem             chan struct{}
+	checkSem              chan struct{} // slots for concurrent version checks
+	checkLimits           check.Limits  // per-item and per-advisory version check limits
 	rateLimiter           *ipRateLimiter
-	ghOAuth               *oauth2.Config      // nil when GitHub OAuth is not configured
-	ghAPIBaseURL          string              // GitHub REST API base URL; overridable in tests
-	googleOIDC            *oidc.Provider      // nil when Google OIDC is not configured
-	googleOAuth           *oauth2.Config      // nil when Google OIDC is not configured
-	orgRL                 *orgRateLimiter     // per-org API rate limiter
-	scimRL                *scimRateLimiter    // per-org SCIM rate limiter (separate from API)
-	tierCache             *tierCache          // short-lived cache for org tier + overrides
-	oidcProviders         sync.Map            // issuer URL → *oidc.Provider; lazy-loaded per SSO connection
-	alertCache            *alert.RuleCache    // nil when alert evaluation is not configured
-	alertEvaluator        *alert.Evaluator    // nil when alert evaluation is not configured
-	llm                   ai.LLMClient        // nil when AI features are not configured
-	auditWriter           *audit.Writer       // nil when audit logging is not configured
-	eventWriter           *secure.EventWriter // async security event recording
-	lockout               *lockoutManager     // brute-force login protection
-	configHolder          *config.Holder      // hot-reloadable config for admin reload endpoint
-	rescanFunc            func()              // feed config rescan on hot-reload
-	bootstrapMu           sync.Mutex          // serializes first-user bootstrap in invite-only mode
-	expectedSchemaVersion int                 // migration version for /readyz check
-	versionInfo           VersionInfo         // build metadata for /admin/version
-	healthChecks          []func() bool       // extra readiness checks (e.g., delivery worker)
-	humaAPI               huma.API            // production huma API instance for spec merging
+	ghOAuth               *oauth2.Config             // nil when GitHub OAuth is not configured
+	ghAPIBaseURL          string                     // GitHub REST API base URL; overridable in tests
+	googleOIDC            *oidc.Provider             // nil when Google OIDC is not configured
+	googleOAuth           *oauth2.Config             // nil when Google OIDC is not configured
+	orgRL                 *orgRateLimiter            // per-org API rate limiter
+	scimRL                *scimRateLimiter           // per-org SCIM rate limiter (separate from API)
+	tierCache             *tierCache                 // short-lived cache for org tier + overrides
+	oidcProviders         sync.Map                   // issuer URL → *oidc.Provider; lazy-loaded per SSO connection
+	alertCache            *alert.RuleCache           // nil when alert evaluation is not configured
+	alertEvaluator        *alert.Evaluator           // nil when alert evaluation is not configured
+	llm                   ai.LLMClient               // nil when AI features are not configured
+	auditWriter           *audit.Writer              // nil when audit logging is not configured
+	privateDests          notify.PrivateDestinations // webhook hosts allowed on private networks
+	trustedProxies        []string                   // TRUSTED_PROXIES CIDRs whose X-Forwarded-For is honoured
+	eventWriter           *secure.EventWriter        // async security event recording
+	lockout               *lockoutManager            // brute-force login protection
+	configHolder          *config.Holder             // hot-reloadable config for admin reload endpoint
+	rescanFunc            func()                     // feed config rescan on hot-reload
+	bootstrapMu           sync.Mutex                 // serializes first-user bootstrap in invite-only mode
+	expectedSchemaVersion int                        // migration version for /readyz check
+	versionInfo           VersionInfo                // build metadata for /admin/version
+	healthChecks          []func() bool              // extra readiness checks (e.g., delivery worker)
+	humaAPI               huma.API                   // production huma API instance for spec merging
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
 // If cfg.GoogleClientID is empty, Google OIDC is skipped.
 func NewServer(s *store.Store, cfg *config.Config, deps ServerDeps) (*Server, error) {
+	privateDests, err := notify.ParsePrivateDestinations(cfg.WebhookPrivateHosts, cfg.WebhookPrivateCIDRs, cfg.WebhookPrivatePorts)
+	if err != nil {
+		return nil, fmt.Errorf("webhook private destinations: %w", err)
+	}
+	trustedProxies, err := parseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, err
+	}
 	sem := make(chan struct{}, cfg.Argon2MaxConcurrent)
 	evictTTL := cfg.RateLimitEvictTTL
 	if evictTTL == 0 {
@@ -99,6 +112,8 @@ func NewServer(s *store.Store, cfg *config.Config, deps ServerDeps) (*Server, er
 		store:                 s,
 		cfg:                   cfg,
 		argon2Sem:             sem,
+		checkSem:              make(chan struct{}, maxConcurrentChecks),
+		checkLimits:           check.DefaultLimits,
 		rateLimiter:           rl,
 		orgRL:                 orgRL,
 		tierCache:             tc,
@@ -109,6 +124,8 @@ func NewServer(s *store.Store, cfg *config.Config, deps ServerDeps) (*Server, er
 		alertEvaluator:        deps.AlertEvaluator,
 		llm:                   deps.LLM,
 		auditWriter:           deps.AuditWriter,
+		privateDests:          privateDests,
+		trustedProxies:        trustedProxies,
 		configHolder:          deps.ConfigHolder,
 		rescanFunc:            deps.RescanFunc,
 		expectedSchemaVersion: deps.ExpectedSchemaVersion,
@@ -210,8 +227,7 @@ func (srv *Server) Handler() http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	})
-	r.Use(middleware.RealIP)
-	r.Use(clientIPMiddleware)
+	r.Use(clientIPMiddleware(srv.trustedProxies))
 	r.Use(contextLoggerMiddleware)
 	// 1 MB global body limit — protect against OOM from large request bodies
 	// (PLAN.md §18.3 "HTTP request body size limit").
@@ -231,13 +247,17 @@ func (srv *Server) Handler() http.Handler {
 	apiRouter.Use(csrfProtect)
 	apiRouter.Use(noCacheMiddleware)
 	apiRouter.Use(rejectAPIKeyQueryParams)
-	humaConfig := huma.DefaultConfig("CVErt Ops API", "0.1.0")
-	humaConfig.Info.Description = "Vulnerability intelligence and alerting API"
-	api := humachi.New(apiRouter, humaConfig)
+	api := humachi.New(apiRouter, newHumaConfig())
 	srv.humaAPI = api
 	registerAuthRoutes(api, srv)
 	registerMFARoutes(api, srv)
 	registerCVERoutes(api, srv)
+
+	// Chi-backed routes below are declared separately for the served spec.
+	specOnlyAPI := newSpecOnlyAPI()
+	registerAllSpecOps(specOnlyAPI)
+	mergeSpecPaths(api, specOnlyAPI)
+	applyOperationSecurity(api)
 
 	// ── SSO discovery (public, no auth, rate limited by IP) ─────────────────────
 	apiRouter.With(srv.authRateLimit()).Post("/auth/discover", srv.discoverHandler)
@@ -252,6 +272,9 @@ func (srv *Server) Handler() http.Handler {
 	apiRouter.With(srv.authRateLimit()).Get("/auth/oidc/{connection_id}/login", srv.oidcLoginHandler)
 	apiRouter.With(srv.authRateLimit()).Get("/auth/oidc/callback", srv.oidcCallbackHandler)
 	apiRouter.With(srv.authRateLimit()).Get("/auth/oidc/link-callback", srv.oidcLinkCallbackHandler)
+
+	// ── Credential self-description (API key or session) ────────────────────
+	apiRouter.With(srv.RequireAuthenticated()).Get("/whoami", srv.whoamiHandler)
 
 	// ── Admin routes (authenticated + site admin, not org-scoped) ───────────
 	apiRouter.Route("/admin", func(r chi.Router) {
@@ -341,6 +364,7 @@ func (srv *Server) Handler() http.Handler {
 					r.Route("/items", func(r chi.Router) {
 						r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listWatchlistItemsHandler)
 						r.With(srv.RequireOrgRole(RoleMember)).Post("/", srv.createWatchlistItemHandler)
+						r.With(srv.RequireOrgRole(RoleMember)).Put("/", srv.replaceWatchlistItemsHandler)
 						r.With(srv.RequireOrgRole(RoleMember)).Delete("/{item_id}", srv.deleteWatchlistItemHandler)
 					})
 				})
@@ -433,6 +457,9 @@ func (srv *Server) Handler() http.Handler {
 			// Inbound webhook for custom feed data ingestion (member+)
 			r.With(srv.RequireOrgRole(RoleMember)).Post("/ingest", srv.ingestHandler)
 
+			// Version check of listed components against the global CVE corpus (viewer+)
+			r.With(srv.RequireOrgRole(RoleViewer)).Post("/check", srv.checkComponentsHandler)
+
 			// AI-powered search and summarization (viewer+ per PLAN.md §7.3)
 			r.Route("/ai", func(r chi.Router) {
 				r.With(srv.RequireOrgRole(RoleViewer)).Post("/nl-search", srv.nlSearchHandler)
@@ -513,7 +540,8 @@ func (srv *Server) AddHealthCheck(check func() bool) {
 }
 
 // auditLog records an audit entry if the audit writer is configured.
-// Extracts actor context from the request. Nil-safe: no-op if writer is nil.
+// Extracts actor context, including the acting API key, from the request.
+// Nil-safe: no-op if writer is nil.
 func (srv *Server) auditLog(r *http.Request, entry audit.Entry) {
 	if srv.auditWriter == nil {
 		return
@@ -521,6 +549,11 @@ func (srv *Server) auditLog(r *http.Request, entry audit.Entry) {
 	if entry.ActorID == nil {
 		if uid, ok := r.Context().Value(ctxUserID).(uuid.UUID); ok {
 			entry.ActorID = &uid
+		}
+	}
+	if entry.APIKeyID == nil {
+		if keyID, ok := r.Context().Value(ctxAPIKeyID).(uuid.UUID); ok {
+			entry.APIKeyID = &keyID
 		}
 	}
 	srv.auditWriter.Log(r.Context(), entry)
@@ -543,11 +576,7 @@ func (srv *Server) releaseArgon2() { <-srv.argon2Sem }
 // are checked — if the process can respond, it's alive. Kubernetes uses this
 // to decide whether to restart the pod.
 func healthzHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		if err := json.NewEncoder(w).Encode(map[string]string{"status": "alive"}); err != nil {
-			slog.ErrorContext(r.Context(), "healthz: failed to encode response", "error", err)
-		}
+	return func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
 	}
 }

@@ -41,6 +41,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/api"
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/feed/epss"
@@ -222,28 +223,29 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	apiSrv, err := api.NewServer(st, cfg, api.ServerDeps{
-		AlertCache:            alertCache,
-		AlertEvaluator:        alertEval,
-		LLM:                   llm,
-		EventWriter:           eventWriter,
-		ConfigHolder:          configHolder,
-		RescanFunc:            nil, // Feed rescan wiring is future work.
-		ExpectedSchemaVersion: expectedSchemaVersion,
-		VersionInfo: api.VersionInfo{
-			Version:   version,
-			Commit:    commit,
-			BuildTime: buildTime,
-		},
+	apiSrv, auditWriter, err := newAPIServer(st, cfg, api.ServerDeps{
+		AlertCache:     alertCache,
+		AlertEvaluator: alertEval,
+		LLM:            llm,
+		EventWriter:    eventWriter,
+		ConfigHolder:   configHolder,
+		RescanFunc:     nil, // Feed rescan wiring is future work.
 	})
 	if err != nil {
-		return fmt.Errorf("api server init: %w", err)
+		return err
 	}
+	// Defers run last-in first-out: this Flush runs after apiSrv.Close and
+	// before db.Close, so pending audit entries are written while the pool is open.
+	defer auditWriter.Flush()
 	defer apiSrv.Close()
 
 	// Wire notification delivery: dispatcher fans out alert events to delivery rows;
 	// worker polls delivery rows and executes outbound webhook calls.
-	deliveryClient, err := notify.BuildSafeClient()
+	privateDests, err := notify.ParsePrivateDestinations(cfg.WebhookPrivateHosts, cfg.WebhookPrivateCIDRs, cfg.WebhookPrivatePorts)
+	if err != nil {
+		return fmt.Errorf("webhook private destinations: %w", err)
+	}
+	deliveryClient, err := notify.BuildSafeClient(privateDests)
 	if err != nil {
 		return fmt.Errorf("build delivery HTTP client: %w", err)
 	}
@@ -276,7 +278,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	workerPool.Register("alert_batch", alertBatchHandler(alertEval))
 	workerPool.Register("alert_epss", alertEPSSHandler(alertEval))
 	workerPool.Register("alert_zombie_sweep", alertZombieSweepHandler(alertEval))
-	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
+	registerMaintenanceJobs(workerPool, st, cfg)
 	workerPool.RegisterPeriodic(worker.PeriodicTask{
 		Name:     "mfa-challenge-cleanup",
 		Interval: 1 * time.Hour,
@@ -449,7 +451,11 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	workerPool.Register("alert_zombie_sweep", alertZombieSweepHandler(alertEval))
 
 	// Start notification delivery worker alongside the job queue worker pool.
-	deliveryClient, err := notify.BuildSafeClient()
+	privateDests, err := notify.ParsePrivateDestinations(cfg.WebhookPrivateHosts, cfg.WebhookPrivateCIDRs, cfg.WebhookPrivatePorts)
+	if err != nil {
+		return fmt.Errorf("webhook private destinations: %w", err)
+	}
+	deliveryClient, err := notify.BuildSafeClient(privateDests)
 	if err != nil {
 		return fmt.Errorf("build delivery HTTP client: %w", err)
 	}
@@ -477,7 +483,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		close(deliveryDone)
 	}()
 
-	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
+	registerMaintenanceJobs(workerPool, st, cfg)
 	workerPool.RegisterPeriodic(worker.PeriodicTask{
 		Name:     "mfa-challenge-cleanup",
 		Interval: 1 * time.Hour,
@@ -572,10 +578,36 @@ func alertEPSSHandler(eval *alert.Evaluator) worker.Handler {
 	}
 }
 
-// alertZombieSweepHandler returns a worker.Handler that sweeps stuck activation jobs.
+// alertZombieSweepHandler returns a worker.Handler that moves rules stuck in
+// 'activating' with no pending or running activation job to 'error'.
 func alertZombieSweepHandler(eval *alert.Evaluator) worker.Handler {
 	return func(ctx context.Context, _ json.RawMessage) error {
 		return eval.SweepZombieActivations(ctx)
+	}
+}
+
+// registerMaintenanceJobs registers the system maintenance queues (retention
+// cleanup and search index rebuild) on p. Both serve and worker call it.
+func registerMaintenanceJobs(p *worker.Pool, st *store.Store, cfg *config.Config) {
+	p.Register("retention_cleanup", retentionHandler(st, cfg))
+	p.Register(merge.SearchReindexQueue, searchReindexHandler(st))
+}
+
+// searchReindexBatchSize is how many CVEs each search index rebuild transaction
+// covers. Each CVE in a batch holds one advisory lock until the batch commits,
+// so this stays well below the shared lock table size.
+const searchReindexBatchSize = 200
+
+// searchReindexHandler returns a worker.Handler that rebuilds cve_search_index
+// for the whole corpus. The job payload carries no parameters.
+func searchReindexHandler(st *store.Store) worker.Handler {
+	return func(ctx context.Context, _ json.RawMessage) error {
+		n, err := merge.RebuildSearchIndex(ctx, st, searchReindexBatchSize)
+		if err != nil {
+			return err
+		}
+		slog.InfoContext(ctx, "search index rebuilt", "cves", n)
+		return nil
 	}
 }
 
@@ -591,6 +623,7 @@ func retentionHandler(st *store.Store, cfg *config.Config) worker.Handler {
 			JobQueueHours:      cfg.RetentionJobQueueHours,
 			AILogDays:          cfg.AILogRetentionDays,
 			SecurityEventsDays: cfg.RetentionSecurityEventsDays,
+			WatchlistItemsDays: cfg.RetentionWatchlistItemsDays,
 			AlertEventsDays:    cfg.RetentionAlertEventsDays,
 			NotifDelivDays:     cfg.RetentionNotifDeliveriesDays,
 			AuditLogDays:       cfg.RetentionAuditLogDays,
@@ -610,14 +643,14 @@ func migrateCmd() *cobra.Command {
 }
 
 func runMigrate(_ *cobra.Command, _ []string) error {
-	cfg, err := config.Load()
+	cfg, err := config.LoadMigration()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
 
 	slog.Info("running migrations")
 
-	db, err := openMigrateDB(cfg)
+	db, err := openMigrateDB(cfg.URL())
 	if err != nil {
 		return err
 	}
@@ -628,14 +661,18 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 
 // autoMigrate acquires a Postgres advisory lock and runs pending migrations.
 // The advisory lock prevents concurrent migration runs when multiple instances
-// start simultaneously (e.g., Kubernetes rolling update). The lock is released
-// on return via defer.
+// start simultaneously (e.g., Kubernetes rolling update). The lock belongs to the
+// session, so it is released when migrateUp closes the connection.
 //
 // The lock and migrations share the same *sql.DB connection — this is critical
 // because pg_advisory_lock is session-scoped and must protect the same session
 // that executes the DDL.
 func autoMigrate(ctx context.Context, cfg *config.Config) error {
-	db, err := openMigrateDB(cfg)
+	migrateURL := cfg.DatabaseURL
+	if cfg.DatabaseURLMigrate != "" {
+		migrateURL = cfg.DatabaseURLMigrate
+	}
+	db, err := openMigrateDB(migrateURL)
 	if err != nil {
 		return err
 	}
@@ -651,16 +688,13 @@ func autoMigrate(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("ping: %w", err)
 	}
 
-	// Acquire advisory lock — blocks until available, released on disconnect
-	// or explicit unlock. hashtext('cvertops-migrate') returns a stable int32.
+	// Acquire advisory lock — blocks until available, released on disconnect.
+	// There is no explicit unlock: the migration driver holds the pool's only
+	// connection until it closes, and closing it ends the session.
+	// hashtext('cvertops-migrate') returns a stable int32.
 	if _, err := db.ExecContext(ctx, "SELECT pg_advisory_lock(hashtext('cvertops-migrate'))"); err != nil {
 		return fmt.Errorf("acquire migration lock: %w", err)
 	}
-	defer func() {
-		if _, unlockErr := db.ExecContext(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock(hashtext('cvertops-migrate'))"); unlockErr != nil {
-			slog.Error("auto-migrate: failed to release advisory lock", "error", unlockErr)
-		}
-	}()
 
 	return migrateUp(db)
 }
@@ -668,11 +702,7 @@ func autoMigrate(ctx context.Context, cfg *config.Config) error {
 // openMigrateDB opens a database/sql connection for running migrations.
 // golang-migrate requires *sql.DB; this uses pgx's stdlib adapter.
 // Uses DATABASE_URL_MIGRATE if set, otherwise falls back to DATABASE_URL.
-func openMigrateDB(cfg *config.Config) (*sql.DB, error) {
-	migrateURL := cfg.DatabaseURL
-	if cfg.DatabaseURLMigrate != "" {
-		migrateURL = cfg.DatabaseURLMigrate
-	}
+func openMigrateDB(migrateURL string) (*sql.DB, error) {
 	connCfg, err := pgx.ParseConfig(migrateURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse db url: %w", err)
@@ -683,7 +713,8 @@ func openMigrateDB(cfg *config.Config) (*sql.DB, error) {
 	return stdlib.OpenDB(*connCfg), nil
 }
 
-// migrateUp applies all pending migrations on the given database connection.
+// migrateUp applies all pending migrations on the given database connection,
+// then closes db.
 func migrateUp(db *sql.DB) error {
 	src, err := iofs.New(migrations.FS, ".")
 	if err != nil {
@@ -699,6 +730,11 @@ func migrateUp(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("migrate init: %w", err)
 	}
+	defer func() {
+		if srcErr, dbErr := m.Close(); srcErr != nil || dbErr != nil {
+			slog.Error("close migrator", "source_error", srcErr, "database_error", dbErr)
+		}
+	}()
 
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("migrate up: %w", err)
@@ -737,9 +773,11 @@ func newPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 	}
 
 	// PgBouncer transaction-pooling compatibility (PLAN.md §19.2).
-	if cfg.DBQueryExecMode == "simple_protocol" {
-		poolCfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	execMode, err := store.ParseQueryExecMode(cfg.DBQueryExecMode)
+	if err != nil {
+		return nil, err
 	}
+	poolCfg.ConnConfig.DefaultQueryExecMode = execMode
 
 	// Global per-query statement timeout prevents runaway queries from holding
 	// connections indefinitely (PLAN.md §19.2).
@@ -799,6 +837,11 @@ func newPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 	// not match the version the binary was compiled for. This catches
 	// misconfigured deployments where migrations haven't been applied yet
 	// (PLAN.md §18 advisory item).
+	expectedSchemaVersion, err := migrations.LatestVersion()
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("embedded migrations: %w", err)
+	}
 	var schemaVersion int
 	err = db.QueryRow(ctx,
 		"SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1",
@@ -811,6 +854,31 @@ func newPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 	}
 
 	return db, nil
+}
+
+// newAPIServer builds the HTTP API server for the serve command. It fills in the
+// dependencies the serve command owns (audit writer, schema version and build
+// info) on top of the components the caller passes in deps. The caller must
+// Flush the returned audit writer after the HTTP server stops, before the
+// database pool closes, so pending audit entries are written.
+func newAPIServer(st *store.Store, cfg *config.Config, deps api.ServerDeps) (*api.Server, *audit.Writer, error) {
+	expectedSchemaVersion, err := migrations.LatestVersion()
+	if err != nil {
+		return nil, nil, fmt.Errorf("embedded migrations: %w", err)
+	}
+	auditWriter := audit.NewWriter(st, slog.Default())
+	deps.AuditWriter = auditWriter
+	deps.ExpectedSchemaVersion = expectedSchemaVersion
+	deps.VersionInfo = api.VersionInfo{
+		Version:   version,
+		Commit:    commit,
+		BuildTime: buildTime,
+	}
+	srv, err := api.NewServer(st, cfg, deps)
+	if err != nil {
+		return nil, nil, fmt.Errorf("api server init: %w", err)
+	}
+	return srv, auditWriter, nil
 }
 
 // validateConfig enforces startup invariants that environment parsing cannot express:
@@ -827,10 +895,6 @@ func validateConfig(cfg *config.Config) error {
 	}
 	return nil
 }
-
-// expectedSchemaVersion is the database migration version this binary requires.
-// Update this constant when new migrations are added.
-const expectedSchemaVersion = 39
 
 // newLogger creates a slog.Logger based on the configured log level and format.
 // logLevel is the dynamic log level used by the global logger.

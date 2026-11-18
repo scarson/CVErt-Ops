@@ -66,7 +66,7 @@ func TestFullTOTPLoginFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate TOTP: %v", err)
 	}
-	confirmCookies := append(cookies, &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	confirmCookies := append(cookies, requestCookie("mfa_enroll_token", enrollToken))
 	confirmReq := authedRequest(t, ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/totp/confirm",
 		fmt.Sprintf(`{"code":%q}`, code), confirmCookies)
@@ -102,8 +102,9 @@ func TestFullTOTPLoginFlow(t *testing.T) {
 		t.Error("access_token should NOT be set when MFA is pending")
 	}
 
-	// 5. Verify TOTP → get full tokens.
-	code2, err := totp.GenerateCode(setupBody.Secret, time.Now())
+	// 5. Verify TOTP → get full tokens. Confirming enrollment spent the current
+	// step's code, so this uses the next step's, which the skew window accepts.
+	code2, err := totp.GenerateCode(setupBody.Secret, time.Now().Add(30*time.Second))
 	if err != nil {
 		t.Fatalf("generate TOTP code 2: %v", err)
 	}
@@ -111,7 +112,7 @@ func TestFullTOTPLoginFlow(t *testing.T) {
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pt))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -129,7 +130,7 @@ func TestFullTOTPLoginFlow(t *testing.T) {
 	// 6. Access protected route → 200.
 	methodsReq, _ := http.NewRequestWithContext(ctx, http.MethodGet,
 		ts.URL+"/api/v1/auth/mfa/methods", nil)
-	methodsReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	methodsReq.AddCookie(requestCookie("access_token", accessToken))
 	methodsResp, err := ts.Client().Do(methodsReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("methods request: %v", err)
@@ -213,7 +214,7 @@ func TestFullEmailOTPLoginFlow(t *testing.T) {
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pt))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -260,7 +261,7 @@ func TestFullRecoveryCodeFlow(t *testing.T) {
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pt))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -278,7 +279,7 @@ func TestFullRecoveryCodeFlow(t *testing.T) {
 	// 4. Check remaining codes decremented.
 	methodsReq, _ := http.NewRequestWithContext(ctx, http.MethodGet,
 		ts.URL+"/api/v1/auth/mfa/methods", nil)
-	methodsReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	methodsReq.AddCookie(requestCookie("access_token", accessToken))
 	methodsResp, err := ts.Client().Do(methodsReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("methods: %v", err)
@@ -338,7 +339,7 @@ func TestFullForcedPasswordResetWithMFA(t *testing.T) {
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pt))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -370,7 +371,7 @@ func TestFullForcedPasswordResetWithMFA(t *testing.T) {
 		ts.URL+"/api/v1/auth/change-password", bytes.NewBufferString(changePWBody))
 	changePWReq.Header.Set("Content-Type", "application/json")
 	changePWReq.Header.Set("X-Requested-By", "CVErt-Ops")
-	changePWReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: newPT})
+	changePWReq.AddCookie(requestCookie("mfa_pending_token", newPT))
 	changePWResp, err := ts.Client().Do(changePWReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("change password: %v", err)
@@ -400,6 +401,70 @@ func TestFullForcedPasswordResetWithMFA(t *testing.T) {
 		if p == "password_reset" {
 			t.Error("password_reset should be cleared after changing password")
 		}
+	}
+}
+
+// TestForcedPasswordReset_RejectsChangeBeforeMFA verifies that a pending token
+// from login with pending=["mfa_challenge", "password_reset"] cannot change the
+// password: MFA must be proven first, so password_reset is not yet the next step.
+func TestForcedPasswordReset_RejectsChangeBeforeMFA(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	email, password := "fpr-before-mfa@example.com", "test-password-1234" //nolint:gosec // G101: test credentials
+
+	reg := doRegister(t, ctx, ts, email, password)
+	userID, _ := uuid.Parse(reg.UserID)
+	enrollTOTP(t, ctx, srv, userID)
+	if _, err := db.AdminForcePasswordReset(ctx, userID); err != nil {
+		t.Fatalf("force password reset: %v", err)
+	}
+
+	before, err := db.GetUserByID(ctx, userID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, email, password)
+	body := parseLoginBody(t, loginResp)
+	pt := cookieValue(loginResp, "mfa_pending_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+	if len(body.Pending) < 2 || body.Pending[0] != "mfa_challenge" || body.Pending[1] != "password_reset" {
+		t.Fatalf("expected [mfa_challenge, password_reset], got %v", body.Pending)
+	}
+
+	// Skip the MFA challenge and go straight to change-password.
+	changePWReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/change-password",
+		bytes.NewBufferString(`{"new_password":"attacker-chosen-pw-5678"}`))
+	changePWReq.Header.Set("Content-Type", "application/json")
+	changePWReq.Header.Set("X-Requested-By", "CVErt-Ops")
+	changePWReq.AddCookie(requestCookie("mfa_pending_token", pt))
+	changePWResp, err := ts.Client().Do(changePWReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+	defer changePWResp.Body.Close() //nolint:errcheck,gosec
+
+	if changePWResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("change password before MFA: got %d, want 401", changePWResp.StatusCode)
+	}
+
+	after, err := db.GetUserByID(ctx, userID)
+	if err != nil {
+		t.Fatalf("get user after: %v", err)
+	}
+	if after.PasswordHash.String != before.PasswordHash.String {
+		t.Error("password hash changed although MFA was not completed")
+	}
+	status, err := db.GetUserAuthStatus(ctx, userID)
+	if err != nil {
+		t.Fatalf("get auth status: %v", err)
+	}
+	if !status.ForcePasswordReset {
+		t.Error("force_password_reset was cleared although MFA was not completed")
 	}
 }
 
@@ -439,7 +504,7 @@ func TestFullMFAEnrollmentRequired(t *testing.T) {
 	}
 
 	// 4. Enroll TOTP: setup (using pending token, not access token).
-	pendingCookies := []*http.Cookie{{Name: "mfa_pending_token", Value: enrollPT}}
+	pendingCookies := []*http.Cookie{requestCookie("mfa_pending_token", enrollPT)}
 	setupReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/totp/setup", nil)
 	setupReq.Header.Set("X-Requested-By", "CVErt-Ops")
@@ -468,7 +533,7 @@ func TestFullMFAEnrollmentRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate TOTP: %v", err)
 	}
-	confirmCookies := append(pendingCookies, &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	confirmCookies := append(pendingCookies, requestCookie("mfa_enroll_token", enrollToken))
 	confirmReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/totp/confirm",
 		bytes.NewBufferString(fmt.Sprintf(`{"code":%q}`, code)))
@@ -531,7 +596,7 @@ func TestPasswordResetDoesNotBypassMFA(t *testing.T) {
 		ts.URL+"/api/v1/auth/mfa/verify",
 		bytes.NewBufferString(fmt.Sprintf(`{"method":"totp","code":%q}`, code)))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pt))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -649,7 +714,7 @@ func TestConcurrentRecoveryCodeUse(t *testing.T) {
 			req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 				ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 			req.Header.Set("Content-Type", "application/json")
-			req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+			req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 			resp, err := ts.Client().Do(req) //nolint:gosec
 			if err != nil {
 				t.Errorf("verify: %v", err)

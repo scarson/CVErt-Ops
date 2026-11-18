@@ -4,6 +4,17 @@
 
 CVErt Ops is an open-source vulnerability intelligence and alerting platform. It continuously ingests data from major public CVE feeds, merges them into a single canonical corpus, and lets teams build watchlists and alert rules to stay on top of the vulnerabilities that matter to them. A single static Go binary runs the HTTP API and background workers — no external queue or message broker required.
 
+## Main Goal: Easy for AI Agents to Use
+
+CVErt Ops is built to be used by AI agents and scripts as easily as by people. Every capability is reachable through the HTTP API, and a command-line client and an MCP server are planned on top of it, so an agent that patches software can look up CVEs, check component versions against affected ranges, poll alert events, and maintain watchlists without a browser session. This shapes the design throughout:
+
+- **API first.** The web UI is a client of the same HTTP API. The API publishes a code-first OpenAPI 3.1 document, returns errors as RFC 9457 Problem Details, and uses cursor pagination, so a client can be generated from the spec and can tell failures apart by status code without parsing messages.
+- **API keys for machines.** Org-scoped API keys with role caps let an agent act with no interactive login; a viewer-role key gives an agent read-only access.
+- **CLI.** A `cvert` command-line client for scripts: JSON output by default, purl or Trivy JSON input for version checks, and exit codes that distinguish no results, authentication failure, rate limiting, and server errors. Designed, not yet built.
+- **MCP.** An MCP server with narrow tool input schemas and compact results, served over streamable HTTP by `cvert-ops serve` at `/api/v1/mcp` with the caller's API key, and over stdio by `cvert mcp`. Designed, not yet built.
+
+The CLI and MCP design is in `dev/plans/2026-11-13-api-client-cli-and-mcp-server-design.md` (binary layout, commands, exit codes, MCP tool set, and the decisions still open).
+
 ## Key Features
 
 ### Multi-Source CVE Aggregation
@@ -86,7 +97,7 @@ Organizations can configure OIDC-based single sign-on with domain-based auto-dis
 
 ### SCIM Provisioning
 
-Full SCIM 2.0 support for automated user lifecycle management via your identity provider (Okta, Azure AD, Google Workspace, etc.). Bearer-token authenticated endpoints expose standard `/Users` and `/Groups` resources with create/read/update/patch/delete and filter parsing. Group-to-role mappings let you drive RBAC membership directly from IdP groups — changes take effect on the next SCIM sync with no admin action required. Org members can be flagged `scim_exempt` to keep local accounts (emergency access, service accounts) from being deactivated by an IdP sync. A dedicated per-org rate limiter isolates SCIM traffic from the main API budget.
+Full SCIM 2.0 support for automated user lifecycle management via your identity provider (Okta, Microsoft Entra ID, Google Workspace, etc.). Bearer-token authenticated endpoints expose standard `/Users` and `/Groups` resources with create/read/update/patch/delete and filter parsing. Group-to-role mappings let you drive RBAC membership directly from IdP groups — changes take effect on the next SCIM sync with no admin action required. Org members can be flagged `scim_exempt` to keep local accounts (emergency access, service accounts) from being deactivated by an IdP sync. A dedicated per-org rate limiter isolates SCIM traffic from the main API budget.
 
 ### Site Administration
 
@@ -104,7 +115,7 @@ CVErt Ops has extensive test coverage — over 2,200 Go test functions across 20
 
 **Integration tests hit real infrastructure.** Over 100 test files run against a real PostgreSQL instance (via testcontainers) with full RLS enforcement, real migrations, and seeded data. API tests stand up real HTTP servers and exercise the full middleware stack — auth, RBAC, MFA, SCIM, CSRF, tier enforcement, rate limiting. No mocking away the hard parts.
 
-**Shared test infrastructure** in `internal/testutil/` provides reusable helpers: a managed test database with automatic migration, seed data utilities, a mock OIDC provider for SSO testing, and a local SMTP server for email delivery tests. `testutil.SeedCorpus` seeds a test database with 65 real CVEs across 8 feeds (NVD, MITRE, GHSA, OSV, KEV, MSRC, Red Hat, EPSS) by running captured upstream responses through the real merge pipeline — giving downstream tests (alert evaluation, search, reports) a realistic corpus without hand-crafted fixtures.
+**Shared test infrastructure** in `internal/testutil/` provides reusable helpers: a managed test database with automatic migration, seed data utilities, a mock OIDC provider for SSO testing, and a local SMTP server for email delivery tests. `testutil.SeedCorpus` seeds a test database with 71 real advisory records across 8 feeds (NVD, MITRE, GHSA, OSV, KEV, MSRC, Red Hat, EPSS) by running captured upstream responses through the real merge pipeline — giving downstream tests (alert evaluation, search, reports) a realistic corpus without hand-crafted fixtures.
 
 **Feed adapter tests** use captured HTTP responses served via `httptest` to verify parsing, streaming, error handling, and rate limit compliance without hitting upstream APIs. Each adapter has a golden-file test that runs real captured responses end-to-end, catching upstream schema drift that unit tests with hand-crafted fixtures cannot detect. Alert DSL tests cover the compiler, evaluator, and all three evaluation paths (realtime, batch, EPSS). Notification delivery tests verify the transactional safety guarantees — claim, commit, deliver, record — with real database state.
 
@@ -150,9 +161,9 @@ The background worker handles feed ingestion, alert evaluation, notification del
 
 | Layer | Technology |
 |-------|-----------|
-| Language | Go 1.26 |
+| Language | Go 1.27 |
 | HTTP framework | chi + huma (code-first OpenAPI 3.1) |
-| Database | PostgreSQL 15+ with Row-Level Security |
+| Database | PostgreSQL 18+ with Row-Level Security |
 | Queries | sqlc (static) + squirrel (dynamic DSL) |
 | Auth | JWT (HS256) + Argon2id + OAuth/OIDC |
 | AI | Google Gemini via `google.golang.org/genai` |
@@ -187,7 +198,6 @@ internal/
   tier/              Subscription tier logic
   worker/            Job queue and worker pool
 migrations/          SQL migration files (embedded)
-templates/           Notification and report templates (embedded)
 web/                 Vue 3 SPA
 ```
 
@@ -195,8 +205,8 @@ web/                 Vue 3 SPA
 
 ### Prerequisites
 
-- Go 1.26+
-- PostgreSQL 15+
+- Go 1.27+
+- PostgreSQL 18+
 - Node.js 24+ (for frontend development)
 - Docker and Docker Compose (recommended for local Postgres)
 

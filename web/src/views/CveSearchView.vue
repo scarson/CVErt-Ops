@@ -58,7 +58,7 @@ async function fetchCves() {
     return
   }
 
-  items.value = data.items ?? []
+  items.value = data.items
   setNextCursor(data.next_cursor)
 }
 

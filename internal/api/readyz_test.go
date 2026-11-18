@@ -37,7 +37,7 @@ func TestReadyzHandler_NilDB_Returns503(t *testing.T) {
 	t.Parallel()
 
 	handler := readyzHandler(nil, 34)
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -61,7 +61,7 @@ func TestReadyzHandler_ContentType(t *testing.T) {
 	t.Parallel()
 
 	handler := readyzHandler(nil, 34)
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -93,7 +93,7 @@ func TestReadyzHandler_DirtyMigration_Returns503(t *testing.T) {
 	})
 
 	handler := readyzHandler(pool, version)
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -110,6 +110,36 @@ func TestReadyzHandler_DirtyMigration_Returns503(t *testing.T) {
 	}
 	if !resp.Checks.Migrations.Dirty {
 		t.Error("migration dirty field should be true")
+	}
+}
+
+// The server connects as cvert_ops_app, which sees schema_migrations only
+// through a migration GRANT.
+func TestReadyzHandler_AppRole_ReportsCurrentMigrations(t *testing.T) {
+	t.Parallel()
+
+	db := testutil.NewTestDB(t)
+
+	var version int
+	if err := db.Pool().QueryRow(context.Background(), "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1").Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+
+	handler := readyzHandler(db.AppStore.Pool(), version)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("readyz as app role: got %d, want 200", rec.Code)
+	}
+
+	var resp readyzResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Checks.Migrations.Status != "current" {
+		t.Errorf("migration status = %q, want %q", resp.Checks.Migrations.Status, "current")
 	}
 }
 

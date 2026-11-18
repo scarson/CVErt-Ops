@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CVErt Ops is an open-source vulnerability intelligence and alerting application (Go 1.26, PostgreSQL 15+). API-first, single static binary, multi-tenant with RBAC. Self-hosted first, SaaS later.
+CVErt Ops is an open-source vulnerability intelligence and alerting application (Go 1.27, PostgreSQL 18+). API-first, single static binary, multi-tenant with RBAC. Self-hosted first, SaaS later.
+
+**Development status:** the application is under development and has no known users other than dev testers. Existing users, integrations and data are therefore not a backward compatibility consideration.
 
 **PLAN.md** — full PRD. Key sections: §3 feed adapters · §4–5 data model + merge · §6 RLS/multi-tenancy · §7 auth · §9 watchlists · §10 alert DSL · §11 notifications · §12 reports · §16 API contract · §18 phases · §21 retention · Appendix A schema · Appendix B endpoints.
 
@@ -145,6 +147,8 @@ git worktree add "$path" -b "$BRANCH_NAME" dev
 ```
 Worktree directory: `.claude/worktrees/` (already gitignored).
 
+A new worktree has no `web/dist`, which `web/embed.go` embeds and git ignores, so `go build ./...` and `go test` of `cmd/cvert-ops`, `internal/api` and `web` stop with `pattern all:dist: no matching files found` ("[setup failed]"). Before building or testing, copy the SPA build from the main checkout: `cp -r ../../../web/dist web/dist` from the worktree root. If the main checkout has none, run `cd web && npm run build` first.
+
 ### Worktree PR safety
 
 When PRing from a worktree that was created from `main` and merged `dev`:
@@ -165,7 +169,7 @@ When PRing from a worktree that was created from `main` and merged `dev`:
 
 ### Test data seeding
 
-- **`testutil.SeedCorpus(t, db)`** — seeds a test database with 65 real CVEs from 8 feeds (NVD, MITRE, GHSA, OSV, KEV, MSRC, Red Hat, EPSS) via golden fixtures and the real merge pipeline. Requires Docker (testcontainers). Use this for integration tests that need a realistic CVE corpus (alert evaluation, search, reports, watchlists).
+- **`testutil.SeedCorpus(t, db)`** — seeds a test database with 71 real advisory records from 8 feeds (NVD, MITRE, GHSA, OSV, KEV, MSRC, Red Hat, EPSS) via golden fixtures and the real merge pipeline. Requires Docker (testcontainers). Use this for integration tests that need a realistic CVE corpus (alert evaluation, search, reports, watchlists).
 - **Do NOT seed CVE test data with raw SQL inserts** — use `SeedCorpus` or store methods. Raw inserts bypass `material_hash` computation, child table population, and FTS index updates. See `dev/testing-pitfalls.md` §7.
 - **Golden file tests** exist for each feed adapter at `internal/feed/<adapter>/golden_test.go`. They serve captured real API responses via httptest. Do not delete or skip these — they catch upstream schema drift that unit tests with hand-crafted fixtures cannot detect.
 - **When NOT to use `SeedCorpus`:** For unit tests that need a specific CVE shape (e.g., CVSS 0.0, null description, specific CWE), hand-craft the `CanonicalPatch` directly. `SeedCorpus` provides breadth, not targeted edge cases. For adapter unit tests, continue using inline JSON fixtures for precise control over individual fields.
@@ -174,7 +178,9 @@ When PRing from a worktree that was created from `main` and merged `dev`:
 
 - **Tests MUST be executed, not just compiled.** `go build` and `go vet` verify syntax; only `go test` verifies behavior. Code that compiles but was never executed is unverified code.
 - **If Docker Desktop is unavailable** (testcontainers-go requires it for integration tests), this is a **HARD BLOCKER**. Do NOT proceed with "compilation-only verification." Stop and escalate to Sam.
+- **Leftover test containers:** a test binary killed by `-timeout` cannot terminate its containers (its shared Postgres container and any SMTP container), and with `TESTCONTAINERS_RYUK_DISABLED=true` nothing else does. `internal/testutil` labels each container with its owning process (`cvert-ops.test.owner-pid`, `cvert-ops.test.owner-start`), and the next test binary to start a container removes those whose owner has exited. Containers without these labels must be removed by hand. `org.testcontainers.sessionId` is shared by every package in one `go test` invocation, so it cannot attribute leftovers to a package. See `docs/testing/testcontainers-leftover-containers.md` (cause analysis and the sweep's safety rules).
 - **Before merging any branch to `dev`:** run `go test ./... -count=1 -timeout=600s` on the branch. If tests cannot run (Docker down, DB unavailable), do not merge.
+- **Test databases and suite runtime:** each test binary starts one Postgres container on its first `testutil.NewTestDB` call, migrates a template database once, and gives each test its own clone (~100 ms). Every package that calls `NewTestDB` needs `func TestMain(m *testing.M) { os.Exit(testutil.Run(m)) }`, which terminates the container after the tests; `NewTestDB` fails without it. On this Windows host, with Docker shared by other sessions, the full suite took 189–384 s (2026-11-03) and no package took more than 220 s, inside `-timeout=600s`. For work in progress, narrow runs with `-run <TestName>`. A binary killed by the timeout leaves its one container for the next binary's sweep (see the bullet above).
 - **Worktree agents**: If you cannot run integration tests in your worktree, report this as a blocker in your progress log and STOP. Do not mark tasks as complete with "compiles, tests not run."
 - **Coordinator rule**: After merging each stage/worktree to `dev`, run the full test suite on `dev` before launching the next stage. Failures from the merge block the next stage.
 
@@ -296,6 +302,7 @@ Mailpit UI: http://localhost:8025
 | CLI | cobra (subcommands: serve, worker, migrate) |
 | SSRF | doyensec/safeurl for all outbound webhooks |
 | Metrics | prometheus/client_golang at /metrics |
+| Version comparison | `internal/version`, wrapping google/osv-scalibr/semantic: ecosystem-native ordering, "cannot evaluate" over "not affected" (PLAN.md §9.2) |
 | Frontend | Vue 3 + Vite + TypeScript + Tailwind 4 + shadcn-vue (reka-ui) |
 | Frontend state | Pinia + VueUse |
 | Frontend API | openapi-fetch (typed from OpenAPI schema) |
@@ -308,10 +315,14 @@ Mailpit UI: http://localhost:8025
 - Single binary: HTTP server + worker pool via cobra subcommands (`serve`, `worker`, `migrate`, `import-bulk`, `doctor`, `quota`, `validate`, `rotate`); no external queue
 - CVE corpus is global/shared; all tenant data is org-scoped — every org-scoped store method MUST take `orgID` as a parameter
 - `cve_search_index(cve_id, fts_document tsvector)` is a separate 1:1 table — never put FTS on `cves`; GIN rewrites on every timestamp/score update cause severe write amplification
-- `material_hash = sha256(jcs(material_fields))`; EPSS score explicitly excluded (§5.3). Before hashing: normalize CVSS vectors to canonical spec metric order; sort all string arrays (URLs, CWE IDs, CPEs) lexicographically
+- `material_hash = sha256(jcs(material_fields))`; EPSS score explicitly excluded (§5.3). Before hashing: sort each CVSS vector's metrics after the version prefix (hash input only; stored vectors keep the source's order); sort all string arrays (URLs, CWE IDs, CPEs) lexicographically
 - Merge re-reads all `cve_sources` rows and recomputes the canonical `cves` row from scratch on every source write — not incremental; field precedence is per-field (§5.1)
+- `cve_sources` is keyed `(cve_id, source_name, source_id)`: one row per advisory, so a feed can hold several rows for one CVE. A withdrawn advisory contributes nothing; a CVE is tombstoned only when its status authority says so or every row is withdrawn
+- `cve_affected_packages` holds every distinct range; `material_hash` covers ecosystem, folded package name, `introduced`, `fixed`, `last_affected` and range class, under a sort that compares all of them
+- `cves.severity` is stored in the case the feed sent; compare with `lower(cves.severity)` (implementation-pitfalls.md ARCH-46)
 
 **Feed adapters**
+- Ecosystem names are OSV's, defined in `internal/ecosystem`; the GHSA adapter maps its names and parses `vulnerable_version_range` at parse time
 - Implement `FeedAdapter` interface; pure functions with injected HTTP client; each manages its own upstream rate limiter
 - GHSA/OSV alias resolution: if `aliases[]` contains a CVE ID, use it as the primary key — not the native ID. Late-binding PK migration required for aliases added after initial ingest
 - Streaming parse required for all large responses: `json.Decoder` with `Token()`/`More()` loop; `Decode(&slice)` is forbidden for large feeds
@@ -324,7 +335,7 @@ Mailpit UI: http://localhost:8025
 
 **Tenant isolation (dual-layer)**
 - Layer 1: `orgID` parameter on every org-scoped method. Layer 2: `SET LOCAL app.org_id = $1` per-transaction + Postgres RLS policies
-- Fail-closed: unset `app.org_id` → `NULL::uuid = org_id` evaluates to NULL (false in WHERE) → 0 rows returned
+- Fail-closed: unset `app.org_id` → `NULL::uuid = org_id` evaluates to NULL (false in WHERE) → 0 rows returned. Policies wrap the setting in `NULLIF(..., '')`: after any `SET LOCAL app.org_id`, Postgres leaves the session's value as `''`, and `''::uuid` raises an error (implementation-pitfalls.md ARCH-45)
 - `FORCE ROW LEVEL SECURITY` + app DB role `NOBYPASSRLS` on all org-scoped tables
 - `org_id` denormalized on every child/join table — RLS on a parent does NOT protect its children
 - Transaction helper selection (see `implementation-pitfalls.md` §2.17 for full rationale):
@@ -337,9 +348,10 @@ Mailpit UI: http://localhost:8025
 - Realtime: fires on CVE upsert when `material_hash` changes
 - Batch: periodic job using `date_modified_canonical > last_cursor`; skips rules whose only conditions reference `epss_score`
 - EPSS-specific: daily job using `date_epss_updated > last_cursor`; only rules with `epss_score` conditions
-- All paths: filter `cves.status NOT IN ('rejected', 'withdrawn')`; regex rules fail-closed if candidate cap (5,000) exceeded
+- Batch and EPSS scans start 2 minutes behind `last_cursor` (`cursorRescanWindow`): the cursor and the compared timestamps come from different clocks and writers commit after stamping (implementation-pitfalls.md NOTIFY-20)
+- All paths: filter `COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')`: feeds send mixed case, and CVEs with no status must still match (implementation-pitfalls.md NOTIFY-10); regex rules fail-closed if candidate cap (5,000) exceeded
 - New rule activation: handler inserts rule with `status='activating'`, enqueues scan job, returns 202 immediately — never runs the scan inline
-- `alert_events` UNIQUE on `(org_id, rule_id, cve_id, material_hash)`; inserts use `ON CONFLICT DO NOTHING RETURNING id` — fan-out only if the row was actually inserted
+- `alert_events` UNIQUE on `(org_id, rule_id, cve_id, material_hash)`; inserts use `ON CONFLICT DO NOTHING RETURNING id` — fan-out only if the row was actually inserted, or a no-op insert was followed by `ReopenAlertEvent` changing a resolved event back to open
 
 **Notification delivery**
 - Never hold an open DB transaction during an outbound webhook HTTP call — claim job → commit → call webhook → update status in a new transaction
@@ -361,7 +373,7 @@ Mailpit UI: http://localhost:8025
 **Binary init (`cmd/cvert-ops/main.go`)**
 - `import _ "time/tzdata"` — embeds IANA timezone database (distroless container has no `/usr/share/zoneinfo`)
 - `import _ "github.com/KimMachineGun/automemlimit"` — auto-sets GOMEMLIMIT from cgroup limit; prevents OOM-kill in containers
-- pgxpool: `DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol` for PgBouncer transaction-mode compatibility
+- pgxpool: `DefaultQueryExecMode = pgx.QueryExecModeCacheDescribe` for PgBouncer transaction-mode compatibility; never simple protocol, which sends `[]byte` as `bytea` and breaks every jsonb write
 - DB connection retry loop on startup — Postgres isn't ready immediately in Docker Compose
 
 ## Conventions
@@ -397,7 +409,7 @@ When suppression is necessary, prefer **inline `//nolint:linter // reason`** ove
 
 **Commit frequently** — aim for small, focused commits that are individually CI-passing. Each logical unit (a package, a migration, a handler) should be its own commit. Large commits make review harder and lose context if context is compacted.
 
-**Update `dev/implementation-log.md` after each commit** — record what was built, key implementation decisions, gotchas discovered, and quality check results. This is the primary mechanism for preserving context across compacted sessions.
+**Add an entry to `dev/implementation-log/` after each commit** — one new file per entry, named `YYYY-MM-DDTHHMMZ-<slug>.md` (naming rules in `dev/implementation-log/README.md`). Record what was built, key implementation decisions, gotchas discovered, and quality check results. This is the primary mechanism for preserving context across compacted sessions.
 
 ## Project Layout
 
@@ -411,6 +423,7 @@ internal/auth/       # JWT, OAuth, API keys, argon2id
 internal/config/     # caarlos0/env config structs
 internal/crypto/     # cryptographic helpers
 internal/dbutil/     # nullable type conversion helpers (database/sql)
+internal/ecosystem/  # canonical package ecosystem names and package name folding
 internal/doctor/     # system health check framework (CLI + API)
 internal/feed/       # feed adapters (nvd, mitre, kev, osv, ghsa, epss, vendor)
 internal/ingest/     # feed ingestion orchestrator
@@ -425,9 +438,9 @@ internal/secure/     # security event pipeline (async writer + rate limiting)
 internal/store/      # repository layer (sqlc + squirrel)
 internal/testutil/   # shared test helpers
 internal/tier/       # subscription tier logic
+internal/version/    # version checks against affected ranges, by ecosystem
 internal/worker/     # job queue + goroutine pool
 migrations/          # SQL files (embedded)
-templates/           # notification + watchlist templates (embedded)
 web/                 # Vue 3 SPA (Vite + TypeScript + Tailwind 4)
 dev/                 # plans, research, bug hunts, test coverage reports
 ```
@@ -469,7 +482,7 @@ Use these proactively — don't wait to be asked.
 | `plan-check` | Before merging any feature — specify the PLAN.md section |
 | `security-review` | Before merging auth, webhook, tenant-isolation, or public API code |
 | `dependency-check` | Before adding any new dependency or specifying one in a plan |
-| `implementation-log` | When finishing a phase or feature block — appends a structured entry |
+| `implementation-log` | When finishing a phase or feature block — writes a structured entry file to `dev/implementation-log/` |
 | `project-health-review` | Periodic critical review — adversarial multi-agent quality assessment |
 
 **Subagents** (invoke via `Agent` tool):

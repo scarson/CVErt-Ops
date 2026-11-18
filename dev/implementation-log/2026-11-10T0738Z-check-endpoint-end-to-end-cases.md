@@ -1,0 +1,29 @@
+# Check endpoint end-to-end cases on real records
+
+## What was built
+
+- Task 3.11 of `dev/plans/2026-11-09-version-check-endpoint-plan.md` (version check endpoint, Phase 3, end-to-end cases on real data), commit `efd1df4`.
+- Golden data: `UBUNTU-CVE-2026-109618`, `UBUNTU-CVE-2026-109619` and `USN-8948-1`, read from `api.osv.dev` on 2026-11-10, added to `internal/feed/osv/testdata/golden/all.zip` as `<ID>.json` entries, compact JSON as the API returned it, deflated, entries sorted by name. The archive was rewritten by copying every existing entry's compressed bytes unchanged (`zip.Writer.Copy`), so all 65 earlier entries keep their CRC. `golden_material_hashes.json` gains the three IDs; the documented `SeedCorpus` count goes from 68 to 71 records in `AGENTS.md`, `CLAUDE.md`, `README.md` and `dev/testing-pitfalls.md`.
+- `internal/api/check_integration_test.go`: one subtest per row of design section 12's test data table (45 rows), through the full `srv.Handler()` stack with a viewer API key, decoding into the spec's `CheckResults` with unknown fields refused.
+  - `TestCheckIntegration_GoldenCorpus`: `SeedCorpus`, all three feed cursors, KEV patches for CVE-2026-109618 and CVE-2026-109619, and EPSS scores for them written by the EPSS adapter against a served scores file. 13 rows.
+  - `TestCheckIntegration_GoldenCorpusNoCursors`: `SeedCorpus` with no cursors, for the data-incomplete row.
+  - `TestCheckIntegration_TargetedPatches`: 31 rows, each on its own database, data merged through `merge.Ingest`. CNA data is written as CVE 5 `affected[]` JSON and parsed by `feed.ParseCNAAffected`, so package keys come from the production parser. Real CNA arrays (CVE-2024-7347, CVE-2026-70007, CVE-2024-27980) were read from `cveawg.mitre.org`; CVE-2026-56847 and CVE-2021-44228 come from the golden MITRE archive through `testutil.GoldenPatch`.
+- Rows the design marks "Table test" also run end to end here, each naming its unit test in a comment. "Mixed snapshot" is a skipped subtest that names `internal/store` `TestReadCheckCandidates_OneSnapshot`, because a request cannot place a commit between its own statements.
+
+## Decisions and gotchas
+
+- Existing pins did not move: with the new archive and the old pin file, `TestMaterialHash_GoldenCorpusMatchesPins` failed only with "in the seeded corpus but not pinned" for the three new IDs. The pins were then rewritten with `UPDATE_GOLDEN_HASHES=1`, and the diff adds three lines only.
+- `UBUNTU-CVE-2026-109618` and `-109619` pin the same material hash although their CVSS v3 vectors differ. `resolve.go` takes a CVSS vector only from a source that also gives a score, and OSV gives vectors only, so OSV's vectors are dropped. The OSV adapter also sets no severity. Read from the code (not asserted by a test), every OSV-only advisory, which includes every distro record, therefore answers `severity` and `cvss_v3_score` null, though design section 6 says those fields "stay those of the distro's own record". Display only; verdicts are not affected.
+- `SeedCorpus` calls `t.Setenv` (the NVD key), so a test that uses it cannot call `t.Parallel`. The golden-corpus subtests also share one server, which runs at most four checks at once, so they run one after another; the first run with parallel subtests got 503s.
+- CVE-2024-7347's real CNA entry is `{1.5.13, lessThan *, affected, semver}` with changes to unaffected at 1.26.2 and 1.27.1, not the `{1.25.0, lessThan 1.27.1}` the `internal/check` unit test (`cnaNginx7347`) and the plan describe. 1.27.0 still reads Indeterminate. The record's second entry, `F5` / `NGINX Plus`, is a nearby name for `f5:nginx`, so with the whole record the advisory answers `cna_name_uncertain` whatever the Open Source entry says. The subtest uses the Open Source entry alone, because the nearby rule would otherwise keep the advisory unanswered even with the `changes[]` rule broken.
+- "Name the table lacks": the table has no exact name `.NET 9.0 runtime`; `microsoft:.net` holds the prefix `.net `, which finds it. With CVE-2026-70007's whole array and no NVD rows, `9.0.20` answers Affected, fixed `9.0.21`, one CNA range `[9.0.0, 9.0.21)`. The record's `Microsoft .NET Framework` entries are nearby names, which do not override Affected.
+- "Retracted" needs rows that survive a rejection: an OSV package row and an NVD CPE row, then MITRE `REJECTED`. MITRE is a status authority, so its withdrawn record still sets `cves.status`, and the other sources' rows stay.
+- "CNA purl with a registry" adds a control: the same entry naming public `pkg:npm/bar` matches, so the refused key is shown to be the cause. Bounds are `1.0.0` and `2.0.0`, because `npm` items must be SemVer.
+- "Item limit across sources" puts the CNA rows on CVEs that have NVD rows for the vendor, so no nearby-name row adds to the count: four rows, two per source. With the item limit at 4 the item is answered; at 3 it is `too_many_candidates`.
+
+## Quality checks
+
+- `go test ./internal/api/ -run CheckIntegration -count=1 -v`: pass, 3 top-level tests, 44 subtests passed, 1 skipped ("Mixed snapshot").
+- Break test, run once and reverted: `Combine` changed so that with no primary rows any CNA result except Affected gives Not affected. "CNA must not clear" and "`changes[]` must not clear" failed (both answered `not_affected`), as did "CNA only" and "CNA package identity" for `5.12.6`. Restored with `git checkout -- internal/check/combine.go`; the rerun passed.
+- `go test ./internal/feed/osv/ ./internal/testutil/ -count=1`: pass. `go test ./internal/merge/ -run 'TestMaterialHash_GoldenCorpusMatchesPins|TestSeedCorpus'`: pass. The other `SeedCorpus` users, `internal/alert` `TestWatchlistCVE_AlreadyInKEVAlertsAfterAdded` and `internal/store` `TestReadCheckCandidates_EnrichmentFromCorpus`: pass.
+- `golangci-lint run ./internal/api/...`: 0 issues.

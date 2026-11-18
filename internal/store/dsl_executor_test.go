@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/alert/dsl"
+	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -51,6 +54,78 @@ func TestExecuteDSLQuery_BasicFilter(t *testing.T) {
 	// Only 1 result with limit 25 — no next page.
 	if nextCursor != "" {
 		t.Errorf("expected empty cursor, got %q", nextCursor)
+	}
+}
+
+// TestExecuteDSLQuery_StatusFilter verifies a CVE with no status is returned and a
+// rejected one is not.
+func TestExecuteDSLQuery_StatusFilter(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	for cveID, status := range map[string]any{"CVE-2024-NOSTATUS": nil, "CVE-2024-REJECTED": "Rejected"} {
+		_, err := s.DB().ExecContext(ctx, `
+			INSERT INTO cves (cve_id, status, severity, material_hash) VALUES ($1, $2, 'critical', $3)`,
+			cveID, status, uuid.New().String())
+		if err != nil {
+			t.Fatalf("insert %s: %v", cveID, err)
+		}
+	}
+
+	rule := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "severity", Op: "eq", Value: json.RawMessage(`"critical"`)},
+		},
+	}
+	compiled, err := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery: %v", err)
+	}
+	if len(results) != 1 || results[0].CveID != "CVE-2024-NOSTATUS" {
+		t.Fatalf("results = %+v, want only CVE-2024-NOSTATUS", results)
+	}
+}
+
+// TestExecuteDSLQuery_SeverityMatchesStoredCase verifies a rule, which only accepts
+// lowercase severities, matches values as feeds store them: NVD and MITRE uppercase,
+// GHSA lowercase.
+func TestExecuteDSLQuery_SeverityMatchesStoredCase(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	s.SeedTestCVE(t, "CVE-2024-NVD", "CRITICAL", nil)
+	s.SeedTestCVE(t, "CVE-2024-GHSA", "critical", nil)
+	s.SeedTestCVE(t, "CVE-2024-LOW", "LOW", nil)
+
+	rule := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "severity", Op: "eq", Value: json.RawMessage(`"critical"`)},
+		},
+	}
+	compiled, err := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery: %v", err)
+	}
+	got := map[string]bool{}
+	for _, r := range results {
+		got[r.CveID] = true
+	}
+	if len(got) != 2 || !got["CVE-2024-NVD"] || !got["CVE-2024-GHSA"] {
+		t.Fatalf("matched %v, want CVE-2024-NVD and CVE-2024-GHSA", got)
 	}
 }
 
@@ -192,6 +267,88 @@ func TestExecuteDSLQuery_ExcludesRejectedWithdrawn(t *testing.T) {
 	}
 }
 
+// TestExecuteDSLQuery_EmptySeverityLists checks a null or empty severity list binds
+// as an empty array: not_in matches every CVE that is not rejected or withdrawn,
+// including CVEs with no severity, and in matches none. Not parallel: SeedCorpus
+// sets environment variables.
+func TestExecuteDSLQuery_EmptySeverityLists(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	testutil.SeedCorpus(t, tdb)
+	ctx := context.Background()
+
+	want := map[string]bool{}
+	nullSeverity := 0
+	rows, err := tdb.DB().QueryContext(ctx, `
+		SELECT cve_id, severity IS NULL FROM cves
+		WHERE COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')`)
+	if err != nil {
+		t.Fatalf("read visible CVEs: %v", err)
+	}
+	for rows.Next() {
+		var id string
+		var isNull bool
+		if err := rows.Scan(&id, &isNull); err != nil {
+			t.Fatalf("scan visible CVE: %v", err)
+		}
+		want[id] = true
+		if isNull {
+			nullSeverity++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read visible CVEs: %v", err)
+	}
+	_ = rows.Close()
+	if len(want) == 0 || len(want) > 100 {
+		t.Fatalf("corpus has %d visible CVEs; the test reads one page of at most 100", len(want))
+	}
+	if nullSeverity == 0 {
+		t.Fatal("corpus has no visible CVE with NULL severity; the not_in case would not cover one")
+	}
+
+	run := func(op, value string) []string {
+		t.Helper()
+		rule := dsl.Rule{
+			Logic: dsl.LogicAnd,
+			Conditions: []dsl.Condition{
+				{Field: "severity", Op: op, Value: json.RawMessage(value)},
+			},
+		}
+		compiled, err := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+		if err != nil {
+			t.Fatalf("Compile severity %s %s: %v", op, value, err)
+		}
+		results, next, err := tdb.ExecuteDSLQuery(ctx, compiled, "", 100)
+		if err != nil {
+			t.Fatalf("ExecuteDSLQuery severity %s %s: %v", op, value, err)
+		}
+		if next != "" {
+			t.Fatalf("severity %s %s: unexpected next page", op, value)
+		}
+		ids := make([]string, len(results))
+		for i, r := range results {
+			ids[i] = r.CveID
+		}
+		return ids
+	}
+
+	for _, value := range []string{"null", "[]"} {
+		got := run("not_in", value)
+		gotSet := map[string]bool{}
+		for _, id := range got {
+			gotSet[id] = true
+		}
+		if len(got) != len(want) || !reflect.DeepEqual(gotSet, want) {
+			t.Errorf("severity not_in %s matched %d CVEs, want all %d visible CVEs (%d with NULL severity)",
+				value, len(got), len(want), nullSeverity)
+		}
+
+		if got := run("in", value); len(got) != 0 {
+			t.Errorf("severity in %s matched %v, want none", value, got)
+		}
+	}
+}
+
 // ── Cursor & Limit edge cases ──────────────────────────────────────────────
 
 // compileHighSeverity returns a compiled DSL rule matching severity=critical|high.
@@ -221,6 +378,9 @@ func TestExecuteDSLQuery_InvalidBase64Cursor(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid base64 cursor, got nil")
 	}
+	if !errors.Is(err, store.ErrInvalidCursor) {
+		t.Errorf("error = %v, want store.ErrInvalidCursor", err)
+	}
 }
 
 func TestExecuteDSLQuery_ValidBase64InvalidJSON(t *testing.T) {
@@ -234,6 +394,9 @@ func TestExecuteDSLQuery_ValidBase64InvalidJSON(t *testing.T) {
 	_, _, err := s.ExecuteDSLQuery(ctx, compiled, badCursor, 25)
 	if err == nil {
 		t.Fatal("expected error for valid base64 but invalid JSON cursor, got nil")
+	}
+	if !errors.Is(err, store.ErrInvalidCursor) {
+		t.Errorf("error = %v, want store.ErrInvalidCursor", err)
 	}
 }
 
@@ -252,22 +415,72 @@ func TestExecuteDSLQuery_CraftedCursor(t *testing.T) {
 
 	compiled := compileHighSeverity(t)
 
-	// Craft a cursor that skips all CVEs (far future date).
-	farFuture := time.Now().Add(24 * time.Hour)
-	crafted, _ := json.Marshal(map[string]any{
-		"s": farFuture.Format(time.RFC3339Nano),
-		"c": "CVE-9999-9999",
-	})
-	cursor := base64.URLEncoding.EncodeToString(crafted)
-
-	results, _, err := s.ExecuteDSLQuery(ctx, compiled, cursor, 25)
-	if err != nil {
-		t.Fatalf("ExecuteDSLQuery with crafted cursor: %v", err)
+	// craft builds a cursor in the dslCursor wire format: "d" is the sort date,
+	// "c" the CVE ID.
+	craft := func(t *testing.T, d time.Time) string {
+		t.Helper()
+		crafted, err := json.Marshal(map[string]any{
+			"d": d.Format(time.RFC3339Nano),
+			"c": "CVE-9999-9999",
+		})
+		if err != nil {
+			t.Fatalf("marshal crafted cursor: %v", err)
+		}
+		return base64.URLEncoding.EncodeToString(crafted)
 	}
+
 	// Crafted cursor with far-future date: keyset WHERE (date, id) < (far_future, ...)
 	// should still return all CVEs since they are all before the far-future date.
+	results, _, err := s.ExecuteDSLQuery(ctx, compiled, craft(t, base.Add(24*time.Hour)), 25)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery with crafted far-future cursor: %v", err)
+	}
 	if len(results) != 3 {
 		t.Errorf("crafted far-future cursor: got %d results, want 3", len(results))
+	}
+
+	// Crafted cursor dated between K000 and K001: only the two older CVEs are
+	// before it, which shows the crafted date reached the keyset WHERE.
+	results, _, err = s.ExecuteDSLQuery(ctx, compiled, craft(t, base.Add(-30*time.Second)), 25)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery with crafted mid-range cursor: %v", err)
+	}
+	var got []string
+	for _, r := range results {
+		got = append(got, r.CveID)
+	}
+	if want := []string{"CVE-2024-K001", "CVE-2024-K002"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("crafted mid-range cursor: got %v, want %v", got, want)
+	}
+}
+
+// TestExecuteDSLQuery_EditedCursor checks that a cursor whose JSON a caller has
+// edited (unknown member, case-variant name, duplicate name) is refused instead
+// of partly applied.
+func TestExecuteDSLQuery_EditedCursor(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	s.SeedTestCVE(t, "CVE-2024-E001", "critical", nil)
+
+	compiled := compileHighSeverity(t)
+	const d = "2026-01-01T00:00:00Z"
+	cases := map[string]string{
+		"unknown member": `{"d":"` + d + `","c":"CVE-9999-9999","s":"` + d + `"}`,
+		"case variant":   `{"D":"` + d + `","c":"CVE-9999-9999"}`,
+		"duplicate name": `{"d":"` + d + `","c":"CVE-9999-9999","c":"CVE-0000-0000"}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			cursor := base64.URLEncoding.EncodeToString([]byte(raw))
+			results, _, err := s.ExecuteDSLQuery(ctx, compiled, cursor, 25)
+			if err == nil {
+				t.Fatalf("ExecuteDSLQuery accepted cursor %s and returned %d results", raw, len(results))
+			}
+			if !errors.Is(err, store.ErrInvalidCursor) {
+				t.Errorf("error = %v, want store.ErrInvalidCursor", err)
+			}
+		})
 	}
 }
 
@@ -584,67 +797,79 @@ func TestExecuteDSLQuery_PostFilterCaseInsensitive(t *testing.T) {
 		DescriptionPrimary: "Critical Buffer Overflow in Chrome",
 	})
 
-	// Compile a rule matching severity=high, then attach regex PostFilters.
-	rule := dsl.Rule{
-		Logic: dsl.LogicAnd,
-		Conditions: []dsl.Condition{
-			{Field: "severity", Op: "eq", Value: json.RawMessage(`"high"`)},
-		},
+	// Each rule is severity=high and one regex, compiled as stored rules are,
+	// so the regex carries the compiler's case-insensitive default.
+	cases := []struct {
+		name    string
+		pattern string
+		want    int
+	}{
+		{"lower-case pattern matches mixed-case description", "buffer overflow", 1},
+		{"upper-case pattern matches mixed-case description", "CRITICAL BUFFER", 1},
+		{"case-sensitive pattern matches the stored case", "(?-i)Critical Buffer", 1},
+		{"case-sensitive pattern of another case does not match", "(?-i)critical buffer", 0},
 	}
-	compiled, err := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			value, err := json.Marshal(tc.pattern)
+			if err != nil {
+				t.Fatalf("marshal pattern: %v", err)
+			}
+			rule := dsl.Rule{
+				Logic: dsl.LogicAnd,
+				Conditions: []dsl.Condition{
+					{Field: "severity", Op: "eq", Value: json.RawMessage(`"high"`)},
+					{Field: "description_primary", Op: "regex", Value: value},
+				},
+			}
+			compiled, err := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+			if err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+			results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
+			if err != nil {
+				t.Fatalf("ExecuteDSLQuery: %v", err)
+			}
+			if len(results) != tc.want {
+				t.Fatalf("got %d results, want %d", len(results), tc.want)
+			}
+		})
+	}
+}
+
+// TestValidateDSLCursor checks ValidateDSLCursor without a database: an empty
+// cursor and a cursor the store issued pass; a cursor ExecuteDSLQuery would
+// refuse returns ErrInvalidCursor.
+func TestValidateDSLCursor(t *testing.T) {
+	t.Parallel()
+
+	issued, err := store.EncodeDSLCursor(time.Date(2026, 3, 4, 5, 6, 7, 123456789, time.UTC), "CVE-2024-0001")
 	if err != nil {
-		t.Fatalf("Compile: %v", err)
+		t.Fatalf("EncodeDSLCursor: %v", err)
+	}
+	for name, cursor := range map[string]string{"empty": "", "issued": issued} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if err := store.ValidateDSLCursor(cursor); err != nil {
+				t.Errorf("ValidateDSLCursor(%q) = %v, want nil", cursor, err)
+			}
+		})
 	}
 
-	t.Run("lowercase regex matches mixed-case description", func(t *testing.T) {
-		// The alert evaluator uses lower(cves.description_primary) in SQL,
-		// so a lowercase regex should match mixed-case text in PostFilter too.
-		compiled.PostFilters = []dsl.PostFilter{
-			{Negate: false, Pattern: regexp.MustCompile("buffer overflow")},
-		}
-
-		results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
-		if err != nil {
-			t.Fatalf("ExecuteDSLQuery: %v", err)
-		}
-		if len(results) != 1 {
-			t.Fatalf("got %d results, want 1: lowercase regex should match mixed-case description", len(results))
-		}
-		if results[0].CveID != "CVE-2024-CI01" {
-			t.Errorf("CveID = %q, want CVE-2024-CI01", results[0].CveID)
-		}
-	})
-
-	t.Run("lowercase regex matches lowered target text", func(t *testing.T) {
-		// "critical buffer" (lowercase) should match because the target text
-		// is lowered before matching, matching the alert evaluator's lower() semantics.
-		compiled.PostFilters = []dsl.PostFilter{
-			{Negate: false, Pattern: regexp.MustCompile("critical buffer")},
-		}
-
-		results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
-		if err != nil {
-			t.Fatalf("ExecuteDSLQuery: %v", err)
-		}
-		if len(results) != 1 {
-			t.Fatalf("got %d results, want 1: lowercase regex should match lowered target", len(results))
-		}
-	})
-
-	t.Run("mixed-case regex does not match lowered target", func(t *testing.T) {
-		// "Critical Buffer" has uppercase letters. The target text is lowered to
-		// "critical buffer overflow in chrome", so "Critical" (uppercase C) should
-		// NOT match. This proves we lowercase the target, not the regex.
-		compiled.PostFilters = []dsl.PostFilter{
-			{Negate: false, Pattern: regexp.MustCompile("Critical Buffer")},
-		}
-
-		results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
-		if err != nil {
-			t.Fatalf("ExecuteDSLQuery: %v", err)
-		}
-		if len(results) != 0 {
-			t.Fatalf("got %d results, want 0: mixed-case regex should not match lowered target", len(results))
-		}
-	})
+	const d = "2026-01-01T00:00:00Z"
+	invalid := map[string]string{
+		"not base64":     "!!!not-base64!!!",
+		"not JSON":       base64.URLEncoding.EncodeToString([]byte("not-json")),
+		"unknown member": base64.URLEncoding.EncodeToString([]byte(`{"d":"` + d + `","c":"CVE-9999-9999","s":"` + d + `"}`)),
+		"case variant":   base64.URLEncoding.EncodeToString([]byte(`{"D":"` + d + `","c":"CVE-9999-9999"}`)),
+		"duplicate name": base64.URLEncoding.EncodeToString([]byte(`{"d":"` + d + `","c":"CVE-9999-9999","c":"CVE-0000-0000"}`)),
+	}
+	for name, cursor := range invalid {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if err := store.ValidateDSLCursor(cursor); !errors.Is(err, store.ErrInvalidCursor) {
+				t.Errorf("ValidateDSLCursor(%q) = %v, want store.ErrInvalidCursor", cursor, err)
+			}
+		})
+	}
 }

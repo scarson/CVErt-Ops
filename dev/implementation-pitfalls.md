@@ -24,12 +24,12 @@ This document serves three audiences. Start here, then go directly to the sectio
 
 | § | Section | You're working on... | Entries | Checklist |
 |---|---------|---------------------|---------|-----------|
-| 1 | [Feed Adapters & Data Ingestion](#1-feed-adapters--data-ingestion) | Feed adapters, streaming, ZIP, cursors, aliases | FEED-1 – FEED-20 | §1.C |
-| 2 | [Database & Query Patterns](#2-database--query-patterns) | Store methods, migrations, SQL, RLS, transaction helpers | DB-1 – DB-25 | §2.C |
-| 3 | [Authentication & Security](#3-authentication--security) | Auth, OAuth, JWT, API keys, MFA, lockout, secrets | AUTH-1 – AUTH-25 | §3.C |
-| 4 | [API Design & HTTP](#4-api-design--http) | HTTP handlers, middleware, pagination, validation | API-1 – API-11 | §4.C |
-| 5 | [Notification & Alert Evaluation](#5-notification--alert-evaluation) | Alerts, delivery, webhooks, fan-out, debounce | NOTIFY-1 – NOTIFY-19 | §5.C |
-| 6 | [Architecture & Operations](#6-architecture--operations) | Startup, config, deployment, scheduling, cross-cutting | ARCH-1 – ARCH-44 | §6.C |
+| 1 | [Feed Adapters & Data Ingestion](#1-feed-adapters--data-ingestion) | Feed adapters, streaming, ZIP, cursors, aliases | FEED-1 – FEED-25 | §1.C |
+| 2 | [Database & Query Patterns](#2-database--query-patterns) | Store methods, migrations, SQL, RLS, transaction helpers | DB-1 – DB-27 | §2.C |
+| 3 | [Authentication & Security](#3-authentication--security) | Auth, OAuth, JWT, API keys, MFA, lockout, secrets | AUTH-1 – AUTH-26 | §3.C |
+| 4 | [API Design & HTTP](#4-api-design--http) | HTTP handlers, middleware, pagination, validation | API-1 – API-17 | §4.C |
+| 5 | [Notification & Alert Evaluation](#5-notification--alert-evaluation) | Alerts, delivery, webhooks, fan-out, debounce | NOTIFY-1 – NOTIFY-25 | §5.C |
+| 6 | [Architecture & Operations](#6-architecture--operations) | Startup, config, deployment, scheduling, cross-cutting | ARCH-1 – ARCH-48 | §6.C |
 | A | [Historical Changelog](#appendix-a-historical-changelog) | Provenance, validation dates, review process meta-observations | — | — |
 | B | [Unified Summary Table](#appendix-b-unified-summary-table) | All pitfalls at a glance, with severity and status | — | — |
 | C | [Document Maintenance Guide](#appendix-c-document-maintenance-guide) | How to update this document correctly | — | — |
@@ -73,7 +73,7 @@ for dec.More() {
 if _, err := dec.Token(); err != nil { return err } // consume ']'
 ```
 
-> **WARNING:** Do NOT use `continue` after a `json.Decoder.Decode()` error. After `Decode` returns an error, the decoder's internal state is undefined. Subsequent calls to `More()` and `Decode()` may skip or garble valid records. Either abort the feed or manually consume tokens to resync.
+> **WARNING:** Do NOT use `continue` after a `json.Decoder.Decode()` error, with one exception: a `*json.UnmarshalTypeError`, which `Decode` returns only after reading the whole value, so the next `Decode` starts at the next record. Every other error is sticky. Each later `Decode` returns it again, while `More()` still sees the unread value and returns true, so a skip-and-continue loop never ends. A body cut short is the common case: it gives `io.ErrUnexpectedEOF`, not a `*json.SyntaxError`. In the NVD, GHSA and KEV adapters, one dropped NVD connection spun this loop for 11 hours (2026-11-10). The loop also never checked the context, so the job's time limit did not stop it. It held the only `feed_ingest` slot and wrote 50 GB of warnings. For a read error, fail the page so that it is fetched again from the same cursor.
 
 **The Lesson:** Always verify a feed's actual wire format before writing the parser. Vulnerability feed APIs are rarely top-level JSON arrays. The "obvious" streaming pattern is often wrong. Verify with `curl | jq 'keys'` before writing a single line of adapter code.
 
@@ -221,6 +221,8 @@ for _, entry := range zr.File {
 ```
 For a full `import-bulk` run `lastCursor` is the zero `time.Time`, so `lastCursor.IsZero()` is true and the pre-filter is a no-op — all entries are processed.
 
+**Only where the archive stamps each entry with its own change time.** GitHub's archive of a repository branch stamps every entry with the commit time. In the cvelistV5 archive downloaded on 2026-11-07, all 420,947 CVE entries carried one time, so the pre-filter kept every entry once upstream had a newer commit, and skipped every entry otherwise. The MITRE adapter therefore selects records by `cveMetadata.dateUpdated`, read by decoding each entry only as far as `cveMetadata` (`internal/feed/mitre/archive.go`). Before relying on entry times, check that they differ across the entries of a real archive.
+
 **The Lesson:** ZIP archives expose file metadata (name, size, modification time, compression method) in the central directory without requiring each entry to be opened. Always check available metadata before performing I/O. For incremental processing of large archives, a single timestamp comparison can eliminate 99.9% of redundant work. Never assume that "checking inside" is the only option when the file system or archive format provides a pre-filter.
 
 ---
@@ -347,6 +349,8 @@ GitHub's GraphQL API enforces rate limits per token (5,000 points/hour). The GHS
 
 **The Lesson:** Internal pagination defeats the handler's crash recovery mechanism. When an adapter fetches all pages internally, the handler cannot persist intermediate progress. Always return one logical page per adapter call and let the handler own the persistence lifecycle.
 
+**The same flaw with a file list:** an index such as MSRC's `changes.csv` names one document per request, so downloading every listed document in one `Fetch()` is internal pagination too. MSRC's first sync lists every file it publishes (10,146 on 2026-11-11); at one request per second that is nearly three hours, and a job is capped at 10 minutes. The first sync could never finish: each job hit the time limit or an HTTP 429, saved nothing, and the next job asked for the same files again, which kept the upstream rate limit in force. Page the list in a fixed order, and when entries can share a sort key (1,179 MSRC files share one timestamp), put a tie-break, such as the path, in the cursor.
+
 ---
 
 ### FEED-20: Response Body Must Be Drained After json.Decoder
@@ -366,6 +370,53 @@ _, _ = io.Copy(io.Discard, resp.Body)
 
 **The Lesson:** `json.Decoder` does not consume the entire response body — it reads only what it needs. Always drain the remainder with `io.Copy(io.Discard, resp.Body)` before `Close()`. This applies to ALL outbound HTTP responses, not just feed adapter calls.
 
+
+---
+
+### FEED-21: A Dedupe Key That Drops Range Bounds Loses Release Branches
+
+**The Flaw:** Deduplicating affected packages on `(ecosystem, package, introduced)` looks harmless, but GHSA sets `introduced` to the same value for every branch of a package.
+
+**Why It Matters:** Only the first branch survives, so a version on another branch reports "not affected". 23% of reviewed GHSA advisories repeat a package across branches.
+
+**The Fix:** Key on the whole range: `introduced`, `fixed`, `last_affected`, and whether the bounds are compared the same way.
+
+---
+
+### FEED-22: An Advisory's Withdrawal Is Not a CVE's Withdrawal
+
+**The Flaw:** Treating any withdrawn source as a withdrawn CVE. With one row per advisory, one withdrawn duplicate is enough to clear CVSS scores on a valid CVE.
+
+**Why It Matters:** Severity rules stop matching it, which is a silent false negative.
+
+**The Fix:** A withdrawn advisory contributes nothing. Tombstone the CVE only when the highest-precedence status source says so, or when every source row is withdrawn.
+
+---
+
+### FEED-23: A Declared Vulnerable Range Must Never Be Shortened
+
+**The Flaw:** Replacing an inclusive upper bound with `first_patched_version` unconditionally. For `>= 1.0.0, <= 3.0.0` patched in `2.0.0`, the range becomes `[1.0.0, 2.0.0)` and `2.5.0` reports "not affected".
+
+**The Fix:** Use the patched version only when it provably sorts above the declared bound in the package's ecosystem. Otherwise keep the declared bound as `last_affected`.
+
+---
+
+### FEED-24: Feed Adapters Stay on v1 `encoding/json`
+
+Feed adapters MUST keep decoding upstream JSON with v1 `encoding/json`, not `encoding/json/v2`. Upstream data drifts (FEED-1, FEED-4). Under v2's defaults, one upstream record with a duplicate key or an invalid UTF-8 byte aborts the whole page instead of decoding as it does under v1, and invalid UTF-8 that v1 replaces with U+FFFD becomes an error, which also changes what reaches `material_hash`. The NVD and KEV skip-bad-record logic branches on v1's `*json.SyntaxError` and `*json.UnmarshalTypeError` (`internal/feed/nvd/adapter.go`, `internal/feed/kev/adapter.go`); v2 returns `*jsontext.SyntacticError` and `*jsonv2.SemanticError`. v2 with options that restore all of v1's behaviour is v1 under another name, and decoder speed alone does not justify the change. Reasoning: `dev/plans/2026-11-14-json-v2-migration-plan.md` — encoding/json/v2 migration plan, section "Category 4 — feed adapters stay on v1", which also maps the streaming rule of FEED-1 onto v2's `jsontext.Decoder` calls for a future change that does move a streaming loop.
+
+---
+
+### FEED-25: A Score Parsed From Text Can Be NaN or Infinite
+
+**The Flaw:** Parsing a score from a string with `strconv.ParseFloat`, or through gjson's `Result.Float()` (which calls `ParseFloat` on string values), and keeping it when the error is nil. `ParseFloat` accepts `NaN`, `Inf`, `+Infinity` and other spellings without error, and gjson turns a JSON number too large for `float64` (such as `1e400`) into `+Inf`. A `float64` struct field decoded by `encoding/json` cannot receive these: JSON has no NaN or infinity, and an overflowing number is a decode error.
+
+**Why It Matters:** `json.Marshal` fails on NaN and ±Inf. `merge.Ingest` marshals the patch for `cve_sources` first, so the merge returns an error, and the ingest handler stops the feed run at that CVE without advancing the cursor. Every retry fetches the same record again, so one bad upstream value stops the whole feed. If the patch got past that, `ComputeMaterialHash` would panic on the same marshal. In Postgres, NaN sorts above every number, so a stored NaN would match every `>` alert rule.
+
+**The Fix:** After parsing, reject the value when `math.IsNaN(f) || math.IsInf(f, 0)`. Drop the score, keep the rest of the record, and log a warning with the CVE ID and the raw value. The Red Hat adapter (`detailToPatch`, warning logged in `Fetch`), the generic adapter (`mapScore`) and the EPSS adapter (which also checks the 0 to 1 range) do this.
+
+**The Lesson:** "Parsed without error" does not mean "a usable number". Every float that comes from text needs a finiteness check before it leaves the adapter.
+
 ---
 
 ### Review Checklist
@@ -374,12 +425,12 @@ When building or reviewing a feed adapter, verify each of the following:
 
 - [ ] **Wire format verified** — checked the actual API response structure with `curl | jq 'keys'` before writing the parser (FEED-1)
 - [ ] **No `Decode(&slice)`** — streaming uses `Token()`+`More()` loop, never decodes into a slice (FEED-1)
-- [ ] **Decoder errors abort** — no `continue` after `json.Decoder.Decode()` error; decoder state is undefined after error (FEED-1)
+- [ ] **Decoder errors abort** — `continue` after a `json.Decoder.Decode()` error only for `*json.UnmarshalTypeError`; any other error is sticky and a skip loop spins forever, so fail the page (FEED-1)
 - [ ] **ZIP via temp file** — HTTP response bodies streamed to disk before `zip.NewReader`, never `io.ReadAll` (FEED-2)
 - [ ] **Timestamp fallback parser** — all feed timestamps parsed via multi-layout fallback, never raw `time.RFC3339` (FEED-3)
 - [ ] **No `defer` in loops** — archive iteration uses explicit `Close()` at every exit path (FEED-5)
 - [ ] **URL params via `url.Values`** — no string concatenation for query parameters (FEED-6)
-- [ ] **ZIP pre-filter** — `FileHeader.Modified.After(lastCursor)` checked before `entry.Open()` (FEED-7)
+- [ ] **ZIP pre-filter** — `FileHeader.Modified.After(lastCursor)` checked before `entry.Open()`, where the archive stamps per-entry change times; cvelistV5 does not (FEED-7)
 - [ ] **`strings.Clone` on extracted fields** — all string fields from shared decoder/gjson buffers cloned before storing (FEED-8)
 - [ ] **Canonical ID resolution** — OSV/GHSA records use CVE alias as PK when available; native ID stored as `source_id` (FEED-12)
 - [ ] **PK migration for late aliases** — adapter detects when existing native-PK record gains a CVE alias and triggers atomic PK rename (FEED-17)
@@ -391,6 +442,8 @@ When building or reviewing a feed adapter, verify each of the following:
 - [ ] **Rate limiter dynamic** — rate configured based on API key presence (FEED-11)
 - [ ] **One page per Fetch()** — adapter returns one logical page; handler persists between pages (FEED-19)
 - [ ] **Response body drained** — `io.Copy(io.Discard, resp.Body)` after `json.Decoder` use (FEED-20)
+- [ ] **Upstream JSON decoded with v1** — feed adapters import `encoding/json`, not `encoding/json/v2` (FEED-24)
+- [ ] **Text-parsed scores are finite** — every score from `strconv.ParseFloat` or gjson `Float()` is dropped with a warning when NaN or ±Inf (FEED-25)
 
 ### See Also
 - Feed adapter data seeded in tests: see testing-pitfalls.md §9 (Feed Data Quality)
@@ -470,11 +523,11 @@ func advisoryKey(domain, id string) int64 {
 CREATE POLICY org_isolation ON watchlists
     USING (
         current_setting('app.bypass_rls', TRUE) = 'on'
-        OR org_id = current_setting('app.org_id', TRUE)::uuid
+        OR org_id = NULLIF(current_setting('app.org_id', TRUE), '')::uuid
     )
     WITH CHECK (
         current_setting('app.bypass_rls', TRUE) = 'on'
-        OR org_id = current_setting('app.org_id', TRUE)::uuid
+        OR org_id = NULLIF(current_setting('app.org_id', TRUE), '')::uuid
     );
 ```
 Worker transaction helper (only valid call site):
@@ -585,7 +638,7 @@ Both steps are inside the merge transaction. If the transaction rolls back, the 
 
 **Why It Matters:** Omitting RLS on child tables lets any authenticated user access/modify rows by guessing a parent UUID. `EXISTS` subquery policies execute a nested loop join on every scanned row, destroying read performance for large orgs. In both cases, tenant isolation is either absent or unacceptably slow.
 
-**The Fix:** Every tenant-owned table — including all child and join tables — must contain an `org_id UUID NOT NULL` column with a `BTREE(org_id)` index and an RLS policy using `org_id = current_setting('app.org_id', TRUE)::uuid`. The redundancy (parent and child both carry `org_id`) is intentional. Do NOT normalize it out.
+**The Fix:** Every tenant-owned table — including all child and join tables — must contain an `org_id UUID NOT NULL` column with a `BTREE(org_id)` index and an RLS policy using `org_id = NULLIF(current_setting('app.org_id', TRUE), '')::uuid`. The redundancy (parent and child both carry `org_id`) is intentional. Do NOT normalize it out.
 
 **The Lesson:** RLS policies protect only the table they're defined on. There is no automatic inheritance to child tables. Any time you normalize `org_id` out of a child table (relying on a parent join to establish ownership), you lose both the RLS protection and the index-based performance it provides.
 
@@ -649,6 +702,8 @@ rows, err := tx.Query(ctx,
 `ANY($1::text[])` accepts a `[]string` slice as a single `$1` argument. Postgres expands it internally without consuming wire-protocol parameter slots. The fix applies to all dynamic list-membership checks: watchlist package matching, SBOM dependency scanning, CWE filter `IN` lists, and any other case where a user-provided list is matched against a DB column.
 
 **Note:** This finding was independently flagged in two separate review rounds (as 2.12 and 12.1), confirming its importance. The `ANY` array pattern is the universal replacement for dynamic `IN` clauses.
+
+**Squirrel builds the flawed form for you.** `sq.Eq{col: slice}` renders `col IN (?, ?, ...)`, one placeholder per element (`Placeholders(valVal.Len())` in squirrel's `expr.go`), and `sq.NotEq` does the same with `NOT IN`. The alert DSL's `setSQL` (`internal/alert/dsl/compiler.go`) builds `in` and `not_in` this way, so one `cve_id in [...]` condition of about 260,000 short IDs fits in the 1 MiB request limit and passes 65,535 parameters. Use `sq.Expr(col+" = ANY(?)", pq.Array(vals))` instead. The fix is part of the MATCH-2 work (`dev/plans/2026-11-13-product-match-rules-design.md` section 3.2).
 
 **The Lesson:** Never use dynamic `IN ($1, $2, ..., $N)` construction for user-controlled lists. The limit is invisible during development (test watchlists are small) and catastrophic in production (one enterprise user brings down the worker). `ANY($1::type[])` is always the correct pattern.
 
@@ -831,6 +886,49 @@ Alternatively, if the helper takes a plain `int32`, document that `0` is a valid
 
 ---
 
+### DB-26: Btree Index Over Unbounded Feed Text Fails the Whole Merge
+
+**The Flaw:** `cve_references` had btree indexes on `(cve_id, url_canonical)` and on `url_canonical`. A btree row holds at most 2,704 bytes (after PostgreSQL compresses the key), and a reference URL has no length bound. Red Hat sends a reference over 3,000 bytes for CVE-2006-4339.
+
+**Status: FIXED — migration 000060 enforces reference uniqueness on `text_key_digest(url_canonical)`, a SHA-256 digest, and drops the index on `url_canonical` alone, which no query used. Migration 000061 does the same for `cve_affected_cpes`, keys `cve_cpe_matches_check_idx` on `left(cpe_normalized, 512)`, and drops two indexes no query could use. The merge leaves out package names over 1,024 bytes (`maxIndexedPackageNameBytes`).**
+
+**Why It Matters:** The insert fails with `index row size N exceeds btree version 4 maximum 2704` (SQLSTATE 54000). That rolls back the merge of the CVE, and the feed job stops at the same record on every run. Red Hat failed this way on every run of a full ingest and never recorded a success. Nothing in the data looks wrong until a feed sends one long value.
+
+**The Fix:** Index a bounded form of any feed-supplied text that has no length limit:
+- for uniqueness, an IMMUTABLE digest of the value (`text_key_digest` in migration 000060), and name the same expression in the `ON CONFLICT` target
+- for prefix or equality lookups that tolerate truncation, `left(value, N)` with the query's bounds cut the same way and a recheck of the whole value (`cve_cna_affected_check_idx` in migration 000059, `cve_cpe_matches_check_idx` in migration 000061)
+- or refuse the value where it is parsed or merged, when no value that long can be real (`maxPackageKeyBytes` in `internal/ecosystem/purl.go`, `maxIndexedPackageNameBytes` in `internal/merge/pipeline.go`). Allow for folding: `lower()` can make text longer in bytes.
+
+An index that no query can use still fails the insert, so drop it rather than bound it.
+
+`sha256(text::bytea)` parses backslashes as bytea escapes, and `convert_to` is STABLE, so the digest needs an IMMUTABLE SQL wrapper. `md5(text)` is IMMUTABLE but can fail on a server whose OpenSSL runs in FIPS mode.
+
+**The Lesson:** Before adding a btree index over feed-supplied text, find what bounds the value's length. A test for this must use pseudo-random multi-byte text: PostgreSQL compresses index keys, so a repeated character fits under the limit and proves nothing (testing-pitfalls.md §9, long values in btree-indexed columns).
+
+---
+
+### DB-27: A Rule Predicate Over Child Tables Is Fast or Slow by Its Shape, Not Its Logic
+
+**The Flaw:** Alert rules, dry-runs and saved searches run one predicate in two settings: against a handful of candidate CVE IDs (realtime, batch, activation) and against the whole corpus (dry-run, saved search, AI search). Three logically equivalent ways to write a condition over `cve_cpe_matches`, `cve_cna_affected` or `cve_affected_packages` were measured on the full ingest (about 2.6 million CVEs, PostgreSQL 18, 2026-11-13) and fail in one setting or the other:
+
+- **`EXISTS (...) OR EXISTS (...)`, correlated on `cves.cve_id`:** PostgreSQL cannot turn an `OR` of sublinks into a semi-join, so a whole-corpus run probes both tables once per CVE row: 11.1 s for a Node.js product dry-run against a 14 s statement timeout. Against one candidate CVE it is fast (0.34 ms).
+- **An uncorrelated `cves.cve_id IN (SELECT ...)` whose lookup joins `unnest($lo[], $hi[])` range arrays:** the planner chose a sequential scan of `cve_cpe_matches` instead of the range index: 7.7 to 13.9 s under `and`, past 60 s under `or`. Written as explicitly `OR`-ed range predicates, the same lookup used a bitmap `OR` over `cve_cpe_matches_check_idx`: 2.6 ms.
+- **`cves.cve_id NOT IN (SELECT ...)` over a large set:** past a 60 s timeout for `ecosystem neq npm`, where a correlated `NOT EXISTS` took 243 ms.
+
+An uncorrelated set without the candidate IDs inside it is also slow on the candidate paths: it builds the whole product's set for one CVE (283 ms for `linux:linux_kernel`, against 0.28 ms with the IDs inside).
+
+Several such sets `OR`-ed together are slow too: PostgreSQL cannot pull an `OR`-ed `IN` subquery up into a semi-join, so each set becomes a hashed SubPlan built in full. A rule of 50 product and 50 package conditions under `or` took 27 s as a dry-run and exhausted shared memory, while the 50 package names as one `IN` planned as a merge semi-join in about 100 ms (`dev/plans/2026-11-13-product-match-rules-measurements.md`). Under `or` the compiler therefore puts the branches of every set condition into one `cves.cve_id IN (... UNION ALL ...)`; under `and` each set stays its own `IN`, which plans as a semi-join.
+
+On the candidate paths the `OR`-ed range and name terms cost planning time instead: a rule of 50 one-value product conditions and 50 package conditions under `or` took 16 to 20 ms to plan against one CVE and 2.0 s against a 5,000-ID batch, growing with the hundreds of terms and with each copy of the candidate array. With candidate IDs the rows are reached through `cve_id = ANY($candidates)`, which needs no check index, so the compiler matches a product set's CPE prefixes (`cpe_normalized ^@ ANY($prefixes)`) and CNA names and other products (a join to `unnest()` of bound arrays, other products excluded per value by group number) against arrays, and under `or` all product conditions share one CPE and one CNA branch. Without candidate IDs the range form stays, because the whole-corpus plan needs the indexes. An integration test checks both forms return the same CVEs (`internal/alert/product_candidate_form_test.go`). Under `or` the compiler likewise merges every package `eq` and `in` condition into one package branch, so the candidate array and name arrays are bound once (the 50 package branches cost 0.8 s of planning in a 5,000-ID batch). The evaluator, and saved and AI search through `store.ExecuteDSLQuery`, also run rule statements with JIT and parallel query off (`dsl.RuleQuerySettings`): for one realtime CVE PostgreSQL planned a two-worker Gather (about 20 ms of 26 ms), and an activation page's parallel hashes exhausted the container's 64 MB of shared memory.
+
+**Why It Matters:** Both settings run in production. A dry-run that times out returns an error to the user, and a realtime predicate that builds a whole set runs for every active rule on every changed CVE during ingest.
+
+**The Fix:** Write each positive condition as `cves.cve_id IN (<uncorrelated set>)`, and repeat the caller's candidate IDs inside every branch of the set (`AND x.cve_id = ANY($candidates)`) when the caller has them. With no candidate IDs, write ranges and name terms as explicit `OR`-ed predicates, not joins to `unnest()`; with candidate IDs, match them against bound arrays, so planning time does not grow with the number of values. Folding a bound array of package names in the database, `= ANY(ARRAY(SELECT lower(v) FROM unnest($names) AS v))`, is not such a join: the subquery is uncorrelated and runs once per statement, and the `= ANY` still uses `cve_affected_packages_check_idx` (full ingest, 2026-11-14: whole corpus 10 ms for three names with no ecosystem, one candidate 0.08 ms). Keep negative conditions as correlated `NOT EXISTS`. Verify each new shape with `EXPLAIN ANALYZE` in both settings, on the full ingest; the plans depend on PostgreSQL 18 features (btree skip scan) that 15 to 17 lack. Measurements and statements: `dev/plans/2026-11-13-product-match-rules-design.md` section 5 and Appendix A.
+
+**The Lesson:** For a DSL predicate, a query is not verified until it has been explained against one candidate CVE and against the whole corpus.
+
+---
+
 ### Review Checklist
 
 Use this checklist when reviewing store methods, migrations, or SQL queries.
@@ -847,6 +945,8 @@ Use this checklist when reviewing store methods, migrations, or SQL queries.
 - [ ] **sqlc type casts:** Do sqlc queries include explicit type casts (`$1::text`, `$1::uuid`) for parameters in positions where type inference is ambiguous?
 - [ ] **EPSS staging lifecycle:** Merge pipeline reads and deletes from epss_staging inside the merge transaction (DB-7)?
 - [ ] **EPSS advisory lock:** EPSS two-statement pattern acquires the same per-CVE advisory lock as the merge pipeline (DB-8)?
+- [ ] **Bounded btree keys:** Does every btree index over feed-supplied text index a bounded form (digest, `left(...)`, or a length cap at parse time), so one long value cannot fail a merge (DB-26)?
+- [ ] **DSL predicate shape:** Was each new alert-rule or search predicate explained against one candidate CVE and against the whole corpus, with positive conditions as uncorrelated sets carrying the candidate IDs, `OR`-ed range predicates rather than joins to `unnest()` when there are no candidate IDs, bound arrays when there are, and negative conditions as `NOT EXISTS` (DB-27)?
 
 ---
 
@@ -1318,6 +1418,27 @@ func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 
 ---
 
+### AUTH-26: TOTP Replay Checks Must Compare the Code's Own Time Step
+
+**The Flaw:** `totp.ValidateCustom` reports only whether a code is valid somewhere in the skew window, so the replay check recorded a step derived from the clock: first `currentStep`, then `currentStep + skew`. A code used at step S stored S+1. At step S+1 the same code was still inside the window, the compared value was S+2, and the check passed.
+
+**Why It Matters:** A captured code can be used a second time, which RFC 6238 §5.2 forbids. Widening the stored value only moves the boundary, because the compared value advances with the clock too. The overshoot also rejects legitimate codes from clients whose clocks run behind. The failing test passed unless its two requests crossed a 30-second boundary, so it looked like a flake.
+
+**The Fix:** Find the step the code belongs to, and use that step for both the comparison and the stored value:
+
+```go
+for step := currentStep + skew; step >= currentStep-skew; step-- {
+    matched, err := totp.ValidateCustom(code, secret, time.Unix(step*period, 0), singleStepOpts)
+    // return the first match: the latest step that produces this code
+}
+```
+
+Every path that accepts a code must record its step, including enrollment confirmation.
+
+**The Lesson:** A one-time check needs an identifier that stays fixed for the whole life of the credential. A value derived from the time of the check does not. If a library hides the value you need, compute it; do not approximate it.
+
+---
+
 ### Review Checklist
 
 Use this checklist when implementing or reviewing authentication and security code:
@@ -1344,6 +1465,7 @@ Use this checklist when implementing or reviewing authentication and security co
 - Security enforcement test patterns: see testing-pitfalls.md Section 11
 - Webhook SSRF in delivery path: see NOTIFY-8 (Webhook Tarpitting)
 - HTTP server timeouts (Slowloris): see API-4
+- Request validator and decoder matching member names differently (a case-variant `Password` decoded as an empty password): see API-15
 # Section 4: API Design & HTTP
 
 > **Reader context:** "I'm writing or reviewing HTTP handlers or middleware"
@@ -1437,14 +1559,15 @@ server := &http.Server{
 
 **Why It Matters:** (a) One user triggers the limit and all users are banned (same proxy IP). (b) Naive fix of trusting `X-Forwarded-For` enables attacker bypass by sending `X-Forwarded-For: 127.0.0.1`.
 
-**The Fix:** chi's `middleware.RealIP` handles `X-Forwarded-For` parsing securely. Register it before any middleware that reads client IP:
+**The Fix:** `clientIPMiddleware(srv.trustedProxies)` in `internal/api/ratelimit.go` wraps chi's `middleware.ClientIPFromRemoteAddr` when `TRUSTED_PROXIES` is empty and `middleware.ClientIPFromXFF(cidrs...)` otherwise, and stores the result as `ctxClientIP`. `NewServer` rejects any `TRUSTED_PROXIES` entry that is not a CIDR. Everything that keys on the client IP (`authRateLimit`, `checkAuthRateLimit`, audit and security events) reads `ctxClientIP`, never `r.RemoteAddr`:
 ```go
-r.Use(middleware.RealIP)       // parses XFF, sets r.RemoteAddr
-r.Use(clientIPMiddleware)      // reads r.RemoteAddr (already corrected)
-r.Use(rateLimitMiddleware)     // uses client IP from context
+r.Use(clientIPMiddleware(srv.trustedProxies)) // resolves client IP into ctxClientIP
+apiRouter.With(srv.authRateLimit()).Get(...)  // keys on ctxClientIP
 ```
 
-**The Lesson:** IP extraction for rate limiting is a two-step trust decision: (1) is the immediate connection from a trusted proxy? (2) if yes, what IP did the proxy report? Skipping step 1 enables trivial bypass. Using a well-tested library middleware (chi's RealIP) is preferable to a custom implementation for this security-critical parsing.
+Do not use chi's `middleware.RealIP`. It rewrites `r.RemoteAddr` from `True-Client-IP`, `X-Real-IP` or the leftmost `X-Forwarded-For` entry for every client, with no trusted-proxy check, so any client can choose its rate-limit key (GO-2026-5774/5775/5777). chi 5.3+ marks it deprecated, and staticcheck SA1019 fails lint on it. Do not use `ClientIPFromXFFTrustedProxies` either: it counts hops and never checks `r.RemoteAddr`, so a client that reaches the server directly can spoof its IP.
+
+**The Lesson:** IP extraction for rate limiting is a two-step trust decision: (1) is the immediate connection from a trusted proxy? (2) if yes, what IP did the proxy report? Skipping step 1 enables trivial bypass. Prefer a library middleware that performs both steps (chi's `ClientIPFromXFF` treats `r.RemoteAddr` as the rightmost hop since v5.4.0) over custom parsing, but read its documentation for which step it skips: `RealIP` skips step 1, so a well-known library default is not evidence that the trust decision is made.
 
 ---
 
@@ -1472,15 +1595,17 @@ The opaque cursor encodes both values. `cve_id` is globally unique, so this comp
 
 **Why It Matters:** An enterprise user places PgBouncer in front of Postgres in transaction pooling mode (the standard configuration for handling hundreds of application connections). pgx creates a named prepared statement (`pgx_0`, `pgx_1`, ...) on backend connection A. PgBouncer routes the next query to backend connection B. Postgres B has no record of the prepared statement and returns `ERROR: prepared statement "pgx_0" does not exist`. The error propagates through pgxpool; pgxpool may mark the connection as broken. Under load, this repeats continuously — the API and worker pools experience constant query failures, appearing as database errors or connection resets. The entire application is effectively down under enterprise deployment topology even though Postgres itself is healthy.
 
-**The Fix:** Configure pgxpool to use `QueryExecModeSimpleProtocol` by default:
+**The Fix:** Configure pgxpool to use `QueryExecModeCacheDescribe` by default:
 ```go
 config, _ := pgxpool.ParseConfig(cfg.DatabaseURL)
-config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+config.ConnConfig.DefaultQueryExecMode = store.DefaultQueryExecMode // pgx.QueryExecModeCacheDescribe
 pool, _ := pgxpool.NewWithConfig(ctx, config)
 ```
-Simple protocol sends SQL as plain text strings without named prepared statements — fully compatible with all PgBouncer modes, all pooler configurations, and direct Postgres connections. The performance difference at our scale (hundreds of queries/sec, not millions) is negligible. Expose `DB_QUERY_EXEC_MODE` env var so advanced users can opt into extended protocol if connecting directly to Postgres without a pooler.
+This mode describes a statement once per connection to learn its parameter types, then sends each execution as an unnamed statement, so nothing depends on which backend PgBouncer assigns next. Expose `DB_QUERY_EXEC_MODE` env var so advanced users can opt into named prepared statements (`extended_protocol`) if connecting directly to Postgres without a pooler.
 
-**The Lesson:** pgx's default query execution mode is optimized for direct-to-Postgres performance with persistent connections. It is fundamentally incompatible with connection poolers operating in transaction pooling mode. This incompatibility is not surfaced in development (single direct connection) but manifests immediately in enterprise deployments. Any Go application using pgx that might be deployed with PgBouncer must configure the query execution mode at initialization time.
+Do not use `QueryExecModeSimpleProtocol` or `QueryExecModeExec`. They assume parameter types from Go types, and pgx documents that "`[]byte` values are encoded as PostgreSQL bytea". Every `json.RawMessage` or `[]byte` argument to a `jsonb` column then fails with `invalid input syntax for type json`. An earlier version of this entry prescribed simple protocol: feed sync state, audit log, security events and notification payloads all failed in production while the tests passed, because the test pools used pgx's default mode.
+
+**The Lesson:** pgx's default query execution mode is optimized for direct-to-Postgres performance with persistent connections. It is fundamentally incompatible with connection poolers operating in transaction pooling mode. This incompatibility is not surfaced in development (single direct connection) but manifests immediately in enterprise deployments. Any Go application using pgx that might be deployed with PgBouncer must configure the query execution mode at initialization time. Tests must run in the mode production runs: a query mode changes how every parameter is encoded, and `testutil.NewTestDB` uses `store.DefaultQueryExecMode` for this reason.
 
 ---
 
@@ -1572,6 +1697,108 @@ feeds, err := store.ListRegisteredFeeds(ctx)
 
 ---
 
+### API-12: A Sequence or Timestamp Cursor Skips Rows That Commit Out of Order
+
+**The Flaw:** A polling feed ordered by a sequence (or identity, or insert timestamp) column, with the client keeping the last value it saw. The value is assigned when the row is inserted, but the row becomes visible when its transaction commits, and transactions commit in any order.
+
+**Why It Matters:** Transaction A takes value 100 and is still open. Transaction B takes 101 and commits. A poll returns 101 and the client stores cursor 101. A then commits 100, which is below the cursor, so no later poll returns it. The event is lost silently, and only under concurrent writers, so single-threaded tests never show it.
+
+**The Fix:** Draw the position while holding a lock that is released only after the commit is visible (`alert_events.feed_seq`, migration 000062, `LockAlertEventFeed`):
+```sql
+SELECT pg_advisory_xact_lock(1178944836, hashtext($org_id::text));  -- first statement
+INSERT INTO alert_events (..., feed_seq) VALUES (..., nextval('alert_event_feed_seq'));
+```
+Postgres makes a commit visible before it releases the committing transaction's locks, so the next writer in the org draws a larger value only after the previous row is visible or rolled back: position order is commit order per org. The rules that keep it true:
+- every writer of `feed_seq` takes the org lock before touching the row: insert, reopen and resolve in the store, and the late-binding move in the merge pipeline (`moveAlertEvents`). A writer that locks the row first can deadlock with an insert of the same event, which holds the org lock and waits on the row
+- a transaction that changes events of several orgs (the late-binding move) takes their locks in lock-key order (`hashtext(org_id::text)`), and changes only the events of orgs it has locked
+- the sequence keeps `CACHE 1`, or cached values are handed out in a different order from the lock
+- the column has no default, so an insert that does not draw a position fails instead of taking one without the lock
+
+The lock is per org and held only for the writer's own short transaction, so writers in one org queue behind each other for milliseconds.
+
+Rejected: ordering by the inserting transaction's ID (`xid8` from `pg_current_xact_id()`), returning only rows below `pg_snapshot_xmin(pg_current_snapshot())`. It is exactly-once inside one cluster, but transaction IDs are relative to the cluster: after `pg_dump` and restore into a fresh cluster (a documented recovery path) new events get IDs below every stored cursor and are never returned. It also delays every org's feed while any write transaction on the server is open, including in other databases. A sequence and the lock have neither problem, since the sequence's state is dumped with the data.
+
+**The Lesson:** A cursor is safe only if no row can become visible later with a key below the cursor. Ask "is the key assigned at insert or at commit?" for every polling cursor, and check that the key survives a dump and restore. NOTIFY-20 and NOTIFY-21 are the timestamp versions of this flaw, fixed there with an overlap window and idempotent re-processing.
+
+---
+
+### API-13: An In-Process Request Built on the Outer Request's Context Is Routed With the Outer Route
+
+**The Flaw:** A handler dispatches a second request to the server's own chi router in process (the design for the MCP endpoint does this: `dev/plans/2026-11-13-api-client-cli-and-mcp-server-design.md`, section 7.3) and builds that request with the outer request's context.
+
+**Why It Matters:** `chi.Mux.ServeHTTP` reuses a routing context it finds in the request's context ("a routing context already exists from a parent router", `chi/v5` `mux.go`), so the inner request is routed with the outer request's remaining path and method, not its own URL, and gets 404. A probe against chi v5.5.0 with a sub-router mounted at `/api/v1` gave 404 for an inner `GET /api/v1/whoami` with the outer context and 200 with the routing context removed (found by design review, 2026-11-13). The same reuse appends the inner route pattern to the outer routing context, which the HTTP metrics middleware reads after the handler returns. The outer context also carries the outer request's authentication values, so code downstream can see an identity the inner request's own authentication never set.
+
+**The Fix:** Give the inner request a fresh context that carries none of the outer request's values, cancelled when the outer work ends (`context.AfterFunc` on the outer context, plus any deadline of its own). Pass what the inner request legitimately needs (the `Authorization` header, the peer address and forwarding headers, the request ID) as request fields and headers, so the inner middleware sets everything else itself.
+
+**The Lesson:** A context is not a cancellation channel only; it carries every value the outer middleware stored. When a request is re-entered into the same middleware chain, start from an empty context and copy what is needed explicitly.
+
+---
+
+### API-14: A Value Validated in One Place and Used in Another Must Be Decoded by One Function
+
+**The Flaw:** The API validated a notification channel's `config` by decoding it into `map[string]any` and looking up keys by exact name (`cfg["url"]`), validated email config with v1 `encoding/json`, which matches struct field names case-insensitively, and masked config for responses and audit records by exact key. Delivery decoded the same stored bytes into a struct with v1, case-insensitively.
+
+**Why It Matters:** Each reader was correct by its own rules, and they read different values from the same bytes. An email channel stored as `{"Recipients":["x@example.com"]}` passed validation, was shown to admins and in the audit log as `"Recipients":"[REDACTED]"` rather than as a recipient list, and was delivered to `x@example.com`. A webhook `custom_headers` value `{"X-A":1}` passed the API, because any value fits `map[string]any`; at delivery v1 reported a type error that the caller discarded, and the request went out with `X-A` empty. Nothing logged an error. The same split held for semantic rules: a reserved header name was accepted by the API and silently dropped at send time, so the stored config and what was sent differed.
+
+**The Fix:** One parser per stored type, in the package that acts on the value, called by both the API and the consumer: `notify.ParseWebhookSettings` and `notify.ParseEmailSettings` (`internal/notify/channel_config.go`) decode with `encoding/json/v2` and `RejectUnknownMembers(true)`, so names match exactly and keys delivery does not read are refused. `notify.CheckWebhookSettings` and `notify.CheckEmailRecipients` in the same file hold the semantic rules (URL present, header names and values, reserved headers, recipient count, address syntax, duplicates). The API maps their errors to 422 locations; delivery treats the same errors as permanent failures. The parsers also refuse JSON `null` for a string value, because v2 decodes `null` into a Go `string` as `""` without an error. Background and the stored-row check: `dev/plans/2026-11-14-json-v2-migration-plan.md` — encoding/json/v2 migration plan, section "Phase 1 — Notification channel config: one strict decoder for API and delivery".
+
+**The Lesson:** "Validated" means only "this decoder accepted it". Two decoders that differ on name case, unknown keys, value types or `null` can read different values from the same bytes. When a value is validated in one component and acted on in another, find every function that decodes it (grep the column name and the struct type); if there is more than one, make them one. Every rule either side enforces belongs in that shared code. API-9 is the same rule between POST and PATCH.
+
+---
+
+### API-15: A Request Validator and Its Decoder Must Match Member Names the Same Way
+
+**The Flaw:** huma validates a request body against its schema and then decodes it with the configured format. In huma v2.37.3 the validator matches member names with `strings.EqualFold` unless `huma.ValidateStrictCasing` is true (`huma@v2.37.3/validate.go:44`, read at :657 for `required` and property lookup and :707 for `additionalProperties`). The request format was moved to `encoding/json/v2`, which matches names exactly and ignores names it does not know.
+
+**Why It Matters:** This is a security defect. For `{"email":"..","Password":"<16 characters>"}` the validator found `Password`, accepted it as `password` for `required` and `minLength`, and the decoder ignored it, so the handler received an empty password. Register, reset-password and change-password could set an empty password. With v1 the defect ran the other way: `{"password":"<valid>","PASSWORD":"x"}` passed validation on the exact key, and v1 decoded the last case-insensitive match, `"x"`. Tests that send well-formed bodies pass in both configurations.
+
+**The Fix:** `init` in `internal/api/openapi_spec.go` sets `huma.ValidateStrictCasing = true`, so huma validates names exactly as the v2 format decodes them, and a case-variant name is a 422 `unexpected property` at its own location. `TestHumaBodyMemberNamesMatchExactly` (`internal/api/huma_member_names_test.go`), `TestRegisterCaseVariantMemberRefused` and `TestLoginCaseVariantSiblingRefused` (`internal/api/auth_test.go`) cover it. chi bodies are decoded by `decodeJSON` (`internal/api/contract.go`), which has no separate validator: the v2 decode with `RejectUnknownMembers(true)` is the name check.
+
+**The Lesson:** When validation and decoding are two passes over the same bytes, they MUST agree on name matching, duplicate names, and which of two spellings wins; the handler acts on what the decoder produced, not on what the validator saw. Whenever the options of either pass change, test a body whose only spelling of a required member is a case variant, and a body with both an exact and a case-variant spelling. A library's default setting is part of this contract: read it rather than assume it.
+
+---
+
+### API-16: `encoding/json/v2` Options Do Not Reach an `UnmarshalJSON([]byte)` Method
+
+**The Flaw:** A type implements the v1 interface `UnmarshalJSON([]byte) error` and decodes its contents with `json.Unmarshal`. When the outer decode is `jsonv2.Unmarshal` with strict options (`RejectUnknownMembers(true)`, case-sensitive names), v2 passes the method the raw bytes and none of the options, so the inner decode follows v1's rules. The case in this code base was `clearableField[T]` (`internal/api/contract.go`), which records whether a PATCH key was sent so that an absent key and `null` differ.
+
+**Why It Matters:** Inside such a field an unknown member and a case-variant name are accepted (probed on go1.27.4), while the rest of the request body is strict. A struct `T` would silently drop a misspelled member, and the client would get 200 for a change that was not made. At the time `T` was `uuid.UUID` or `string`, so nothing was exposed; the first struct `T` would have been.
+
+**The Fix:** Implement `UnmarshalJSONFrom(*jsontext.Decoder) error` and decode with `jsonv2.UnmarshalDecode`, which uses the decoder's options:
+```go
+func (f *clearableField[T]) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	f.Sent = true
+	if dec.PeekKind() == 'n' {
+		_, err := dec.ReadToken()
+		f.Value = nil
+		return err
+	}
+	var v T
+	if err := jsonv2.UnmarshalDecode(dec, &v); err != nil {
+		return err
+	}
+	f.Value = &v
+	return nil
+}
+```
+v1 `json.Unmarshal` also calls `UnmarshalJSONFrom`, so v1 callers keep working. A `json.RawMessage` member has a related limit: the outer v2 decode checks its syntax, duplicate names and UTF-8, but not its member names, which are checked only when something decodes it with strict options.
+
+**The Lesson:** A strict decode is strict only as far as its options travel. Before relying on `encoding/json/v2` strictness for a type, grep for `UnmarshalJSON(` on every type reachable from it; each one is a point where the options stop.
+
+---
+
+### API-17: Retagging `omitempty` as `omitzero` Changes huma's Schema, and v2's `omitempty` Omits Empty Raw JSON
+
+**The Flaw:** `encoding/json/v2` gives `omitempty` a different meaning: it omits a field that encodes as `null`, `""`, `{}` or `[]`, where v1 omitted `false`, `0`, a nil pointer, a nil interface and an empty slice, map or string. Under v2 a `*string` pointing at `""` and a `json.RawMessage` holding `{}`, `null` or `[]` are omitted where v1 wrote them, and `false` and `0` are written where v1 omitted them. `omitzero` keeps v1's output for these fields, but huma v2.37.3 marks a pointer-to-scalar field nullable (`huma@v2.37.3/schema.go:985`) and clears that only for `omitempty` (`schema.go:927-931`), so retagging a `*string` field `omitzero` changes its `openapi.json` type to `["string","null"]`.
+
+**Why It Matters:** A changed field presence is invisible to tests that check values only: audit-log `old_state`, `new_state` and `metadata` and security-event `details`, which hold `{}` or `null` in real rows, would have lost the key. The schema change regenerates the SPA's TypeScript types as `string | null` for properties the server never sets to `null`; with 45 `*string` fields retagged, 53 `openapi.json` properties changed.
+
+**The Fix:** A pointer-to-scalar response field that must keep v1's output gets `omitzero` and `nullable:"false"`; a `json.RawMessage` response field that holds stored JSON gets `omitzero`. `TestResponseEncoding` (`internal/api/response_encoding_test.go`) encodes every response type with v1 and with the API's v2 options and fails on any difference in field presence that is not on its allowlist, and fails when a response-reachable pointer-to-scalar field has `omitzero` without `nullable:"false"`. After any tag change, regenerate the spec with `GENERATE_OPENAPI=1 go test -run '^TestOpenAPISpec$' ./internal/api/` and expect no diff in `openapi.json`. Request-only structs keep pointer fields with `omitempty` (API-2); decoding ignores both options.
+
+**The Lesson:** A struct tag is read by every library that reflects over the type, not only by the encoder. When a tag changes for one of them, regenerate every artifact the others derive from it (here `openapi.json` and `web/src/lib/api/schema.d.ts`) and diff it.
+
+---
+
 ### Review Checklist
 
 When writing or reviewing HTTP handlers and middleware, verify each item:
@@ -1585,10 +1812,17 @@ When writing or reviewing HTTP handlers and middleware, verify each item:
 - [ ] PATCH handlers validate every field with the same constraints as the corresponding POST handler (API-9)
 - [ ] API contract consistency: error format (RFC 9457), list shape (`{items, next_cursor}`), cursor format (base64 JSON), validation status (422), tier errors (429 not 403) (API-10)
 - [ ] Admin/management endpoints discover resources dynamically, not from hardcoded lists (API-11)
+- [ ] A polling cursor's key is assigned in commit order: a sequence value is drawn only while holding a lock released after commit, by every writer, before it locks the row (API-12)
+- [ ] A request dispatched to the server's own router in process gets a fresh context with none of the outer request's values (API-13)
+- [ ] A JSON value validated by the API and used by a worker is decoded by one shared function, and every rule either side enforces lives in shared code (API-14)
+- [ ] `huma.ValidateStrictCasing` stays true, so huma's validator matches member names exactly as the `encoding/json/v2` request format decodes them (API-15)
+- [ ] No type reachable from a strict `encoding/json/v2` decode implements `UnmarshalJSON([]byte)`; it implements `UnmarshalJSONFrom` with `jsonv2.UnmarshalDecode` (API-16)
+- [ ] A response field retagged `omitzero` that is a pointer to a scalar also has `nullable:"false"`, and `openapi.json` regenerates without a diff (API-17)
 
 ---
 
 ### See Also
+- Hashing or byte-comparing `encoding/json/v2` output: see ARCH-48 (map key order)
 - Background goroutine lifecycle (worker-side): see ARCH-44 (Goroutine Lifecycle)
 - Security enforcement in auth handlers: see AUTH-3 through AUTH-12
 - Validation symmetry testing: see testing-pitfalls.md section 4
@@ -1669,7 +1903,7 @@ The worker runs the scan asynchronously using `workerTx`, writes to `alert_event
 
 **Why It Matters:** In containerized environments, workers are subject to OOM-kills, crashes, and routine deployment restarts. If the worker dies while processing an activation scan, the rule remains permanently in `status = 'activating'` — it never fires alerts, users cannot tell if it's broken or still running, and there's no recovery path without direct DB intervention.
 
-**The Fix:** A periodic sweeper goroutine (runs every 5 minutes) identifies `job_queue` rows where `queue = 'alert_activation'`, `status = 'running'`, and `locked_at < now() - interval '15 minutes'`. For each zombie, it transitions the alert rule to `status = 'error'` and re-enqueues the activation scan job. Users can retry by PATCHing the rule.
+**The Fix:** The worker pool's stale lock recovery re-enqueues a job whose worker stopped responding until the job's attempts are used up, then marks it `dead`. A periodic sweeper (runs every 5 minutes) finds rules in `status = 'activating'` with `updated_at` more than 15 minutes ago and no `pending` or `running` `alert_activation` job under the rule's lock key, and transitions each to `status = 'error'`. The sweeper reads `alert_rules` across orgs, so it runs in an RLS bypass transaction. Users can retry by PATCHing the rule. Without the attempt limit, a scan that OOM-kills its worker is re-queued forever and the rule never leaves `activating`.
 
 **The Lesson:** Any background state machine needs a recovery path for crash-in-progress scenarios. `status = 'activating'` is a transient state that must have a reachable next state even if the worker responsible never completes. Design state machines with explicit timeout/recovery transitions, not just happy-path transitions.
 
@@ -1681,7 +1915,7 @@ The worker runs the scan asynchronously using `workerTx`, writes to `alert_event
 
 **Why It Matters:** `SELECT * FROM cves` or loading CVEs into a `[]CVE` slice allocates memory for 250,000+ records simultaneously. On constrained containers (homelab Raspberry Pi, default Docker resource limits), this OOM-kills the worker, crashes the scan, and leaves the rule in a zombie state (see NOTIFY-5). Even without OOM, the query holds a large result set in the DB connection buffer.
 
-**The Fix:** Activation scans must use keyset pagination in 1,000-row batches: `WHERE cve_id > $last_id AND status != 'rejected' ORDER BY cve_id ASC LIMIT 1000`. Per-iteration memory is bounded regardless of corpus size.
+**The Fix:** Activation scans must use keyset pagination in 1,000-row batches: `WHERE cve_id > $last_id AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn') ORDER BY cve_id ASC LIMIT 1000` (NOTIFY-10 gives the reason for this status filter). Per-iteration memory is bounded regardless of corpus size.
 
 **The Lesson:** Any worker that processes the full CVE corpus must paginate — not load. This applies to: activation scans, batch alert evaluation, search index rebuilds, and retention cleanup. Assume corpus size is unbounded; design accordingly.
 
@@ -1732,9 +1966,11 @@ The worker runs the scan asynchronously using `workerTx`, writes to `alert_event
 
 **Why It Matters:** When NVD or MITRE rejects a CVE, they update its description to `** REJECT **...` and strip CVSS scores — this triggers a `material_hash` change. Alert rules that previously matched the CVE re-fire, paging security analysts for a CVE that no longer exists as a real vulnerability. Repeated false pages cause immediate alert fatigue and product abandonment.
 
-**The Fix:** All alert evaluation passes (realtime, batch, EPSS-specific, activation scan) must add `AND cves.status != 'rejected'` to their queries. Status `withdrawn` (where applicable per feed) must also be excluded.
+**The Fix:** All alert evaluation passes (realtime, batch, EPSS-specific, activation scan) and digests must add `AND COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')` to their queries. Feeds send the status in mixed case (`Rejected` from NVD, `REJECTED` from MITRE), so compare it in lower case. A CVE known only from a feed with no status, such as CISA KEV, has a NULL status and must still match; `NULL NOT IN (...)` is NULL, so without `COALESCE` the row is dropped with no error. Measured on 2026-11-06: an in-KEV rule matched none of 1,769 KEV CVEs, and digests sent `Rejected` CVEs.
 
-**The Lesson:** Alert evaluation must be status-aware. Not all CVE record updates represent genuine new threat intelligence; a status change to `rejected` is the opposite. Any alert system that fires on every `material_hash` change without checking status will spam analysts with rejections.
+Put this filter on the matching query, not on the batch and EPSS candidate scans. Resolution considers only CVEs in the candidate list, so a filtered scan leaves every event already open on a rejected CVE open for good. Found on 2026-11-08: batch and EPSS-only rules never resolved such events. EPSS-only rules also need the EPSS scan to select retracted CVEs by `date_modified_canonical`, because a tombstone does not change `date_epss_updated`.
+
+**The Lesson:** Alert evaluation must be status-aware. Not all CVE record updates represent genuine new threat intelligence; a status change to `rejected` is the opposite. Any alert system that fires on every `material_hash` change without checking status will spam analysts with rejections. Test an exclusion filter with NULL and with each spelling the source sends, not only with the excluded value in its canonical form.
 
 ---
 
@@ -1863,29 +2099,105 @@ When a webhook endpoint goes down, all deliveries targeting it fail and are sche
 
 ---
 
+### NOTIFY-20: Batch/EPSS Evaluator Cursor Skips Rows Stamped Before It
+
+**The Flaw:** The batch and EPSS evaluators store their cursor as the Go clock at the start of a run and select candidates with `date_modified_canonical > cursor` / `date_epss_updated > cursor`. Those columns are stamped by a different clock and before the writer commits: `date_epss_updated` is Postgres `now()` (the transaction's start time), and `date_modified_canonical` is the merge worker's Go clock, read before its upsert. A row that becomes visible after a run's candidate scan but carries a timestamp earlier than that run's cursor is never evaluated.
+
+**Why It Matters:** The alert is silently lost: no error, no partial run, and the cursor moves on. It happens whenever the database clock lags the app clock (the likely cause of an intermittent `TestEvaluatorEPSS` failure against Docker Desktop, in which every subtest that expected a match after the first run found none), and with no skew at all when a writer transaction straddles the evaluator's scan.
+
+**The Fix:** Start each scan `cursorRescanWindow` (2 minutes) behind the stored cursor (`internal/alert/evaluator.go`, `evaluateBatchPath`). Re-evaluating a CVE is idempotent: `alert_events` inserts are `ON CONFLICT DO NOTHING` and fan-out runs only for newly inserted events. Taking the cursor from the database clock would not help: it does not cover commit lag, and the batch path's timestamps come from the Go clock.
+
+**The Lesson:** A timestamp cursor is safe only if every row is stamped by the same clock that sets the cursor and becomes visible before any later cursor is taken. When either fails, scan with an overlap and make re-processing idempotent. FEED-14 applies the same rule to NVD sync.
+
+---
+
+### NOTIFY-21: Digest Cursor Skips CVEs Committed After the Digest Query
+
+**The Flaw:** The scheduled digest worker (`internal/notify/digest.go`) selected CVEs with `date_modified_canonical > last_run_at`, then set `last_run_at` to the Go clock read after the query and the delivery inserts. The merge pipeline stamps `date_modified_canonical` with the merge worker's Go clock before its upsert and before its transaction commits (`internal/merge/pipeline.go`). A CVE that became visible after the digest query but carried a timestamp at or before the recorded `last_run_at` was left out of that digest and of every later one.
+
+**Why It Matters:** The CVE is silently missing from every digest for the report: no error, no partial run, and the cursor moves on. Three causes lead to it: a merge that commits while the digest runs, a merge stamped during the run (between the query and the clock read), and clock skew between the merge host and the digest host.
+
+**The Fix:** Read the next cursor before the query, and select from `digestRescanWindow` (2 minutes) before the stored cursor. Unlike the alert evaluator, a digest has no `alert_events` row to make re-processing idempotent, so a plain overlap would repeat CVEs across digests. `scheduled_reports.rescan_sent_cves` (migration 000048) holds the CVE versions, as `(cve_id, date_modified_canonical)` pairs, that a digest sent with timestamps inside the next run's window, and `DigestCVEs` leaves those versions out in SQL, before its 500-row limit. `AdvanceReport` writes the list in the same UPDATE as the cursor. The pair key, not `material_hash`, lets a CVE that changes and changes back appear again. Clock skew larger than the window still loses CVEs.
+
+**The Lesson:** NOTIFY-20 (batch/EPSS evaluator cursor skips rows stamped before it) is the same flaw in the alert evaluator, where re-processing a row is idempotent. When re-processing is not idempotent, an overlap window needs its own record of what was already sent. Taking the cursor before the query fixes only the gap caused by run duration, not commit lag or clock skew.
+
+### NOTIFY-22: Digest Dropped While the Previous Digest Is Still Pending
+
+**The Flaw:** `InsertDigestDelivery` ended in `ON CONFLICT (report_id, channel_id) WHERE status = 'pending' AND kind = 'digest' DO NOTHING`, backed by the partial unique index `uq_deliveries_pending_digest`. `executeDigestReport` (`internal/notify/digest.go`) did not check whether the insert happened and advanced `last_run_at` regardless. While the previous digest for a report and channel waited out a retry backoff (SMTP down, webhook 503), the next digest's insert did nothing, and its CVEs were never sent to that channel. The same index broke retries: a pending-only index does not cover a `processing` row, so the next digest could be inserted while the previous one was in flight. If that send failed, `RetryDelivery` set the row back to `pending`, violated the index (23505), and left the row in `processing`. `ResetStuckDeliveries` updates every stuck row in one statement, so the same conflict then made each recovery run fail.
+
+**Why It Matters:** CVEs are silently missing from a channel's digests: no error, and the cursor moves on. It happens exactly when a channel is already having trouble, so the recipient loses the content that should catch them up after the outage.
+
+**The Fix:** Each digest run inserts its own delivery row (migration 000049 drops `uq_deliveries_pending_digest`). A digest is a dated, self-contained report with its own retry count, backoff, and delivery history. Merging the new payload into the pending row, as the alert debounce does, was rejected: the new CVEs would inherit the old row's attempt count and backoff, and the processing-row conflict would remain. Holding the cursor back for the affected channel was also rejected, because `last_run_at` belongs to the report, not to a channel.
+
+**The Lesson:** `ON CONFLICT DO NOTHING` treats the conflicting row as an equivalent replacement for the new one. That holds only when the two rows carry the same content. A debounce index on a `pending` status also has to account for every transition back into `pending` (retry, stuck-row reset, replay): each one can collide with a row inserted while the original was out of `pending`.
+
+---
+
+### NOTIFY-23: Digest Row Limit Drops CVEs Without a Trace
+
+**The Flaw:** `DigestCVEs` (`internal/store/queries/cves.sql`) returns at most 500 rows, sorted by severity, and `executeDigestReport` (`internal/notify/digest.go`) advances `last_run_at` past the whole window regardless. The payload was a bare array of those rows, and the email renderer took its length as the digest's total. When more than 500 CVEs matched, the lower-severity ones were in no digest, the email said "Showing 25 of 500", and webhook consumers had no way to tell the array was incomplete.
+
+**Why It Matters:** More than 500 matching modifications in one day is normal during NVD enrichment bursts. The digest looks complete and understates the day's volume. The cursor cannot simply stop at the last CVE sent, because the rows are ordered by severity, not by timestamp.
+
+**The Fix:** `DigestCVEs` returns `count(*) OVER () AS total_count`, the number of matching CVEs before the limit, computed on the same predicate and snapshot as the rows. A digest payload is a JSON object, `{"total_count": N, "cves": [...]}`, while alert payloads stay arrays. `digestTemplateData` sets the email's total from `total_count` and marks it truncated when the total exceeds the 25 CVEs listed (PLAN.md §12.1). A separate `COUNT(*)` query would avoid buffering every matching row, but it would duplicate the `WHERE` clause and could disagree with the rows.
+
+**The Lesson:** A `LIMIT` on a query whose result is reported as "everything since the cursor" must carry the uncut count with it. If the consumer cannot get the rest, it must at least know that there is a rest.
+
+---
+
+### NOTIFY-24: Overlapping Digest Ticks Send the Same Digest Twice
+
+**The Flaw:** `ClaimDueReports` selected due reports `FOR UPDATE SKIP LOCKED` in its own transaction, which committed before the digest ran. The row lock was gone by the time `executeDigestReport` (`internal/notify/digest.go`) queried CVEs and inserted deliveries. Only the final `AdvanceReport`, which moves `next_run_at` into the future, kept the report from being claimed again. The `serve` and `worker` subcommands each start a notify worker, so a second digest tick could run between the claim and the advance and claim the same report.
+
+**Why It Matters:** Every channel bound to the report gets the digest twice. The later `AdvanceReport` also overwrites `last_run_at` and `rescan_sent_cves` with the values from its own run, so the recorded sent versions match only one of the two digests. Nothing logs an error, and the overlap occurs only with two live workers, so single-process tests do not catch it.
+
+**The Fix:** `Store.RunDueDigest` claims one report (`LIMIT 1 FOR UPDATE SKIP LOCKED`) and runs the whole digest in that transaction: CVE query, channel list, delivery inserts, and advance, through `DigestRun` methods bound to the transaction. A concurrent tick skips the locked row. Once the run commits, `next_run_at` is in the future. Any error rolls back the deliveries and the advance together, and the report stays due for the next tick. `runDigest` passes the IDs it has already attempted as `skip`, so a report whose run failed is not claimed again in the same tick. This is allowed because the digest makes no outbound HTTP call. Delivery happens later in the delivery worker. Two alternatives were rejected. Advancing `next_run_at` in the claim transaction delays a run that fails after the claim until the next day, and the inserts can still commit without the advance. Advancing only when `next_run_at` still matches the claimed value needs the same single-transaction plumbing, and the losing run still does all its work before rolling back.
+
+**The Lesson:** `FOR UPDATE SKIP LOCKED` stops a second claimer only while the claiming transaction is open. If the claim commits before the work, something else has to mark the row as taken: a status or lease written in the claim (as `ClaimPendingDeliveries` does with `processing`), or the work done inside the claiming transaction.
+
+---
+
+### NOTIFY-25: Alert Delivery Cannot Return to Pending Beside a Newer Batch
+
+**The Flaw:** The alert debounce index `uq_deliveries_pending_alert` was unique on `(rule_id, channel_id)` over every pending alert delivery. It did not cover `processing`, so `UpsertDelivery` inserted a new pending batch while the previous one was in flight. Five statements move a delivery back to `pending`: `RetryDelivery`, `ResetStuckDeliveries`, `ReplayDelivery`, `AdminRetryDelivery` and `AdminBulkRetryFailed`. Each failed with 23505 when a pending batch for the same rule and channel already existed, and the two bulk statements also failed on two of their own rows for one pair. The worker only logs a failed retry, so the row stayed in `processing`. `ResetStuckDeliveries` is one statement across all orgs, so a single conflicting pair made every recovery run fail for every tenant. The same index also let `UpsertDelivery` append new CVEs to a batch waiting out a retry backoff: the append reset `send_after` to the debounce window and gave the new CVEs the batch's attempt count.
+
+**Why It Matters:** A worker crash during a burst, or any failed send while matches keep arriving, leaves deliveries stuck in `processing` with no automatic way out, and stops stuck-row recovery across the instance. After a long channel outage, the admin bulk retry fails as soon as two exhausted batches share a rule and channel.
+
+**The Fix:** Migration 000050 adds `batch_open` and replaces the index with `uq_deliveries_open_alert_batch`, unique on `(rule_id, channel_id)` only over pending alert deliveries with `batch_open`. `UpsertDelivery` inserts open batches and its `ON CONFLICT` targets that index. `MarkDeliveriesProcessing` closes a batch when it is claimed, and the five statements that return a delivery to `pending` keep it closed. A closed batch is delivered on its own, with its own attempt count and backoff, the same model NOTIFY-22 adopted for digests. Merging a returning delivery into the pending batch was rejected: in a sustained outage with steady matches, every failed send merges into the next batch, so the attempt count never reaches the limit and the payload grows without bound. Replay would also move the replayed delivery's content to a different row. Widening the index to cover `processing` was rejected because a CVE that matches during a send would have no row to join. The cost is that a channel can receive one message per closed batch after an outage instead of one combined message.
+
+**The Lesson:** A partial unique index on a status is a debounce key only if inserting is the one way into that status. Before relying on one, list every statement that moves a row into the indexed status, including bulk recovery and admin paths, and check each one against a row inserted while the original was out of that status.
+
+---
+
 ### Review Checklist
 
 - [ ] Activation scan runs in silent mode (writes `alert_events` but does NOT enqueue notification deliveries)?
 - [ ] Activation scan is async (`status = 'activating'`, background job, handler returns 202)?
 - [ ] Activation scan paginates in 1,000-row batches (keyset pagination, not full-corpus load)?
 - [ ] Zombie rule sweeper runs periodically (detects `activating` + stale `locked_at`, transitions to `error`)?
-- [ ] All evaluation passes filter `cves.status NOT IN ('rejected', 'withdrawn')`?
+- [ ] All evaluation passes and digests filter `COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')`, so that mixed-case statuses are excluded and CVEs with no status still match?
 - [ ] Fan-out uses `sync.WaitGroup` with independent per-channel error recording (not `errgroup`)?
 - [ ] Delivery loop uses `continue` on per-channel HTTP failures (never `return err`)?
 - [ ] DB transaction committed BEFORE outbound webhook HTTP call (three-phase: claim → HTTP → update)?
 - [ ] Webhook HTTP client has `Timeout: 10s` and `MaxConnsPerHost: 50`?
 - [ ] Webhook response body drained: `io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))`?
 - [ ] Notification debounce window per `(rule_id, channel_id)` batches CVEs into grouped delivery?
+- [ ] Every statement that moves a delivery back to `pending` keeps it out of the debounce index (`batch_open = false`, NOTIFY-25)?
 - [ ] Notification channels soft-deleted (`deleted_at` column), not hard-deleted?
 - [ ] Retry delay uses full jitter to prevent thundering herd?
 - [ ] Dry-run evaluation does NOT persist to `alert_events` (read-only path or explicit ROLLBACK)?
 - [ ] `alert_events` UNIQUE on `(org_id, rule_id, cve_id, material_hash)` with `ON CONFLICT DO NOTHING RETURNING id`?
 - [ ] Channel deletion pre-flight: DELETE /channels/{id} returns 409 if active alert rules reference the channel (NOTIFY-7)?
+- [ ] Timestamp-cursor scans start a re-scan window behind the stored cursor, and re-processing a row in that window is idempotent (NOTIFY-20)?
+- [ ] Digest scans start a re-scan window behind `last_run_at`, take the next cursor before the query, and leave out CVE versions already sent (NOTIFY-21)?
+- [ ] A row-limited digest or report query carries the match count before the limit, and renderers report that count rather than the number of rows (NOTIFY-23)?
+- [ ] A `FOR UPDATE SKIP LOCKED` claim either marks the row as taken before it commits or runs the work inside the claiming transaction (NOTIFY-24)?
 
 ### See Also
 - Webhook SSRF and redirect bypass: see AUTH-17
 - DB transaction during external I/O: see testing-pitfalls.md §8
 - Fan-out delivery testing: see testing-pitfalls.md §14
+- Channel config validated by the API and read by delivery through one shared parser: see API-14
 
 ---
 
@@ -1989,22 +2301,29 @@ Also: `succeeded`/`dead` rows are pruned after 24 hours by the retention cleanup
 
 ---
 
-### ARCH-8: Semver Version Range Matching Cannot Use String Comparison
+### ARCH-8: Version Comparison Must Use the Ecosystem's Native Ordering
 
-**The Issue:** No version range field exists in the DSL (§10.1) or watchlist items (§9.2) at MVP. If one is added without explicit library guidance, the "obvious" implementation uses string comparison.
+**The Issue:** No version range field exists in the DSL (§10.1) or watchlist items (§9.2) at MVP. If one is added without explicit guidance, the "obvious" implementation uses string comparison or a semver library for every ecosystem.
 
-**Why String Comparison Fails Silently:** Semver is not lexicographically ordered. `"2.10.0" < "2.9.0"` in string comparison (because `"1" < "9"`), but `v2.10.0 > v2.9.0` per semver spec. A range check `version <= "2.9.0"` would falsely include `2.10.0`, `2.11.0`, `2.100.0` — all of which should NOT match. Alternatively, it falsely excludes them depending on the comparison direction. The bugs are silent: no error, no panic, just wrong match results.
+**Why Both Fail Silently:** Versions are not lexicographically ordered: `"2.10.0" < "2.9.0"` in string comparison (because `"1" < "9"`), so a range check `version <= "2.9.0"` falsely includes `2.10.0`. Semver is only correct for ecosystems that follow it. It orders Maven's `1.0-sp` below `1.0` (Maven orders it above), cannot read PEP 440's `1.0.post1`, and ignores dpkg's epoch (`1:1.0` is above `2.0`) and tilde (`1.0~rc1` is below `1.0`). The bugs are silent: no error, no panic, just wrong match results, including a false "not affected".
 
-**The Decision:** Any future implementation of version range matching — in watchlist items OR in an `affected.version` DSL field — must use `github.com/Masterminds/semver/v3` constraint checking:
+**The Decision:** Every version comparison goes through `internal/version` (PLAN.md §9.2 holds the rule): `Check` for an OSV ecosystem, `CheckNumeric` for a product with no ecosystem. Both return `Affected`, `NotAffected` or `CannotEvaluate`, whose zero value is `CannotEvaluate`.
 ```go
-constraint, _ := semver.NewConstraint("<= 2.9.0")
-version, _ := semver.NewVersion("2.10.0")
-matches := constraint.Check(version) // correctly false
+status, err := version.Check("Ubuntu:26.04:LTS", "8.5.4-0ubuntu1.4",
+	version.Range{Introduced: "0", Fixed: "8.5.4-0ubuntu1.5"})
+// status is version.Affected; err is non-nil exactly when status is CannotEvaluate
 ```
 
-**The Lesson:** Semantic versioning is not string sorting. Strings and semver share a superficial resemblance (both are character sequences) but have fundamentally different ordering. Never use `strings.Compare`, `<`, or `>` on version strings. Always use a semver-aware library. This is a common mistake that produces wrong results across the entire version range without any runtime indication of failure.
+**Never call `github.com/google/osv-scalibr/semantic` directly.** A depguard rule in `.golangci.yml` enforces this. `semantic.Parse` returns no error for nearly any string outside Debian epochs: `banana` parses in every ecosystem, and sorts below `1.0.0` in npm and PyPI but above it in Debian. PyPI keeps anything outside PEP 440 as a "legacy" version below all others. `internal/version` checks each ecosystem's syntax first for this reason.
 
-**Status:** Preventive guidance — semver not yet implemented. Masterminds/semver not in go.mod.
+**Three traps in the data, all handled in `internal/version`:**
+- `introduced: "0"` means "before every version" and must not be compared: `0~rc1` and `0.0.0-alpha` sort below a literal `0` but are affected.
+- A stored range with no upper bound is ambiguous. GHSA stores `Introduced: "0", Fixed: ""` when no patched version exists, whatever the advisory's real upper limit is, so it reports "cannot evaluate".
+- OSV `GIT` ranges hold commit hashes, which can start with a digit and look like versions in a loose syntax. They report "cannot evaluate".
+
+**The Lesson:** Version ordering belongs to the ecosystem, not to a format the versions happen to resemble. Never use `strings.Compare`, `<`, or `>` on version strings, and never apply one ecosystem's rules to another. When the answer gates a security decision, a parser's success is not evidence the input was a version: check what it does with garbage before trusting it, and make "I cannot tell" a result rather than letting it fall through to "not affected".
+
+**Status:** Implemented in `internal/version`. No caller yet: watchlists and the DSL have no version fields, and no check endpoint exists.
 
 ---
 
@@ -2148,7 +2467,7 @@ The Go runtime's GC is unaware of container memory limits by default. It schedul
 
 ### ARCH-24: X-Forwarded-For Must Be Read Right-to-Left
 
-Reading `X-Forwarded-For` left-to-right trusts the leftmost entry, which is attacker-controlled. The correct approach: read right-to-left; the first non-trusted-CIDR entry is the client IP. chi's `RealIP` middleware handles this when `TRUSTED_PROXIES` is configured correctly.
+Reading `X-Forwarded-For` left-to-right trusts the leftmost entry, which is attacker-controlled. The correct approach: read right-to-left; the first non-trusted-CIDR entry is the client IP. chi's `middleware.ClientIPFromXFF(cidrs...)` does this, and `clientIPMiddleware` passes it the `TRUSTED_PROXIES` CIDRs (API-5 — IP rate limiter global ban via reverse proxy). chi's `RealIP` does not: it takes the leftmost entry from any client.
 
 ---
 
@@ -2564,6 +2883,55 @@ Every consumer hit is a call site that needs updating. Infrastructure without co
 
 ---
 
+### ARCH-45: A Custom Setting Is an Empty String After SET LOCAL, Not NULL
+
+**The Flaw:** Every RLS policy compared `org_id = current_setting('app.org_id', TRUE)::uuid`, on the understanding that an unset setting returns NULL and matches no rows. That holds only on a session that has never set it. Once a transaction runs `SET LOCAL app.org_id`, Postgres keeps the custom setting defined for the rest of the session and reverts its value to the empty string.
+
+**Why It Matters:** `''::uuid` raises `invalid input syntax for type uuid: ""`. The error fires during planning as well as execution, so `app.bypass_rls = 'on'` does not avoid it even though it is the first branch of the `OR`. Connection pools reuse sessions, so after an org request has used a connection, API key lookup on that connection returns 500. Failures grow as more of the pool serves org requests, and bypass workers fail the same way.
+
+**Why Tests Missed It:** `TestDB.Store` connects as a superuser, which skips RLS entirely. The app-role tests rarely run a bypass transaction on a connection that had just served an org one.
+
+**The Fix:** `org_id = NULLIF(current_setting('app.org_id', TRUE), '')::uuid`. An empty setting becomes NULL, so the comparison matches nothing and the policy fails closed. `TestRLS_EveryPolicyFailsClosedOnSessionWithEmptyOrgSetting` sweeps every table with RLS, including tables added later.
+
+**The Lesson:** Testing a security control as a role that bypasses it says nothing about the control. Exercise RLS as the application role, on one session across consecutive transactions, as a pool does.
+
+---
+
+### ARCH-46: `cves.severity` Is Stored in the Case the Feed Sent
+
+**The Flaw:** The NVD and MITRE adapters store severity in uppercase and the GHSA adapter in lowercase, while the rule DSL, digest thresholds and the web UI's filter use lowercase, and all of them compared with `=`.
+
+**Why It Matters:** Measured on 2026-11-06 with live NVD data: a rule on `severity eq critical` matched no NVD-scored CVE, a digest with a severity threshold left out every one, and the web UI's severity filter returned nothing. Each reported success.
+
+**Why Tests Missed It:** Store tests seeded lowercase values and API tests seeded and queried uppercase ones, so each side agreed with itself.
+
+**The Fix:** Compare with `lower(cves.severity)` and lowercase input. Do not normalize the stored value without a plan for `material_hash`, which includes severity: a changed hash fires alerts for every matching rule.
+
+**The Lesson:** When values cross a boundary between components, test with what the real source sends. Seeding the value a query expects proves only that the query matches itself.
+
+
+---
+
+### ARCH-47: An Array Sort Before Hashing Must Compare Every Hashed Field
+
+**The Flaw:** Sorting hash inputs by a subset of their fields. Elements that tie keep their input order, so the hash depends on it. A dedupe key on the same subset hides this until the dedupe key changes.
+
+**The Fix:** Compare every field that reaches the hash.
+
+---
+
+### ARCH-48: `encoding/json/v2` Writes Map Keys in No Fixed Order
+
+**The Flaw:** `jsonv2.Marshal` writes the entries of a Go map in an order that varies between runs (probed on go1.27.4); v1 `json.Marshal` sorts them. Code moved from v1 to v2 that hashes the output, compares it byte for byte, or uses it as a cache or dedupe key now gets different bytes for equal values.
+
+**Why It Matters:** A `material_hash` computed over such output would differ between two merges of the same data. The realtime evaluator fires on a changed hash, so every merge would look like a material change and send alerts for every matching rule. Tests that compare JSON bytes fail some of the time, which reads as a flaky test rather than a defect.
+
+**The Fix:** Hash and dedupe inputs MUST stay on v1 `json.Marshal` (`internal/merge/hash.go`, `match_inputs.go`, `resolve.go`, `internal/check/names.go`), and hashed bytes are canonicalized to RFC 8785 by `canonicalJSON` (`internal/merge/canonical.go`, `jsontext.Value.Canonicalize`). Wherever `jsonv2.Marshal` output is compared or reused as a key, pass `jsonv2.Deterministic(true)`; the API's `responseJSONOptions` include it. `Deterministic(true)` is not enough for a value that is stored and compared later: Go documents its output as stable across instances of one binary, not across builds (source, toolchain version, GOOS/GOARCH, build flags), so a stored hash still needs RFC 8785 canonicalization. Tests that compare JSON bytes use v1 or `Deterministic(true)`.
+
+**The Lesson:** Moving a call site to a new encoder changes every property its callers relied on, including ones nobody wrote down, such as key order. Before moving a marshal call, find what consumes the bytes; if anything hashes, stores or compares them, keep the bytes stable and prove it with a pinned test (`internal/merge/testdata/golden_material_hashes.json`).
+
+---
+
 ### Review Checklist
 
 - [ ] `import _ "time/tzdata"` present in `main.go`?
@@ -2578,6 +2946,7 @@ Every consumer hit is a call site that needs updating. Infrastructure without co
 - [ ] Deployment config matches code protections (DB role, env defaults, TLS)?
 - [ ] `_ =` on success paths audited — critical state writes propagate errors?
 - [ ] Background goroutines have join point + semaphore + timeout?
+- [ ] Hash and dedupe inputs marshaled with v1 `json.Marshal` and canonicalized; any compared `jsonv2.Marshal` output uses `jsonv2.Deterministic(true)` (ARCH-48)?
 
 ---
 
@@ -2622,6 +2991,8 @@ These findings were predictive. Many proved accurate when implementation began; 
 | 2026-03-17 | Phase 8E bug hunts | Architecture (now ARCH-41) | Empirical — hot-reload infrastructure disconnected from consumers |
 | 2026-03-17 | Phase 11 MFA bug hunts | Auth (now AUTH-23) | Empirical — password reset MFA bypass, stale token_version |
 | 2026-03-18 | Health review + audit | Multiple sections | Empirical — 10 new pitfalls added; 7 existing pitfalls strengthened |
+| 2026-11-16 | encoding/json/v2 migration (`dev/plans/2026-11-14-json-v2-migration-plan.md`) | Feeds (FEED-24), API (API-14–17), Architecture (ARCH-48) | Empirical — API-14, API-16 and ARCH-48 from probes and defects found while planning; API-15 (a security defect the migration introduced and fixed) and API-17 found during execution |
+| 2026-11-15 | Review during the encoding/json/v2 migration (Red Hat CVSS parsing) | Feeds (FEED-25) | Empirical — Red Hat and generic adapters could emit NaN/±Inf scores, which fail `merge.Ingest` and stop the feed run |
 
 ## A.3 Meta-Observations on the Review Process
 
@@ -2661,14 +3032,14 @@ All pitfalls by domain, with entry count and key themes. For detailed status per
 
 | Section | Entries | Key Themes |
 |---------|---------|------------|
-| §1 Feed Adapters | FEED-1 – FEED-20 | Streaming JSON (Token/More), ZIP temp-file bridging, timestamp parsing, null bytes, alias PK resolution, NVD rate limits/cursors, one-page-per-Fetch, response body drain |
-| §2 Database & Query | DB-1 – DB-25 | EPSS two-statement pattern + advisory locks, FTS isolation, RLS dual-layer (org_id + SET LOCAL), transaction helper selection, IS DISTINCT FROM guards, CREATE INDEX CONCURRENTLY, soft-delete partial indexes, ANY() arrays, nullable zero-value |
-| §3 Auth & Security | AUTH-1 – AUTH-25 | JWT WithValidMethods, argon2 semaphore (non-blocking), refresh JTI + theft detection, OAuth state/nonce, API keys (opaque + sha256), webhook HMAC + redirect SSRF, identity by provider_user_id, atomic token consumption, security code dedup, enumeration-safe error paths, in-memory state eviction/normalization |
-| §4 API & HTTP | API-1 – API-11 | WithoutCancel for background goroutines, PATCH pointer types, RequestSize + Slowloris timeouts, keyset pagination composite cursor, pgx SimpleProtocol, unique constraint → 409, PATCH/POST validation parity, API contract consistency, admin dynamic resource discovery |
-| §5 Notification & Alert | NOTIFY-1 – NOTIFY-19 | Activation scan (silent + async + paginated + zombie sweep), EPSS separate evaluator, dry-run isolation, rejected CVE filter, webhook delivery (3-phase + timeout + MaxConnsPerHost + body drain), fan-out (WaitGroup + per-channel continue), debounce, soft-delete channels, retry jitter |
-| §6 Architecture & Ops | ARCH-1 – ARCH-44 | RLS deployment config, timezone/automemlimit/SimpleProtocol imports, migration locks, DST-safe scheduling, connection pool sizing, statement timeout, rate limiter eviction, feature flag enforcement points, infrastructure-consumer connection, silent error suppression, config constant invariants, goroutine lifecycle (WithoutCancel + join + semaphore + timeout) |
+| §1 Feed Adapters | FEED-1 – FEED-25 | Streaming JSON (Token/More), ZIP temp-file bridging, timestamp parsing, null bytes, alias PK resolution, NVD rate limits/cursors, one-page-per-Fetch, response body drain, range dedupe and withdrawal semantics, upstream JSON kept on v1 `encoding/json`, non-finite scores dropped |
+| §2 Database & Query | DB-1 – DB-27 | EPSS two-statement pattern + advisory locks, FTS isolation, RLS dual-layer (org_id + SET LOCAL), transaction helper selection, IS DISTINCT FROM guards, CREATE INDEX CONCURRENTLY, soft-delete partial indexes, ANY() arrays, nullable zero-value, bounded btree keys over feed text |
+| §3 Auth & Security | AUTH-1 – AUTH-26 | JWT WithValidMethods, argon2 semaphore (non-blocking), refresh JTI + theft detection, OAuth state/nonce, API keys (opaque + sha256), webhook HMAC + redirect SSRF, identity by provider_user_id, atomic token consumption, security code dedup, enumeration-safe error paths, in-memory state eviction/normalization |
+| §4 API & HTTP | API-1 – API-17 | WithoutCancel for background goroutines, PATCH pointer types, RequestSize + Slowloris timeouts, keyset pagination composite cursor, pgx SimpleProtocol, unique constraint → 409, PATCH/POST validation parity, API contract consistency, admin dynamic resource discovery, commit-order polling cursor, fresh context for in-process dispatch, one decoder for a value validated and used in different places, validator and decoder agreeing on member names (security: API-15), `UnmarshalJSONFrom` for v2 strictness, `omitzero` + `nullable:"false"` |
+| §5 Notification & Alert | NOTIFY-1 – NOTIFY-25 | Activation scan (silent + async + paginated + zombie sweep), EPSS separate evaluator, dry-run isolation, rejected CVE filter, webhook delivery (3-phase + timeout + MaxConnsPerHost + body drain), fan-out (WaitGroup + per-channel continue), debounce, soft-delete channels, retry jitter, evaluator cursor re-scan window, digest re-scan window with sent-version list, digest total count beyond the row limit, digest claim held for the whole run, alert debounce index over open batches only |
+| §6 Architecture & Ops | ARCH-1 – ARCH-48 | RLS deployment config, timezone/automemlimit/SimpleProtocol imports, migration locks, DST-safe scheduling, connection pool sizing, statement timeout, rate limiter eviction, feature flag enforcement points, infrastructure-consumer connection, silent error suppression, config constant invariants, goroutine lifecycle (WithoutCancel + join + semaphore + timeout), stable bytes for hash inputs (v1 marshal, RFC 8785, v2 map order) |
 
-**Total: ~144 pitfall entries across 6 domains.**
+**Total: ~167 pitfall entries across 6 domains.**
 
 ---
 

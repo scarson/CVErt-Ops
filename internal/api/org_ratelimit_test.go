@@ -27,6 +27,27 @@ func TestOrgRateLimiter_Allow(t *testing.T) {
 	}
 }
 
+// TestOrgRateLimiter_AllowUsesInjectedClock verifies Allow refills tokens by
+// the limiter's clock, as AllowN does, so tests can control time for both.
+func TestOrgRateLimiter_AllowUsesInjectedClock(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	lim := newOrgRateLimiter(func() time.Time { return now }, 5*time.Minute)
+	t.Cleanup(lim.Stop)
+
+	org := uuid.New()
+	if !lim.Allow(org, rate.Limit(1), 1) {
+		t.Fatal("first request: should be allowed (burst of 1)")
+	}
+	if lim.Allow(org, rate.Limit(1), 1) {
+		t.Fatal("second request at the same instant: should be denied")
+	}
+	now = now.Add(time.Second)
+	if !lim.Allow(org, rate.Limit(1), 1) {
+		t.Error("request one injected second later: should be allowed (one token refilled at 1/s)")
+	}
+}
+
 func TestOrgRateLimiter_DifferentOrgs(t *testing.T) {
 	t.Parallel()
 	now := time.Now()

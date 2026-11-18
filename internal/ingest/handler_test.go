@@ -654,14 +654,51 @@ func TestBackoffDuration_Capped(t *testing.T) {
 
 // mockHashReader implements CVEHashReader for testing hash change detection.
 type mockHashReader struct {
-	mu     sync.Mutex
-	hashes map[string]string // cveID -> hash; updated by merge mock to simulate changes
+	mu       sync.Mutex
+	hashes   map[string]store.CVEChangeHashes // cveID -> hashes; updated by merge mock to simulate changes
+	readErrs []error                          // error returned by the n-th read (0-based); nil or absent reads succeed
+	reads    int
 }
 
-func (m *mockHashReader) GetCVEMaterialHash(_ context.Context, cveID string) (string, error) {
+func (m *mockHashReader) GetCVEChangeHashes(_ context.Context, cveID string) (store.CVEChangeHashes, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	n := m.reads
+	m.reads++
+	if n < len(m.readErrs) && m.readErrs[n] != nil {
+		return store.CVEChangeHashes{}, m.readErrs[n]
+	}
 	return m.hashes[cveID], nil
+}
+
+func (m *mockHashReader) set(cveID string, h store.CVEChangeHashes) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.hashes[cveID] = h
+}
+
+// runRealtimeIngest runs the handler over one patch for CVE-2025-0001 whose merge moves the
+// CVE's stored hashes from before to after, and returns the handler's error.
+func runRealtimeIngest(t *testing.T, hashReader *mockHashReader, eval *mockEvaluator, before, after store.CVEChangeHashes) error {
+	t.Helper()
+	db := testutil.NewTestDB(t)
+	hashReader.set("CVE-2025-0001", before)
+	mergeFn := func(_ context.Context, _ merge.Store, patch feed.CanonicalPatch, _ string) error {
+		hashReader.set(patch.CVEID, after)
+		return nil
+	}
+	adapter := &mockAdapter{
+		fetchFunc: func(_ context.Context, _ json.RawMessage) (*feed.FetchResult, error) {
+			return &feed.FetchResult{
+				Patches:    []feed.CanonicalPatch{{CVEID: "CVE-2025-0001", SourceID: "CVE-2025-0001"}},
+				SourceMeta: feed.SourceMeta{SourceName: "test-feed", FetchedAt: time.Now().UTC()},
+				LastPage:   true,
+			}, nil
+		},
+	}
+	handler := handlerWithStore(db.Store, db.Store, nil, mergeFn, mockFactory(adapter), eval, hashReader)
+	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
+	return handler(context.Background(), payload)
 }
 
 // mockEvaluator implements RealtimeEvaluator for testing alert evaluation calls.
@@ -688,36 +725,14 @@ func (m *mockEvaluator) Calls() []string {
 }
 
 func TestFeedHandler_RealtimeEval_CalledOnHashChange(t *testing.T) {
-	db := testutil.NewTestDB(t)
-	ctx := context.Background()
-
-	hashReader := &mockHashReader{hashes: map[string]string{
-		"CVE-2025-0001": "hash-before",
-	}}
+	hashReader := &mockHashReader{hashes: map[string]store.CVEChangeHashes{}}
 	eval := &mockEvaluator{}
 
-	// Merge mock simulates a hash change by updating the hash reader.
-	mergeFn := func(_ context.Context, _ merge.Store, patch feed.CanonicalPatch, _ string) error {
-		hashReader.mu.Lock()
-		hashReader.hashes[patch.CVEID] = "hash-after"
-		hashReader.mu.Unlock()
-		return nil
-	}
-
-	adapter := &mockAdapter{
-		fetchFunc: func(_ context.Context, _ json.RawMessage) (*feed.FetchResult, error) {
-			return &feed.FetchResult{
-				Patches:    []feed.CanonicalPatch{{CVEID: "CVE-2025-0001", SourceID: "CVE-2025-0001"}},
-				SourceMeta: feed.SourceMeta{SourceName: "test-feed", FetchedAt: time.Now().UTC()},
-				LastPage:   true,
-			}, nil
-		},
-	}
-
-	handler := handlerWithStore(db.Store, db.Store, nil, mergeFn, mockFactory(adapter), eval, hashReader)
-
-	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
-	if err := handler(ctx, payload); err != nil {
+	// The merge moves material_hash only.
+	err := runRealtimeIngest(t, hashReader, eval,
+		store.CVEChangeHashes{Material: "hash-before", MatchInputs: "inputs"},
+		store.CVEChangeHashes{Material: "hash-after", MatchInputs: "inputs"})
+	if err != nil {
 		t.Fatalf("handler returned error: %v", err)
 	}
 
@@ -730,34 +745,34 @@ func TestFeedHandler_RealtimeEval_CalledOnHashChange(t *testing.T) {
 	}
 }
 
-func TestFeedHandler_RealtimeEval_NotCalledWhenHashUnchanged(t *testing.T) {
-	db := testutil.NewTestDB(t)
-	ctx := context.Background()
-
-	hashReader := &mockHashReader{hashes: map[string]string{
-		"CVE-2025-0001": "same-hash",
-	}}
+func TestFeedHandler_RealtimeEval_CalledWhenOnlyMatchInputsChange(t *testing.T) {
+	hashReader := &mockHashReader{hashes: map[string]store.CVEChangeHashes{}}
 	eval := &mockEvaluator{}
 
-	// Merge mock does NOT change the hash.
-	mergeFn := func(_ context.Context, _ merge.Store, _ feed.CanonicalPatch, _ string) error {
-		return nil
+	// The merge moves match_inputs_hash only, as a CNA product correction does.
+	err := runRealtimeIngest(t, hashReader, eval,
+		store.CVEChangeHashes{Material: "same-hash", MatchInputs: "inputs-before"},
+		store.CVEChangeHashes{Material: "same-hash", MatchInputs: "inputs-after"})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
 	}
 
-	adapter := &mockAdapter{
-		fetchFunc: func(_ context.Context, _ json.RawMessage) (*feed.FetchResult, error) {
-			return &feed.FetchResult{
-				Patches:    []feed.CanonicalPatch{{CVEID: "CVE-2025-0001", SourceID: "CVE-2025-0001"}},
-				SourceMeta: feed.SourceMeta{SourceName: "test-feed", FetchedAt: time.Now().UTC()},
-				LastPage:   true,
-			}, nil
-		},
+	calls := eval.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("EvaluateRealtime called %d times, want 1 (match_inputs_hash changed)", len(calls))
 	}
+	if calls[0] != "CVE-2025-0001" {
+		t.Errorf("EvaluateRealtime called with %q, want CVE-2025-0001", calls[0])
+	}
+}
 
-	handler := handlerWithStore(db.Store, db.Store, nil, mergeFn, mockFactory(adapter), eval, hashReader)
+func TestFeedHandler_RealtimeEval_NotCalledWhenHashUnchanged(t *testing.T) {
+	hashReader := &mockHashReader{hashes: map[string]store.CVEChangeHashes{}}
+	eval := &mockEvaluator{}
 
-	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
-	if err := handler(ctx, payload); err != nil {
+	// The merge changes neither hash.
+	same := store.CVEChangeHashes{Material: "same-hash", MatchInputs: "same-inputs"}
+	if err := runRealtimeIngest(t, hashReader, eval, same, same); err != nil {
 		t.Fatalf("handler returned error: %v", err)
 	}
 
@@ -767,42 +782,47 @@ func TestFeedHandler_RealtimeEval_NotCalledWhenHashUnchanged(t *testing.T) {
 	}
 }
 
+func TestFeedHandler_RealtimeEval_SkippedWhenPreMergeReadFails(t *testing.T) {
+	logBuf := captureLogs(t)
+	hashReader := &mockHashReader{
+		hashes:   map[string]store.CVEChangeHashes{},
+		readErrs: []error{fmt.Errorf("connection reset")},
+	}
+	eval := &mockEvaluator{}
+
+	// Both hashes change, but the pre-merge read failed, so there is nothing to compare with.
+	err := runRealtimeIngest(t, hashReader, eval,
+		store.CVEChangeHashes{Material: "hash-before", MatchInputs: "inputs-before"},
+		store.CVEChangeHashes{Material: "hash-after", MatchInputs: "inputs-after"})
+	if err != nil {
+		t.Fatalf("handler returned error %v, want nil (a hash read failure does not fail ingest)", err)
+	}
+
+	if calls := eval.Calls(); len(calls) != 0 {
+		t.Errorf("EvaluateRealtime called %d times, want 0 (pre-merge read failed)", len(calls))
+	}
+	if hashReader.reads != 2 {
+		t.Errorf("hash reads = %d, want 2 (before and after the merge)", hashReader.reads)
+	}
+	if !strings.Contains(logBuf.String(), "pre-merge hash read failed") || !strings.Contains(logBuf.String(), "connection reset") {
+		t.Errorf("expected the pre-merge read failure and its error in the log, got: %s", logBuf.String())
+	}
+}
+
 func TestFeedHandler_RealtimeEval_ErrorDoesNotFailIngest(t *testing.T) {
-	db := testutil.NewTestDB(t)
-	ctx := context.Background()
 	logBuf := captureLogs(t)
 
-	hashReader := &mockHashReader{hashes: map[string]string{
-		"CVE-2025-0001": "hash-before",
-	}}
+	hashReader := &mockHashReader{hashes: map[string]store.CVEChangeHashes{}}
 	eval := &mockEvaluator{
 		errFunc: func(_ string) error {
 			return fmt.Errorf("evaluation failed")
 		},
 	}
 
-	// Merge mock simulates a hash change to trigger evaluation.
-	mergeFn := func(_ context.Context, _ merge.Store, patch feed.CanonicalPatch, _ string) error {
-		hashReader.mu.Lock()
-		hashReader.hashes[patch.CVEID] = "hash-after"
-		hashReader.mu.Unlock()
-		return nil
-	}
-
-	adapter := &mockAdapter{
-		fetchFunc: func(_ context.Context, _ json.RawMessage) (*feed.FetchResult, error) {
-			return &feed.FetchResult{
-				Patches:    []feed.CanonicalPatch{{CVEID: "CVE-2025-0001", SourceID: "CVE-2025-0001"}},
-				SourceMeta: feed.SourceMeta{SourceName: "test-feed", FetchedAt: time.Now().UTC()},
-				LastPage:   true,
-			}, nil
-		},
-	}
-
-	handler := handlerWithStore(db.Store, db.Store, nil, mergeFn, mockFactory(adapter), eval, hashReader)
-
-	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
-	err := handler(ctx, payload)
+	// The merge moves material_hash to trigger evaluation.
+	err := runRealtimeIngest(t, hashReader, eval,
+		store.CVEChangeHashes{Material: "hash-before"},
+		store.CVEChangeHashes{Material: "hash-after"})
 
 	// Ingestion must succeed even though evaluation failed.
 	if err != nil {
@@ -815,5 +835,105 @@ func TestFeedHandler_RealtimeEval_ErrorDoesNotFailIngest(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "evaluation failed") {
 		t.Errorf("expected error detail in log, got: %s", logBuf.String())
+	}
+}
+
+// closingAdapter is a mockAdapter that holds a resource for its run, as the
+// archive adapters hold their downloaded archive.
+type closingAdapter struct {
+	*mockAdapter
+	closeErr error
+	mu       sync.Mutex
+	closed   int
+}
+
+func (c *closingAdapter) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed++
+	return c.closeErr
+}
+
+func (c *closingAdapter) closeCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
+}
+
+// The handler closes an adapter that holds resources once the run ends, however
+// it ends, so a run stopped part-way through an archive does not leave the
+// download behind.
+func TestFeedHandler_ClosesAdapterWhenRunEnds(t *testing.T) {
+	cases := []struct {
+		name    string
+		ctx     func(t *testing.T) context.Context
+		fetch   func(ctx context.Context, cursor json.RawMessage) (*feed.FetchResult, error)
+		wantErr bool
+	}{
+		{
+			name: "complete",
+			ctx:  func(*testing.T) context.Context { return context.Background() },
+			fetch: func(context.Context, json.RawMessage) (*feed.FetchResult, error) {
+				return deadlineTestPage(`{"page":2}`, true, "CVE-2025-0001"), nil
+			},
+		},
+		{
+			name: "stopped at time limit",
+			ctx:  nearDeadlineContext,
+			fetch: func(context.Context, json.RawMessage) (*feed.FetchResult, error) {
+				return deadlineTestPage(`{"page":2}`, false, "CVE-2025-0001"), nil
+			},
+		},
+		{
+			name: "failed",
+			ctx:  func(*testing.T) context.Context { return context.Background() },
+			fetch: func(context.Context, json.RawMessage) (*feed.FetchResult, error) {
+				return nil, fmt.Errorf("upstream unavailable")
+			},
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := testutil.NewTestDB(t)
+			captureLogs(t)
+			adapter := &closingAdapter{mockAdapter: &mockAdapter{fetchFunc: tc.fetch}}
+			handler := handlerWithStore(db.Store, db.Store, nil, (&mockMerge{}).fn, mockFactory(adapter), nil, nil)
+
+			payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
+			err := handler(tc.ctx(t), payload)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("handler error = %v, want error: %v", err, tc.wantErr)
+			}
+			if got := adapter.closeCount(); got != 1 {
+				t.Errorf("Close called %d times, want 1", got)
+			}
+		})
+	}
+}
+
+// A failure to release the adapter's resources is logged and does not change
+// the run's outcome, which is already recorded.
+func TestFeedHandler_AdapterCloseError_LoggedNotReturned(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	logBuf := captureLogs(t)
+	adapter := &closingAdapter{
+		mockAdapter: &mockAdapter{fetchFunc: func(context.Context, json.RawMessage) (*feed.FetchResult, error) {
+			return deadlineTestPage(`{"page":2}`, true, "CVE-2025-0001"), nil
+		}},
+		closeErr: fmt.Errorf("remove downloaded archive: access denied"),
+	}
+	handler := handlerWithStore(db.Store, db.Store, nil, (&mockMerge{}).fn, mockFactory(adapter), nil, nil)
+
+	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
+	if err := handler(context.Background(), payload); err != nil {
+		t.Fatalf("handler error = %v, want nil", err)
+	}
+	if !strings.Contains(logBuf.String(), "feed adapter close failed") || !strings.Contains(logBuf.String(), "access denied") {
+		t.Errorf("close error not logged; logs:\n%s", logBuf.String())
+	}
+	state, log := feedStateAndLatestLog(t, db)
+	if state.LastSuccessAt == nil || log.Status != "success" {
+		t.Errorf("LastSuccessAt = %v, log status = %q; want a recorded success", state.LastSuccessAt, log.Status)
 	}
 }

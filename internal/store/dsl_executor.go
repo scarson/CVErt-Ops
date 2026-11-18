@@ -7,8 +7,9 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -78,6 +79,11 @@ func scanCVERow(rows *sql.Rows) (generated.CVE, error) {
 	return c, nil
 }
 
+// ErrInvalidCursor reports a DSL query cursor that cannot be decoded: bad
+// base64, malformed JSON, or JSON edited after the store issued it. It is a
+// caller error, not a store failure.
+var ErrInvalidCursor = errors.New("invalid cursor")
+
 // dslCursor is the keyset pagination cursor for DSL query results.
 type dslCursor struct {
 	SortDate time.Time `json:"d"`
@@ -94,29 +100,42 @@ func encodeDSLCursor(c dslCursor) (string, error) {
 }
 
 // decodeDSLCursor decodes a base64 JSON cursor. Returns zero-value cursor and
-// nil error for empty input.
+// nil error for empty input. The caller sends the cursor back and can edit it,
+// so the JSON is decoded strictly: an unknown, case-variant or duplicate member
+// or trailing data makes the cursor invalid.
 func decodeDSLCursor(s string) (dslCursor, error) {
 	if s == "" {
 		return dslCursor{}, nil
 	}
 	b, err := base64.URLEncoding.DecodeString(s)
 	if err != nil {
-		return dslCursor{}, fmt.Errorf("decode cursor: %w", err)
+		return dslCursor{}, fmt.Errorf("%w: decode cursor: %w", ErrInvalidCursor, err)
 	}
 	var c dslCursor
-	if err := json.Unmarshal(b, &c); err != nil {
-		return dslCursor{}, fmt.Errorf("unmarshal cursor: %w", err)
+	if err := jsonv2.Unmarshal(b, &c, jsonv2.RejectUnknownMembers(true)); err != nil {
+		return dslCursor{}, fmt.Errorf("%w: unmarshal cursor: %w", ErrInvalidCursor, err)
 	}
 	return c, nil
+}
+
+// ValidateDSLCursor reports whether ExecuteDSLQuery can decode cursor. It
+// returns nil for an empty cursor and an error wrapping ErrInvalidCursor for
+// one ExecuteDSLQuery would refuse, so a handler can refuse a caller's cursor
+// before doing any other work.
+func ValidateDSLCursor(cursor string) error {
+	_, err := decodeDSLCursor(cursor)
+	return err
 }
 
 // ExecuteDSLQuery runs a compiled DSL rule against the CVE corpus with keyset
 // pagination. Returns matching CVEs, a cursor for the next page (empty string
 // if no more results), and any error.
 //
-// The cves table is global (no org_id, no RLS). However, compiled rules with
-// watchlist conditions reference the org-scoped watchlist_items table via
-// EXISTS subqueries, so those queries run inside a bypass transaction.
+// The query runs in a read-only transaction under dsl.RuleQuerySettings, as
+// the alert evaluator runs a rule's candidate query. The cves table is global
+// (no org_id, no RLS). However, compiled rules with watchlist conditions
+// reference the org-scoped watchlist_items table via EXISTS subqueries, so
+// those transactions also bypass RLS.
 // PostFilters (regex conditions) are applied in-process after the SQL query.
 func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule, cursor string, limit int) ([]generated.CVE, string, error) {
 	if limit <= 0 || limit > 100 {
@@ -131,13 +150,14 @@ func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule,
 		sb = sb.Join(j)
 	}
 
-	// Apply the compiled WHERE clause.
-	if compiled.SQL != nil {
-		sb = sb.Where(compiled.SQL)
+	// Apply the compiled WHERE clause. Saved and AI searches have no candidate IDs.
+	if where := compiled.Where(nil); where != nil {
+		sb = sb.Where(where)
 	}
 
-	// Filter out rejected and withdrawn CVEs (§10 alert evaluation).
-	sb = sb.Where("lower(cves.status) NOT IN ('rejected', 'withdrawn')")
+	// Filter out rejected and withdrawn CVEs (§10 alert evaluation). COALESCE keeps
+	// CVEs with no status: NULL NOT IN (...) is NULL, which drops the row.
+	sb = sb.Where("COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')")
 
 	// Keyset cursor: WHERE (date_modified_canonical, cve_id) < (last_date, last_id).
 	cur, err := decodeDSLCursor(cursor)
@@ -160,28 +180,7 @@ func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule,
 		return nil, "", fmt.Errorf("store: build dsl query: %w", err)
 	}
 
-	var results []generated.CVE
-
-	// Watchlist subqueries reference org-scoped watchlist_items (has RLS).
-	// The compiled SQL already embeds the org_id explicitly, but the session
-	// needs bypass_rls to read the table without app.org_id being set.
-	if compiled.HasWatchlist {
-		var tx *sql.Tx
-		tx, err = s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-		if err != nil {
-			return nil, "", fmt.Errorf("store: begin bypass tx: %w", err)
-		}
-		defer tx.Rollback() //nolint:errcheck // rollback is safe after commit
-		if _, err = tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
-			return nil, "", fmt.Errorf("store: set bypass_rls: %w", err)
-		}
-		err = s.scanDSLRows(ctx, tx.QueryContext, query, args, &results)
-		if commitErr := tx.Commit(); commitErr != nil && err == nil {
-			err = fmt.Errorf("store: commit bypass tx: %w", commitErr)
-		}
-	} else {
-		err = s.scanDSLRows(ctx, s.db.QueryContext, query, args, &results)
-	}
+	results, err := s.queryDSLRows(ctx, compiled.HasWatchlist, query, args)
 	if err != nil {
 		return nil, "", err
 	}
@@ -236,28 +235,55 @@ func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule,
 	return results, nextCursor, nil
 }
 
-// queryContextFunc abstracts *sql.DB.QueryContext and *sql.Tx.QueryContext.
-type queryContextFunc func(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
-
-// scanDSLRows executes a query via queryFn and scans all rows into results.
-func (s *Store) scanDSLRows(ctx context.Context, queryFn queryContextFunc, query string, args []interface{}, results *[]generated.CVE) error {
-	rows, err := queryFn(ctx, query, args...)
+// queryDSLRows runs a compiled rule's query in a read-only transaction under
+// dsl.RuleQuerySettings and scans every row. bypassRLS is for rules with
+// watchlist subqueries: they read the org-scoped watchlist_items table (has
+// RLS), whose org_id the compiled SQL already embeds, without app.org_id set.
+func (s *Store) queryDSLRows(ctx context.Context, bypassRLS bool, query string, args []interface{}) ([]generated.CVE, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return fmt.Errorf("store: execute dsl query: %w", err)
+		return nil, fmt.Errorf("store: begin dsl query tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback is safe after commit
+	if bypassRLS {
+		if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
+			return nil, fmt.Errorf("store: set bypass_rls: %w", err)
+		}
+	}
+	if err := dsl.PrepareRuleQueryTx(ctx, tx); err != nil {
+		return nil, fmt.Errorf("store: %w", err)
+	}
+
+	results, err := scanDSLRows(ctx, tx, query, args)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: commit dsl query tx: %w", err)
+	}
+	return results, nil
+}
+
+// scanDSLRows executes a query in tx and scans all rows.
+func scanDSLRows(ctx context.Context, tx *sql.Tx, query string, args []interface{}) ([]generated.CVE, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: execute dsl query: %w", err)
 	}
 	defer rows.Close() //nolint:errcheck
 
+	var results []generated.CVE
 	for rows.Next() {
 		c, scanErr := scanCVERow(rows)
 		if scanErr != nil {
-			return fmt.Errorf("store: scan dsl query row: %w", scanErr)
+			return nil, fmt.Errorf("store: scan dsl query row: %w", scanErr)
 		}
-		*results = append(*results, c)
+		results = append(results, c)
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("store: dsl query rows error: %w", err)
+		return nil, fmt.Errorf("store: dsl query rows error: %w", err)
 	}
-	return nil
+	return results, nil
 }
 
 // cvePostFilterTarget wraps generated.CVE to implement dsl.PostFilterTarget.
@@ -265,10 +291,12 @@ type cvePostFilterTarget struct {
 	cve *generated.CVE
 }
 
-// PostFilterField implements dsl.PostFilterTarget for generated.CVE.
+// PostFilterField implements dsl.PostFilterTarget for generated.CVE. Values are
+// matched as stored: regex PostFilters ignore case unless their pattern turns
+// that off, as in the alert evaluator.
 func (c cvePostFilterTarget) PostFilterField(field string) string {
 	if field == "cve_id" {
 		return c.cve.CveID
 	}
-	return strings.ToLower(c.cve.DescriptionPrimary.String)
+	return c.cve.DescriptionPrimary.String
 }

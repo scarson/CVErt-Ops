@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
+
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
@@ -68,6 +70,23 @@ func (m *lockoutManager) Check(ctx context.Context, email string) (allowed bool,
 	}
 
 	return false, remaining
+}
+
+// accountLockedError builds the 429 response returned while an account is
+// locked, carrying the remaining lockout time in whole seconds (at least 1).
+func accountLockedError(retryAfter time.Duration) error {
+	retrySeconds := int(retryAfter.Seconds())
+	if retrySeconds < 1 {
+		retrySeconds = 1
+	}
+	return huma.Error429TooManyRequests(
+		"account temporarily locked due to too many failed login attempts",
+		&huma.ErrorDetail{
+			Message:  "retry_after_seconds",
+			Location: "header",
+			Value:    retrySeconds,
+		},
+	)
 }
 
 // RecordFailure increments the failure count for an email.

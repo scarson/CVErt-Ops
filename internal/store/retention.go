@@ -185,6 +185,24 @@ func (s *Store) CleanupSecurityEvents(ctx context.Context, cutoff time.Time, bat
 	return n, nil
 }
 
+// CleanupWatchlistItems hard-deletes up to batchSize watchlist items, across all
+// orgs, that were soft-deleted before cutoff. Live items are never deleted.
+func (s *Store) CleanupWatchlistItems(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	var n int64
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		n, err = q.CleanupWatchlistItems(ctx, generated.CleanupWatchlistItemsParams{
+			Cutoff:    cutoff,
+			BatchSize: int32(batchSize), //nolint:gosec // G115: batch sizes are always small
+		})
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("cleanup watchlist_items: %w", err)
+	}
+	return n, nil
+}
+
 // CleanupAIUsageCounters deletes up to batchSize daily usage rows older than cutoff date.
 func (s *Store) CleanupAIUsageCounters(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
 	var n int64

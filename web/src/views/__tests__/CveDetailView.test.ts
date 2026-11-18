@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import type { components } from '@/lib/api/schema'
+import CveDetailView from '@/views/CveDetailView.vue'
 
 type CVEDetail = components['schemas']['CVEDetail']
 type CVESourceResponse = components['schemas']['CVESourceResponse']
@@ -41,6 +42,8 @@ vi.mock('@/lib/api/client', () => ({
 function makeCVEDetail(overrides: Partial<CVEDetail> = {}): CVEDetail {
   return {
     cve_id: 'CVE-2024-12345',
+    affected_cpe_matches: [],
+    cna_affected: [],
     description_primary: 'A critical vulnerability in Apache Log4j allows remote code execution.',
     cvss_v3_score: 9.8,
     cvss_v3_vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H',
@@ -134,8 +137,18 @@ function mockErrorResponse() {
   )
 }
 
+// The client converts a request that never reaches the server into a 503 problem.
+const NETWORK_FAILURE = {
+  data: undefined,
+  error: {
+    type: 'about:blank',
+    title: 'Network Error',
+    status: 503,
+    detail: 'Could not reach the server. Check your connection and try again.',
+  },
+}
+
 async function mountView() {
-  const { default: CveDetailView } = await import('@/views/CveDetailView.vue')
   return mount(CveDetailView)
 }
 
@@ -268,7 +281,7 @@ describe('CveDetailView', () => {
     })
 
     it('shows empty state when no affected products', async () => {
-      mockCveResponse(makeCVEDetail({ affected_packages: null, affected_cpes: null }))
+      mockCveResponse(makeCVEDetail({ affected_packages: [], affected_cpes: [] }))
       const wrapper = await mountView()
       await flushPromises()
 
@@ -296,7 +309,7 @@ describe('CveDetailView', () => {
     })
 
     it('shows empty state when no references', async () => {
-      mockCveResponse(makeCVEDetail({ references: null }))
+      mockCveResponse(makeCVEDetail({ references: [] }))
       const wrapper = await mountView()
       await flushPromises()
 
@@ -356,6 +369,28 @@ describe('CveDetailView', () => {
 
       expect(wrapper.text()).toContain('Failed to load CVE')
     })
+
+    it('shows error message on network failure', async () => {
+      mockGET.mockResolvedValue(NETWORK_FAILURE)
+      const wrapper = await mountView()
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Failed to load CVE')
+    })
+
+    it('stops loading sources on network failure', async () => {
+      mockGET.mockImplementation((path: string) => {
+        if (path === '/cves/{cve_id}') {
+          return Promise.resolve({ data: makeCVEDetail(), error: undefined })
+        }
+        return Promise.resolve(NETWORK_FAILURE)
+      })
+      const wrapper = await mountView()
+      await flushPromises()
+
+      expect(wrapper.text()).not.toContain('Loading sources')
+      expect(wrapper.text()).toContain('No source data available')
+    })
   })
 
   describe('stale response protection', () => {
@@ -364,7 +399,6 @@ describe('CveDetailView', () => {
       mockGET.mockResolvedValueOnce({ data: makeCVEDetail({ cve_id: 'CVE-2024-12345' }) })
       mockGET.mockResolvedValueOnce({ data: { sources: makeSources() }, error: undefined })
 
-      const { default: CveDetailView } = await import('@/views/CveDetailView.vue')
       const wrapper = mount(CveDetailView)
       await flushPromises()
 

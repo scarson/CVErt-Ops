@@ -2,8 +2,8 @@
 -- ABOUTME: Insert for write path, paginated list for the audit API endpoint.
 
 -- name: InsertAuditEntry :exec
-INSERT INTO audit_log (org_id, actor_id, actor_email, action, entity_type, entity_id, entity_name, success, old_state, new_state, metadata)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
+INSERT INTO audit_log (org_id, actor_id, api_key_id, actor_email, action, entity_type, entity_id, entity_name, success, old_state, new_state, metadata)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
 
 -- name: ListAuditEntries :many
 SELECT * FROM audit_log

@@ -49,6 +49,120 @@ func TestRedactSecrets_SubstringMatch(t *testing.T) {
 	}
 }
 
+func TestRedactSecrets_ChannelCustomHeaders(t *testing.T) {
+	t.Parallel()
+	state := map[string]any{
+		"custom_headers": map[string]any{
+			"Authorization": "Bearer abc123",
+			"X-Team":        "secops",
+		},
+	}
+	got := redactSecrets("channel", state)
+	headers, ok := got["custom_headers"].(map[string]any)
+	if !ok {
+		t.Fatalf("custom_headers: expected map[string]any, got %T", got["custom_headers"])
+	}
+	for name, value := range headers {
+		if value != "[REDACTED]" {
+			t.Errorf("%s: got %v, want [REDACTED]", name, value)
+		}
+	}
+	if len(headers) != 2 {
+		t.Errorf("header names must be kept: got %v", headers)
+	}
+}
+
+func TestRedactChannelConfig_AllowsOnlyKnownFields(t *testing.T) {
+	t.Parallel()
+	got := RedactChannelConfig(map[string]any{ //nolint:gosec // G101: test fixture, not a real credential
+		"url":        "https://user:pw@hooks.example.com/path?token=x",
+		"URL":        "https://other.example.com/second",
+		"recipients": []any{"ops@example.com"},
+		"headers":    map[string]any{"Authorization": "Bearer abc123"},
+		"auth":       "plain-value",
+		"extra":      []any{map[string]any{"Authorization": "Bearer nested"}},
+		"nested":     map[string]any{"url": "https://r.example.com/secret"},
+	})
+
+	if got["url"] != "https://hooks.example.com/***" {
+		t.Errorf("url: got %v", got["url"])
+	}
+	if recipients, ok := got["recipients"].([]any); !ok || len(recipients) != 1 || recipients[0] != "ops@example.com" {
+		t.Errorf("recipients must stay visible: got %v", got["recipients"])
+	}
+	headers, ok := got["headers"].(map[string]any)
+	if !ok || headers["Authorization"] != RedactedValue {
+		t.Errorf("headers: got %v", got["headers"])
+	}
+	for _, key := range []string{"URL", "auth", "extra", "nested"} {
+		if got[key] != RedactedValue {
+			t.Errorf("%s: got %v, want %s", key, got[key], RedactedValue)
+		}
+	}
+}
+
+func TestRedactChannelConfig_RecipientsMustBeAddressList(t *testing.T) {
+	t.Parallel()
+	for _, value := range []any{
+		map[string]any{"Authorization": "Bearer abc123"},
+		"Bearer abc123",
+		[]any{"not-an-address"},
+		[]any{map[string]any{"token": "abc"}},
+	} {
+		got := RedactChannelConfig(map[string]any{"recipients": value})
+		if got["recipients"] != RedactedValue {
+			t.Errorf("recipients %v: got %v, want %s", value, got["recipients"], RedactedValue)
+		}
+	}
+}
+
+func TestRedactChannelConfig_NonStringURLMasked(t *testing.T) {
+	t.Parallel()
+	got := RedactChannelConfig(map[string]any{"url": map[string]any{"token": "abc"}})
+	if got["url"] != RedactedValue {
+		t.Errorf("url: got %v, want %s", got["url"], RedactedValue)
+	}
+}
+
+func TestRedactSecrets_FollowsLists(t *testing.T) {
+	t.Parallel()
+	got := redactSecrets("alert_rule", map[string]any{
+		"items": []any{map[string]any{"api_key": "abc", "name": "visible"}, "plain"},
+	})
+	items, ok := got["items"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("items: got %v", got["items"])
+	}
+	first, ok := items[0].(map[string]any)
+	if !ok || first["api_key"] != RedactedValue || first["name"] != "visible" {
+		t.Errorf("list element: got %v", items[0])
+	}
+	if items[1] != "plain" {
+		t.Errorf("plain element: got %v", items[1])
+	}
+}
+
+func TestRedactSecrets_ChannelHeadersKey(t *testing.T) {
+	t.Parallel()
+	state := map[string]any{"headers": map[string]any{"Authorization": "Bearer abc123"}}
+	got := redactSecrets("channel", state)
+	headers, ok := got["headers"].(map[string]any)
+	if !ok {
+		t.Fatalf("headers: expected map[string]any, got %T", got["headers"])
+	}
+	if headers["Authorization"] != "[REDACTED]" {
+		t.Errorf("Authorization: got %v, want [REDACTED]", headers["Authorization"])
+	}
+}
+
+func TestRedactSecrets_ChannelCustomHeadersNotAMap(t *testing.T) {
+	t.Parallel()
+	got := redactSecrets("channel", map[string]any{"custom_headers": "Authorization: Bearer abc123"})
+	if got["custom_headers"] != "[REDACTED]" {
+		t.Errorf("custom_headers: got %v, want [REDACTED]", got["custom_headers"])
+	}
+}
+
 func TestRedactSecrets_NestedJSON(t *testing.T) {
 	t.Parallel()
 	state := map[string]any{
@@ -127,7 +241,7 @@ func TestRedactSecrets_NilState(t *testing.T) {
 func TestRedactURL_InvalidURL(t *testing.T) {
 	t.Parallel()
 	// Invalid URL should return "[REDACTED]" rather than panicking.
-	got := redactURL("://not-a-url")
+	got := RedactURL("://not-a-url")
 	if got != "[REDACTED]" {
 		t.Errorf("invalid URL: got %q, want [REDACTED]", got)
 	}

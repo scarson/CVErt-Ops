@@ -55,7 +55,7 @@ func TestAdminDoctor_NonAdmin_403(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/admin/doctor", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -91,7 +91,7 @@ func TestAdminDoctor_SiteAdmin_ReturnsChecks(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/admin/doctor", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("request: %v", err)

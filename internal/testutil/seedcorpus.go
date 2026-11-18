@@ -98,6 +98,32 @@ func SeedCorpus(t *testing.T, db *TestDB) SeedStats {
 	return stats
 }
 
+// GoldenPatch returns the patch one adapter builds for one CVE from its golden
+// fixtures, for tests that need a real record but not the whole corpus.
+// Supported feeds are "nvd" and "mitre".
+func GoldenPatch(t *testing.T, feedName, cveID string) feed.CanonicalPatch {
+	t.Helper()
+	_, thisFile, _, _ := runtime.Caller(0)
+	projectRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
+
+	var patches []feed.CanonicalPatch
+	switch feedName {
+	case "nvd":
+		patches = fetchNVDGolden(t, projectRoot)
+	case "mitre":
+		patches = fetchMITREGolden(t, projectRoot)
+	default:
+		t.Fatalf("GoldenPatch: unsupported feed %q", feedName)
+	}
+	for _, p := range patches {
+		if p.CVEID == cveID {
+			return p
+		}
+	}
+	t.Fatalf("GoldenPatch: %s missing from %s golden fixtures", cveID, feedName)
+	return feed.CanonicalPatch{}
+}
+
 func fetchNVDGolden(t *testing.T, projectRoot string) []feed.CanonicalPatch {
 	t.Helper()
 	goldenDir := filepath.Join(projectRoot, "internal", "feed", "nvd", "testdata", "golden")
@@ -198,7 +224,12 @@ func fetchOSVGolden(t *testing.T, projectRoot string) []feed.CanonicalPatch {
 		t.Fatalf("OSV golden fixture missing: %v", err)
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	// A backfill reads the newest time in modified_id.csv, then all.zip.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/modified_id.csv" {
+			_, _ = w.Write([]byte("2026-01-01T00:00:00Z,Alpine/ALPINE-CVE-2021-42771\n"))
+			return
+		}
 		w.Header().Set("Content-Type", "application/zip")
 		_, _ = w.Write(zipData)
 	}))

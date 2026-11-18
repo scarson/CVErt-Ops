@@ -27,3 +27,26 @@ func parseRole(s string) Role {
 		return RoleViewer
 	}
 }
+
+// String returns the role's name as stored in the database.
+func (r Role) String() string {
+	switch r {
+	case RoleOwner:
+		return "owner"
+	case RoleAdmin:
+		return "admin"
+	case RoleMember:
+		return "member"
+	default:
+		return "viewer"
+	}
+}
+
+// capToKeyRole returns the role a request acts with: the org role, lowered to the
+// API key's role when the request carries a key. An empty keyRole means no key.
+func capToKeyRole(orgRole Role, keyRole string) Role {
+	if keyRole == "" {
+		return orgRole
+	}
+	return min(orgRole, parseRole(keyRole))
+}

@@ -35,9 +35,11 @@ WHERE org_id = $1 AND user_id = $2;
 DELETE FROM org_members WHERE org_id = $1 AND user_id = $2;
 
 -- name: ListUserOrgs :many
+-- Orgs the user can act in: deleted orgs and deactivated memberships are left out,
+-- since every org route refuses them.
 SELECT om.org_id, om.role, o.name FROM org_members om
 JOIN organizations o ON o.id = om.org_id
-WHERE om.user_id = $1 AND o.deleted_at IS NULL
+WHERE om.user_id = $1 AND o.deleted_at IS NULL AND om.deactivated_at IS NULL
 ORDER BY o.name;
 
 -- name: GetOrgOwnerCount :one

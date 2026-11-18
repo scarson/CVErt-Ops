@@ -1,14 +1,23 @@
+// ABOUTME: Unit and integration tests for the CVE list, detail and cursor handlers.
+// ABOUTME: Integration cases use real Postgres via testutil.NewTestDB and the merge pipeline.
 package api
 
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/scarson/cvert-ops/internal/feed"
+	"github.com/scarson/cvert-ops/internal/merge"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
@@ -79,6 +88,27 @@ func TestDecodeCursorMissingCVEID(t *testing.T) {
 	_, err := decodeCursor("e30") // base64url of "{}"
 	if err == nil {
 		t.Error("expected error for cursor missing cve_id, got nil")
+	}
+}
+
+// TestDecodeCursor_RefusesEditedCursor checks that a CVE list cursor whose JSON
+// a caller has edited is refused instead of partly applied.
+func TestDecodeCursor_RefusesEditedCursor(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"unknown member": `{"d":"2026-02-25T12:00:00Z","id":"CVE-2024-99999","x":1}`,
+		"case variant":   `{"D":"2026-02-25T12:00:00Z","id":"CVE-2024-99999"}`,
+		"duplicate name": `{"d":"2026-02-25T12:00:00Z","id":"CVE-2024-99999","id":"CVE-2024-00001"}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cur, err := decodeCursor(base64.RawURLEncoding.EncodeToString([]byte(raw)))
+			if err == nil {
+				t.Errorf("decodeCursor(%s) accepted the cursor as %+v", raw, cur)
+			}
+		})
 	}
 }
 
@@ -658,6 +688,90 @@ func TestListCVEs_SeverityFilter(t *testing.T) {
 	}
 }
 
+// TestListCVEs_SeverityFilterMatchesStoredCase verifies the filter accepts either
+// case and matches values as feeds store them: NVD and MITRE uppercase, GHSA lowercase.
+// TestListCVEs_EcosystemFilterValidatesName checks a name outside the canonical vocabulary
+// is rejected with the accepted names, and a canonical name is accepted.
+func TestListCVEs_EcosystemFilterValidatesName(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ts, token := newCVETestServer(t, db)
+	ctx := context.Background()
+
+	get := func(t *testing.T, value string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves?ecosystem="+value, nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Cookie", "access_token="+token)
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
+		if err != nil {
+			t.Fatalf("GET /cves?ecosystem=%s: %v", value, err)
+		}
+		return resp
+	}
+
+	t.Run("name in the wrong case is rejected", func(t *testing.T) {
+		resp := get(t, "pypi")
+		defer resp.Body.Close() //nolint:errcheck
+		if resp.StatusCode != http.StatusUnprocessableEntity {
+			t.Fatalf("got status %d, want 422", resp.StatusCode)
+		}
+		var problem struct {
+			Detail string `json:"detail"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+			t.Fatalf("decode problem: %v", err)
+		}
+		if !strings.Contains(problem.Detail, "PyPI") {
+			t.Errorf("detail = %q, want it to name PyPI", problem.Detail)
+		}
+	})
+
+	t.Run("canonical name is accepted", func(t *testing.T) {
+		resp := get(t, "PyPI")
+		defer resp.Body.Close() //nolint:errcheck
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("got status %d, want 200", resp.StatusCode)
+		}
+	})
+}
+
+func TestListCVEs_SeverityFilterMatchesStoredCase(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ts, token := newCVETestServer(t, db)
+	ctx := context.Background()
+
+	db.SeedTestCVE(t, "CVE-2026-1101", "CRITICAL", nil)
+	db.SeedTestCVE(t, "CVE-2026-1102", "critical", nil)
+	db.SeedTestCVE(t, "CVE-2026-1103", "LOW", nil)
+
+	for _, value := range []string{"critical", "CRITICAL"} {
+		t.Run(value, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves?severity="+value, nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			req.Header.Set("Cookie", "access_token="+token)
+			resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
+			if err != nil {
+				t.Fatalf("GET /cves: %v", err)
+			}
+			defer resp.Body.Close() //nolint:errcheck
+
+			var body cveListResponse
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if len(body.Items) != 2 {
+				t.Fatalf("items length = %d, want 2", len(body.Items))
+			}
+		})
+	}
+}
+
 // TestListCVEs_ResponseShape verifies the JSON structure of list response items
 // includes all expected fields.
 func TestListCVEs_ResponseShape(t *testing.T) {
@@ -783,6 +897,198 @@ func TestGetCVE_Exists(t *testing.T) {
 	}
 	if detail.CWEIDs == nil {
 		t.Error("cwe_ids should be [] not null")
+	}
+}
+
+// getCVEVersionData fetches a CVE and decodes its version range fields.
+func getCVEVersionData(t *testing.T, ts *httptest.Server, token, cveID string) CVEDetail {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/api/v1/cves/"+cveID, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Cookie", "access_token="+token)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
+	if err != nil {
+		t.Fatalf("GET /cves/%s: %v", cveID, err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cves/%s: got status %d, want %d", cveID, resp.StatusCode, http.StatusOK)
+	}
+	var detail CVEDetail
+	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	return detail
+}
+
+func strRef(s string) *string { return &s }
+
+// A CVE NVD has analysed returns its ranges, one per release branch, from real golden records.
+func TestGetCVE_ReturnsCPEMatchRanges(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ts, token := newCVETestServer(t, db)
+	ctx := context.Background()
+	const nodeJS = "cpe:2.3:a:nodejs:node.js:*:*:*:*:-:*:*:*"
+
+	const cveID = "CVE-2026-111497"
+	if err := merge.Ingest(ctx, db.Store, testutil.GoldenPatch(t, "nvd", cveID), "nvd"); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	detail := getCVEVersionData(t, ts, token, cveID)
+
+	want := CPEMatchResponse{
+		CPE:                   nodeJS,
+		CPENormalized:         nodeJS,
+		VersionStartIncluding: strRef("23.0.0"),
+		VersionEndExcluding:   strRef("24.22.1"),
+	}
+	if !slices.ContainsFunc(detail.AffectedCPEMatches, func(m CPEMatchResponse) bool { return reflect.DeepEqual(m, want) }) {
+		t.Errorf("affected_cpe_matches missing %+v; got %d entries", want, len(detail.AffectedCPEMatches))
+	}
+	var nodeRanges int
+	for _, m := range detail.AffectedCPEMatches {
+		if m.CPENormalized == nodeJS {
+			nodeRanges++
+		}
+	}
+	if nodeRanges != 3 {
+		t.Errorf("got %d Node.js ranges, want 3 (one per branch)", nodeRanges)
+	}
+	if detail.CNAAffected == nil {
+		t.Error("cna_affected should be [] not null")
+	}
+}
+
+// affected_cpe_matches answers what is affected, so it skips a "running on"
+// platform. affected_cpes still names it, which is what CPE watchlist items match.
+func TestGetCVE_CPEMatchesSkipNotVulnerablePlatform(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ts, token := newCVETestServer(t, db)
+	ctx := context.Background()
+	const hardware = "cpe:2.3:h:hp:integrated_lights-out_4:-:*:*:*:*:*:*:*"
+
+	const cveID = "CVE-2017-12542"
+	if err := merge.Ingest(ctx, db.Store, testutil.GoldenPatch(t, "nvd", cveID), "nvd"); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	detail := getCVEVersionData(t, ts, token, cveID)
+
+	if len(detail.AffectedCPEMatches) != 1 {
+		t.Fatalf("affected_cpe_matches = %+v, want the firmware only", detail.AffectedCPEMatches)
+	}
+	if got := detail.AffectedCPEMatches[0]; got.CPENormalized == hardware || got.VersionEndExcluding == nil || *got.VersionEndExcluding != "2.53" {
+		t.Errorf("affected_cpe_matches[0] = %+v, want the firmware below 2.53", got)
+	}
+	if !slices.ContainsFunc(detail.AffectedCPEs, func(c AffectedCPEResponse) bool { return c.CPENormalized == hardware }) {
+		t.Errorf("affected_cpes = %+v, want the hardware CPE kept", detail.AffectedCPEs)
+	}
+}
+
+// A CVE NVD has not analysed has no configurations, so the CNA's data is the answer.
+func TestGetCVE_ReturnsCNAAffectedBeforeNVDAnalysis(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ts, token := newCVETestServer(t, db)
+	ctx := context.Background()
+
+	// The NVD record alone: NVD relays the CNA's data before it analyses a CVE.
+	const cveID = "CVE-2026-107832"
+	if err := merge.Ingest(ctx, db.Store, testutil.GoldenPatch(t, "nvd", cveID), "nvd"); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	detail := getCVEVersionData(t, ts, token, cveID)
+
+	if detail.AffectedCPEMatches == nil || len(detail.AffectedCPEMatches) != 0 {
+		t.Errorf("affected_cpe_matches = %+v, want []", detail.AffectedCPEMatches)
+	}
+	want := []CNAAffectedResponse{{
+		Vendor:        strRef("fastify"),
+		Product:       strRef("fastify"),
+		DefaultStatus: strRef("unaffected"),
+		Versions: []CNAVersionResponse{
+			{Version: "5.12.2", LessThan: "5.12.6", Status: "affected", VersionType: "semver"},
+			{Version: "5.12.6", Status: "unaffected", VersionType: "semver"},
+		},
+	}}
+	if !reflect.DeepEqual(detail.CNAAffected, want) {
+		t.Errorf("cna_affected = %+v, want %+v", detail.CNAAffected, want)
+	}
+}
+
+// Every stored field reaches the response under the right name. The response type
+// decodes versions from the feed type's JSON, so a tag mismatch would drop a value
+// silently.
+func TestGetCVE_ReturnsEveryRangeAndVersionField(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ts, token := newCVETestServer(t, db)
+	ctx := context.Background()
+
+	const cveID = "CVE-2024-99960"
+	if err := merge.Ingest(ctx, db.Store, feed.CanonicalPatch{
+		CVEID:  cveID,
+		Status: "published",
+		CPEMatches: []feed.CPEMatch{{
+			CPE:                   "cpe:2.3:a:Acme:Widget:*",
+			CPENormalized:         "cpe:2.3:a:acme:widget:*",
+			VersionStartIncluding: "1",
+			VersionStartExcluding: "2",
+			VersionEndIncluding:   "3",
+			VersionEndExcluding:   "4",
+			Vulnerable:            true,
+		}},
+		CNAAffected: []feed.CNAAffected{{
+			Vendor:        "Acme",
+			Product:       "Widget",
+			PackageName:   "widget",
+			CollectionURL: "https://example.com/packages",
+			DefaultStatus: "unknown",
+			Versions: []feed.CNAVersion{{
+				Version:         "1.0",
+				LessThan:        "1.5",
+				LessThanOrEqual: "1.4",
+				Status:          "affected",
+				VersionType:     "semver",
+				Changes:         []feed.CNAVersionChange{{At: "1.2", Status: "unaffected"}},
+			}},
+		}},
+	}, "mitre"); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	detail := getCVEVersionData(t, ts, token, cveID)
+
+	wantMatches := []CPEMatchResponse{{
+		CPE:                   "cpe:2.3:a:Acme:Widget:*",
+		CPENormalized:         "cpe:2.3:a:acme:widget:*",
+		VersionStartIncluding: strRef("1"),
+		VersionStartExcluding: strRef("2"),
+		VersionEndIncluding:   strRef("3"),
+		VersionEndExcluding:   strRef("4"),
+	}}
+	if !reflect.DeepEqual(detail.AffectedCPEMatches, wantMatches) {
+		t.Errorf("affected_cpe_matches = %+v, want %+v", detail.AffectedCPEMatches, wantMatches)
+	}
+	wantCNA := []CNAAffectedResponse{{
+		Vendor:        strRef("Acme"),
+		Product:       strRef("Widget"),
+		PackageName:   strRef("widget"),
+		CollectionURL: strRef("https://example.com/packages"),
+		DefaultStatus: strRef("unknown"),
+		Versions: []CNAVersionResponse{{
+			Version:         "1.0",
+			LessThan:        "1.5",
+			LessThanOrEqual: "1.4",
+			Status:          "affected",
+			VersionType:     "semver",
+			Changes:         []CNAVersionChangeResponse{{At: "1.2", Status: "unaffected"}},
+		}},
+	}}
+	if !reflect.DeepEqual(detail.CNAAffected, wantCNA) {
+		t.Errorf("cna_affected = %+v, want %+v", detail.CNAAffected, wantCNA)
 	}
 }
 
@@ -947,19 +1253,42 @@ func TestListCVEs_InvalidCursor(t *testing.T) {
 	ts, token := newCVETestServer(t, db)
 	ctx := context.Background()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves?cursor=not-valid-base64!!!", nil)
-	req.Header.Set("Cookie", "access_token="+token)
-	if err != nil {
-		t.Fatalf("new request: %v", err)
+	list := func(t *testing.T, cursor string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves?cursor="+url.QueryEscape(cursor), nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Cookie", "access_token="+token)
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
+		if err != nil {
+			t.Fatalf("GET /cves with cursor %q: %v", cursor, err)
+		}
+		return resp
 	}
-	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
-	if err != nil {
-		t.Fatalf("GET /cves with bad cursor: %v", err)
+	encode := func(raw string) string {
+		return base64.RawURLEncoding.EncodeToString([]byte(raw))
 	}
-	defer resp.Body.Close() //nolint:errcheck
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("bad cursor: got status %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	t.Run("valid cursor", func(t *testing.T) {
+		resp := list(t, encode(`{"d":"2026-01-01T00:00:00Z","id":"CVE-2024-99999"}`))
+		defer resp.Body.Close() //nolint:errcheck
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("status = %d, want 200", resp.StatusCode)
+		}
+	})
+
+	invalid := map[string]string{
+		"malformed": "not-valid-base64!!!",
+		"edited":    encode(`{"d":"2026-01-01T00:00:00Z","id":"CVE-2024-99999","x":1}`),
+		"bad date":  encode(`{"d":"yesterday","id":"CVE-2024-99999"}`),
+	}
+	for name, cursor := range invalid {
+		t.Run(name, func(t *testing.T) {
+			resp := list(t, cursor)
+			defer resp.Body.Close() //nolint:errcheck
+			assertInvalidCursorProblem(t, resp)
+		})
 	}
 }
 

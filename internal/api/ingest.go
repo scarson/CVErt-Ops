@@ -77,8 +77,7 @@ func (srv *Server) ingestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req ingestRequest
-	if detail := decodeJSON(r, &req); detail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", detail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 

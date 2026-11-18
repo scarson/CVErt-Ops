@@ -30,9 +30,10 @@ type scimConfigResponse struct {
 	UpdatedAt   string `json:"updated_at,omitempty"`
 }
 
+// patchSCIMConfigBody fields are optional: an omitted field keeps its current value.
 type patchSCIMConfigBody struct {
-	Enabled     *bool   `json:"enabled"`
-	DefaultRole *string `json:"default_role"`
+	Enabled     *bool   `json:"enabled,omitempty"`
+	DefaultRole *string `json:"default_role,omitempty"`
 }
 
 type rotateTokenResponse struct {
@@ -54,9 +55,12 @@ type listSCIMGroupsResponse struct {
 	Items []scimGroupItem `json:"items"`
 }
 
+// patchSCIMGroupMappingBody fields are optional: an omitted field keeps its
+// current mapping, an empty mapped_role clears the role mapping, and
+// mapped_group_id null clears the notification group mapping.
 type patchSCIMGroupMappingBody struct {
-	MappedRole    *string    `json:"mapped_role"`
-	MappedGroupID *uuid.UUID `json:"mapped_group_id"`
+	MappedRole    *string                   `json:"mapped_role,omitempty"`
+	MappedGroupID clearableField[uuid.UUID] `json:"mapped_group_id,omitempty"`
 }
 
 type scimGroupResponse struct {
@@ -194,8 +198,7 @@ func (srv *Server) patchSCIMConfigHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	var req patchSCIMConfigBody
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -417,14 +420,13 @@ func (srv *Server) patchSCIMGroupMappingHandler(w http.ResponseWriter, r *http.R
 	}
 
 	var req patchSCIMGroupMappingBody
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
 	// Track whether each field was sent in the request (even if to clear).
 	roleSent := req.MappedRole != nil
-	groupIDSent := req.MappedGroupID != nil
+	groupIDSent := req.MappedGroupID.Sent
 
 	// Validate mapped_role if provided.
 	if roleSent {
@@ -440,9 +442,9 @@ func (srv *Server) patchSCIMGroupMappingHandler(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	// Validate mapped_group_id if provided: must be same org and active.
-	if groupIDSent {
-		group, err := srv.store.GetGroupIfActive(r.Context(), orgID, *req.MappedGroupID)
+	// Validate mapped_group_id if provided and not null: must be same org and active.
+	if req.MappedGroupID.Value != nil {
+		group, err := srv.store.GetGroupIfActive(r.Context(), orgID, *req.MappedGroupID.Value)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "scim group mapping patch: get notification group", "error", err)
 			writeProblem(w, http.StatusInternalServerError, "internal error")
@@ -469,7 +471,7 @@ func (srv *Server) patchSCIMGroupMappingHandler(w http.ResponseWriter, r *http.R
 
 	var mappedGroupIDPtr *uuid.UUID
 	if groupIDSent {
-		mappedGroupIDPtr = req.MappedGroupID
+		mappedGroupIDPtr = req.MappedGroupID.Value // nil means clear, non-nil means set
 	} else if scimGroup.MappedGroupID.Valid {
 		mappedGroupIDPtr = &scimGroup.MappedGroupID.UUID
 	}

@@ -37,11 +37,11 @@
     "@tsconfig/node24": "^24.0.4",
     "@types/node": "^25.5.2",
     "@vitejs/plugin-vue": "^6.0.10",
-    "@vitest/eslint-plugin": "^1.6.13",
+    "@vitest/eslint-plugin": "^1.6.28",
     "@vue/eslint-config-typescript": "^14.7.0",
     "@vue/test-utils": "^2.4.6",
     "@vue/tsconfig": "^0.9.0",
-    "eslint": "^10.1.0",
+    "eslint": "^10.15.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-oxlint": "~1.61.0",
     "eslint-plugin-vue": "~10.8.0",
@@ -60,6 +60,14 @@
   "overrides": {
     "openapi-typescript": {
       "typescript": "$typescript"
+    },
+    "js-beautify": {
+      "editorconfig": {
+        "minimatch": "^11.0.9"
+      },
+      "glob": {
+        "minimatch": "^11.0.9"
+      }
     }
   },
   "engines": {

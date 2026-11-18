@@ -4,6 +4,17 @@
 
 CVErt Ops is an open-source vulnerability intelligence and alerting platform. It continuously ingests data from major public CVE feeds, merges them into a single canonical corpus, and lets teams build watchlists and alert rules to stay on top of the vulnerabilities that matter to them. A single static Go binary runs the HTTP API and background workers — no external queue or message broker required.
 
+## Main Goal: Easy for AI Agents to Use
+
+CVErt Ops is built to be used by AI agents and scripts as easily as by people. Every capability is reachable through the HTTP API, and a command-line client and an MCP server are planned on top of it, so an agent that patches software can look up CVEs, check component versions against affected ranges, poll alert events, and maintain watchlists without a browser session. This shapes the design throughout:
+
+- **API first.** The web UI is a client of the same HTTP API. The API publishes a code-first OpenAPI 3.1 document, returns errors as RFC 9457 Problem Details, and uses cursor pagination, so a client can be generated from the spec and can tell failures apart by status code without parsing messages.
+- **API keys for machines.** Org-scoped API keys with role caps let an agent act with no interactive login; a viewer-role key gives an agent read-only access.
+- **CLI.** A `cvert` command-line client for scripts: JSON output by default, purl or Trivy JSON input for version checks, and exit codes that distinguish no results, authentication failure, rate limiting, and server errors. Designed, not yet built.
+- **MCP.** An MCP server with narrow tool input schemas and compact results, served over streamable HTTP by `cvert-ops serve` at `/api/v1/mcp` with the caller's API key, and over stdio by `cvert mcp`. Designed, not yet built.
+
+The CLI and MCP design is in `dev/plans/2026-11-13-api-client-cli-and-mcp-server-design.md` (binary layout, commands, exit codes, MCP tool set, and the decisions still open).
+
 ## Key Features
 
 ### Multi-Source CVE Aggregation

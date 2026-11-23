@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	github.com/KimMachineGun/automemlimit v1.0.2
 	github.com/Masterminds/squirrel v1.5.4
-	github.com/caarlos0/env/v11 v11.4.1
+	github.com/caarlos0/env/v11 v11.4.2
 	github.com/containerd/errdefs v1.0.0
 	github.com/coreos/go-oidc/v3 v3.18.0
 	github.com/danielgtaylor/huma/v2 v2.37.3
